@@ -17,11 +17,11 @@ if (typeof localStorage === "undefined" || localStorage === null) {
 }
 /////////////------------ogbot
 // const telegramtoken = '8199688040:AAHGqr4cECCMb9kd4qXNM5bKAXXrqj8shQk';
-const telegramchat = "-1003727905299";
+// const telegramchat = "-1003727905299";
 /////////////------------pgfbot
 // const telegramtoken = "8390227157:AAFYQ2eWFAJdm9P8me9Nk2voYe00Mn33dSU";
 // const telegramchat = "8559767849";
-// const telegramchat = "8559767849";
+const telegramchat = "8559767849";
 /////////////------------pnlbot
 // const telegramtoken = "7764791634:AAGGwGa6Sl7jNauuQvgnTXRTVixikBZCb-g";
 // const telegramchat = "7781596314";
@@ -29,7 +29,7 @@ let patternSchedulerTimeout = null;
 let isExecuting = false;
 const emaManager = new EMAManager(fyers);
 const bcvcManager = new BCVCManager(fyers);
-const SEND_FIRST_RUN_NOTIFICATIONS = false;
+const SEND_FIRST_RUN_NOTIFICATIONS = true;
 // const symbols = ["NSE:ZYDUSLIFE-EQ","NSE:KALYANKJIL-EQ","NSE:COALINDIA-EQ"];
 
 const app = express();
@@ -120,7 +120,11 @@ const analyzePattern = (emadata, bcvc) => {
   if (!emadata.crossover || emadata.crossover.length === 0) {
     return { found: false, reason: "No crossovers found" };
   }
-
+  const isToday = (timestampUnix) => {
+    const candleDate = moment.unix(timestampUnix).format("YYYY-MM-DD");
+    const today = moment().format("YYYY-MM-DD");
+    return candleDate === today;
+  };
   const latestCrossover = emadata.crossover[0];
   const crossoverTimestamp = latestCrossover.timestampUnix;
 
@@ -175,7 +179,12 @@ const analyzePattern = (emadata, bcvc) => {
         reason: `No BULLISH BCVC closed above last BEARISH BCVC high (${bearishHigh})`,
       };
     }
-
+    if (!isToday(confirmingBullish.timestampUnix)) {
+      return {
+        found: false,
+        reason: `Bullish signal candle is not from today (found: ${moment.unix(confirmingBullish.timestampUnix).format("YYYY-MM-DD")})`,
+      };
+    }
     return {
       found: true,
       crossoverType: "BULLISH_CROSSOVER",
@@ -252,7 +261,12 @@ const analyzePattern = (emadata, bcvc) => {
         reason: `No RED/ORANGE candle closed below last WHITE BCVC low (${whiteLow})`,
       };
     }
-
+    if (!isToday(confirmingBearish.timestampUnix)) {
+      return {
+        found: false,
+        reason: `Bearish signal candle is not from today (found: ${moment.unix(confirmingBearish.timestampUnix).format("YYYY-MM-DD")})`,
+      };
+    }
     return {
       found: true,
       crossoverType: "BEARISH_CROSSOVER",
@@ -286,6 +300,7 @@ const analyzePattern = (emadata, bcvc) => {
   };
 };
 
+
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const getTrailingTradingDays = (tradingDaysCount) => {
@@ -303,7 +318,13 @@ const getTrailingTradingDays = (tradingDaysCount) => {
     }
   }
 
-  const lookbackDate = moment().subtract(calendarDaysBack, "days");
+  // ✅ FIX: Set lookback to 9:15 AM of that trading day, not current time
+  const lookbackDate = moment()
+    .subtract(calendarDaysBack, "days")
+    .hour(9)
+    .minute(15)
+    .second(0)
+    .millisecond(0);
 
   console.log(`📊 Trading Days Calculation:`);
   console.log(`  Requested: ${tradingDaysCount} trading days`);
