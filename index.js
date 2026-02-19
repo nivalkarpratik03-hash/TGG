@@ -520,7 +520,6 @@ const startlogic = async (isFirstRun = false) => {
           `📊 Fetching BCVC data for ${symbol} (${BCVC_LOOKBACK_DAYS} days)...`,
         );
         let bcvc;
-
         if (latestCrossover.type === "BEARISH_CROSSOVER") {
           console.log(
             `  🔻 Bearish crossover detected - including RED candles`,
@@ -574,11 +573,19 @@ const startlogic = async (isFirstRun = false) => {
           );
           var telegramMessage = "";
 
-        if (pattern.crossoverType === "BULLISH_CROSSOVER") {
-            console.log(`🚀 Bullish Crossover: ${pattern.crossover.timestamp} @ ${pattern.crossover.price}`);
-            console.log(`🔴 Bearish BCVCs found: ${pattern.validation.totalBearishBCVCs} (${pattern.validation.bearishCandleColor.toUpperCase()})`);
-            console.log(`🔴 Last Bearish BCVC: ${pattern.lastBearishBCVC.timestamp} (High: ${pattern.lastBearishBCVC.high})`);
-            console.log(`🚀 Bullish BCVC: ${pattern.bullishBCVC.timestamp} (Close: ${pattern.bullishBCVC.close}) - CLOSED ABOVE BEARISH HIGH ✓`);
+          if (pattern.crossoverType === "BULLISH_CROSSOVER") {
+            console.log(
+              `🚀 Bullish Crossover: ${pattern.crossover.timestamp} @ ${pattern.crossover.price}`,
+            );
+            console.log(
+              `🔴 Bearish BCVCs found: ${pattern.validation.totalBearishBCVCs} (${pattern.validation.bearishCandleColor.toUpperCase()})`,
+            );
+            console.log(
+              `🔴 Last Bearish BCVC: ${pattern.lastBearishBCVC.timestamp} (High: ${pattern.lastBearishBCVC.high})`,
+            );
+            console.log(
+              `🚀 Bullish BCVC: ${pattern.bullishBCVC.timestamp} (Close: ${pattern.bullishBCVC.close}) - CLOSED ABOVE BEARISH HIGH ✓`,
+            );
             telegramMessage = `
 🚀 <b>BULLISH PATTERN FOUND</b> 🚀
 
@@ -705,7 +712,7 @@ const startlogic = async (isFirstRun = false) => {
           }
         } else {
           console.log(`❌ Pattern not found for ${symbol}: ${pattern.reason}`);
-          console.log(   
+          console.log(
             `   Will check again in next run if crossover still recent`,
           );
         }
