@@ -366,7 +366,7 @@ const startlogic = async (isFirstRun = false) => {
     const now = moment();
     const today = now.format("YYYY-MM-DD");
 
-    const TRADING_DAYS_LOOKBACK = 1;
+    const TRADING_DAYS_LOOKBACK = 0;
     const { lookbackDate, calendarDaysBack, tradingDaysCount } =
       getTrailingTradingDays(TRADING_DAYS_LOOKBACK);
 
@@ -528,7 +528,7 @@ const startlogic = async (isFirstRun = false) => {
           );
           bcvc = await bcvcManager.getHistoricalBCVC(
             symbol,
-            "15",
+            "5",
             BCVC_LOOKBACK_DAYS,
             "red",
           );
@@ -538,7 +538,7 @@ const startlogic = async (isFirstRun = false) => {
           );
           bcvc = await bcvcManager.getHistoricalBCVC(
             symbol,
-            "15",
+            "5",
             BCVC_LOOKBACK_DAYS,
           );
         }
@@ -914,7 +914,7 @@ const stopPatternScheduler = () => {
 };
 
 // Start the scheduler
-// startPatternScheduler();
+startPatternScheduler();
 // runauth()
 // authenticate()
 

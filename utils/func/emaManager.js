@@ -12,8 +12,8 @@ class EMAManager {
     this.emaCache = new Map();
 
     this.timeframe = {
-      resolution: "15", 
-      duration: 15, 
+      resolution: "5", 
+      duration: 5, 
       rollingDays: 100,
     };
 
@@ -562,7 +562,7 @@ class EMAManager {
     }
   }
 
-  async getHistoricalEMA(symbol, days = 5, maxRetries = 10, retryDelay = 2000) {
+  async getHistoricalEMA(symbol, days = 2, maxRetries = 10, retryDelay = 2000) {
     console.log(`🔍 Fetching ${days} days of EMA history for ${symbol}...`);
 
     let retryCount = 0;
