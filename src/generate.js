@@ -4,8 +4,8 @@ const https = require('https');
 const crypto = require('crypto');
 
 // Replace these values with your actual API credentials
-const client_id = "";
-const secret_key = "";
+const client_id = process.env.APP_ID;
+const secret_key = process.env.ST_KEY;
 const redirect_uri = "https://trade.fyers.in/api-login/redirect-uri/index.html";
 const response_type = "code";
 const state = "sample_state";

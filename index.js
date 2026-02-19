@@ -9,6 +9,7 @@ const EMAManager = require("./utils/func/emaManager");
 const BCVCManager = require("./utils/func/bcvcManager");
 const bot = require("./utils/func/telegram");
 const fyers = require("./utils/func/fyersapi");
+const {authenticate} = require("./src/generate");
 const INPUT_EXCEL = "./NIFTY.xlsx";
 const SYMBOL_COLUMN = "symbol";
 if (typeof localStorage === "undefined" || localStorage === null) {
@@ -34,8 +35,9 @@ const SEND_FIRST_RUN_NOTIFICATIONS = true;
 
 const app = express();
 
-const refresh_token =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiZDoxIiwiZDoyIiwieDowIiwieDoxIiwieDoyIl0sImF0X2hhc2giOiJnQUFBQUFCcGxVRGFENklHeXBNY1UwVVFJMWhEMXlMT0FrYnhVTE1YV1ZhZHNsLWNiUmJEVy14NzJfb2VoNlFRUHlxVTVsdTdUbUF2WGRObDh3R00yZzJwRHBfbGQxXzhia2VWNlVEY2tKclVqeHhMaGw5TFJncz0iLCJkaXNwbGF5X25hbWUiOiIiLCJvbXMiOiJLMSIsImhzbV9rZXkiOiI0ZDcwNTIwMzlmMmM2NzI3NGViNzBlZTNlZmU4NzU0Y2E3ZDAyMDg1ZTQ1ZDhkY2FlOGRiMzJiOSIsImlzRGRwaUVuYWJsZWQiOiJOIiwiaXNNdGZFbmFibGVkIjoiTiIsImZ5X2lkIjoiWFQwMzYyOSIsImFwcFR5cGUiOjEwMCwiZXhwIjoxNzcyNjcwNjAwLCJpYXQiOjE3NzEzODkxNDYsImlzcyI6ImFwaS5meWVycy5pbiIsIm5iZiI6MTc3MTM4OTE0Niwic3ViIjoicmVmcmVzaF90b2tlbiJ9.P-JdUPGC4hdwVOxo08zd7kVxS6XVyhUV5YwC5XToqOU";
+// const refresh_token =
+//   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiZDoxIiwiZDoyIiwieDowIiwieDoxIiwieDoyIl0sImF0X2hhc2giOiJnQUFBQUFCcGxVRGFENklHeXBNY1UwVVFJMWhEMXlMT0FrYnhVTE1YV1ZhZHNsLWNiUmJEVy14NzJfb2VoNlFRUHlxVTVsdTdUbUF2WGRObDh3R00yZzJwRHBfbGQxXzhia2VWNlVEY2tKclVqeHhMaGw5TFJncz0iLCJkaXNwbGF5X25hbWUiOiIiLCJvbXMiOiJLMSIsImhzbV9rZXkiOiI0ZDcwNTIwMzlmMmM2NzI3NGViNzBlZTNlZmU4NzU0Y2E3ZDAyMDg1ZTQ1ZDhkY2FlOGRiMzJiOSIsImlzRGRwaUVuYWJsZWQiOiJOIiwiaXNNdGZFbmFibGVkIjoiTiIsImZ5X2lkIjoiWFQwMzYyOSIsImFwcFR5cGUiOjEwMCwiZXhwIjoxNzcyNjcwNjAwLCJpYXQiOjE3NzEzODkxNDYsImlzcyI6ImFwaS5meWVycy5pbiIsIm5iZiI6MTc3MTM4OTE0Niwic3ViIjoicmVmcmVzaF90b2tlbiJ9.P-JdUPGC4hdwVOxo08zd7kVxS6XVyhUV5YwC5XToqOU";
+const refresh_token ="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiZDoxIiwiZDoyIiwieDowIiwieDoxIiwieDoyIl0sImF0X2hhc2giOiJnQUFBQUFCcGxxakh5ekVBajNCeUhRY3Z0ZEpkeWx4WWNZY0tzdmNIQk12ZGJTdDZBWjlQRE9wcV9CeEFuek5OUmN0aHRtYWJqek1xeG1zeEpCdjZlRFptSFJ5Q0dEcVJ6c2Q5VVRpS2h3ems0SlFKc05tX2sxZz0iLCJkaXNwbGF5X25hbWUiOiIiLCJvbXMiOiJLMSIsImhzbV9rZXkiOiI5YzM5OTNlMTM2ZTkxYjJhNWNjNTI1NmMxNDlkMjI4ZDQ2YzU3NDJjZTg1ZjYyODAwMTIzYzIxZCIsImlzRGRwaUVuYWJsZWQiOiJOIiwiaXNNdGZFbmFibGVkIjoiTiIsImZ5X2lkIjoiRkFJNDY2NDAiLCJhcHBUeXBlIjoxMDAsImV4cCI6MTc3Mjc1NzAwMCwiaWF0IjoxNzcxNDgxMjg3LCJpc3MiOiJhcGkuZnllcnMuaW4iLCJuYmYiOjE3NzE0ODEyODcsInN1YiI6InJlZnJlc2hfdG9rZW4ifQ.o-_-luxPPPsWeWlzHnGz6SvGsfsE-eE_0NnDM_Iyoig"
 var tempauth;
 
 const raw = localStorage.getItem("token");
@@ -43,9 +45,9 @@ tempauth = raw ? JSON.parse(raw) : null;
 
 let data = {
   grant_type: "refresh_token",
-  appIdHash: "e86d29ff056bcc78df9cd894f163914c9b2d7581cc0aaf417fe03cbbfbd97db4",
+  appIdHash: process.env.HASH_ID,
   refresh_token: refresh_token,
-  pin: "1234",
+  pin: process.env.PIN,
 };
 async function createAccess() {
   try {
@@ -153,7 +155,9 @@ const analyzePattern = (emadata, bcvc) => {
     }
 
     // Take the LAST bearish BCVC as the reference point
-    const lastBearishBCVC = bearishFormations[bearishFormations.length - 1];
+    const lastBearishBCVC = bearishFormations.reduce((prev, curr) =>
+      curr.high > prev.high ? curr : prev,
+    );
     const bearishHigh = lastBearishBCVC.high;
 
     // Look for a WHITE bullish candle AFTER the last bearish BCVC
@@ -224,7 +228,9 @@ const analyzePattern = (emadata, bcvc) => {
     }
 
     // Take the LAST bullish BCVC as the reference point
-    const lastWhiteBCVC = bullishFormations[bullishFormations.length - 1];
+    const lastWhiteBCVC = bullishFormations.reduce((prev, curr) =>
+      curr.low < prev.low ? curr : prev,
+    );
     const whiteLow = lastWhiteBCVC.low;
 
     // Look for red/orange candles AFTER the last bullish BCVC
@@ -299,7 +305,6 @@ const analyzePattern = (emadata, bcvc) => {
     reason: `Unknown crossover type: ${latestCrossover.type}`,
   };
 };
-
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -583,7 +588,7 @@ const startlogic = async (isFirstRun = false) => {
             console.log(
               `🚀 Bullish BCVC: ${pattern.bullishBCVC.timestamp} (Close: ${pattern.bullishBCVC.close}) - CLOSED ABOVE BEARISH HIGH ✓`,
             );
-        telegramMessage = `
+            telegramMessage = `
 🚀 <b>BULLISH PATTERN FOUND</b> 🚀
 
 📈 <b>Symbol:</b> ${symbol}
@@ -909,8 +914,9 @@ const stopPatternScheduler = () => {
 };
 
 // Start the scheduler
-startPatternScheduler();
+// startPatternScheduler();
 // runauth()
+// authenticate()
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3100;
 
