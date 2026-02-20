@@ -4,12 +4,14 @@ const XLSX = require("xlsx");
 require("dotenv").config();
 const fs = require("fs");
 const moment = require("moment");
+const { writePatternToExcel } = require("./src/excelReports");
+const { runBacktest } = require("./src/backtestSignals");
 // const TelegramBot = require('node-telegram-bot-api');
 const EMAManager = require("./utils/func/emaManager");
 const BCVCManager = require("./utils/func/bcvcManager");
 const bot = require("./utils/func/telegram");
 const fyers = require("./utils/func/fyersapi");
-const {authenticate} = require("./src/generate");
+const { authenticate } = require("./src/generate");
 const INPUT_EXCEL = "./NIFTY.xlsx";
 const SYMBOL_COLUMN = "symbol";
 if (typeof localStorage === "undefined" || localStorage === null) {
@@ -30,14 +32,15 @@ let patternSchedulerTimeout = null;
 let isExecuting = false;
 const emaManager = new EMAManager(fyers);
 const bcvcManager = new BCVCManager(fyers);
-const SEND_FIRST_RUN_NOTIFICATIONS = true;
+const SEND_FIRST_RUN_NOTIFICATIONS = false;
 // const symbols = ["NSE:ZYDUSLIFE-EQ","NSE:KALYANKJIL-EQ","NSE:COALINDIA-EQ"];
 
 const app = express();
 
 // const refresh_token =
 //   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiZDoxIiwiZDoyIiwieDowIiwieDoxIiwieDoyIl0sImF0X2hhc2giOiJnQUFBQUFCcGxVRGFENklHeXBNY1UwVVFJMWhEMXlMT0FrYnhVTE1YV1ZhZHNsLWNiUmJEVy14NzJfb2VoNlFRUHlxVTVsdTdUbUF2WGRObDh3R00yZzJwRHBfbGQxXzhia2VWNlVEY2tKclVqeHhMaGw5TFJncz0iLCJkaXNwbGF5X25hbWUiOiIiLCJvbXMiOiJLMSIsImhzbV9rZXkiOiI0ZDcwNTIwMzlmMmM2NzI3NGViNzBlZTNlZmU4NzU0Y2E3ZDAyMDg1ZTQ1ZDhkY2FlOGRiMzJiOSIsImlzRGRwaUVuYWJsZWQiOiJOIiwiaXNNdGZFbmFibGVkIjoiTiIsImZ5X2lkIjoiWFQwMzYyOSIsImFwcFR5cGUiOjEwMCwiZXhwIjoxNzcyNjcwNjAwLCJpYXQiOjE3NzEzODkxNDYsImlzcyI6ImFwaS5meWVycy5pbiIsIm5iZiI6MTc3MTM4OTE0Niwic3ViIjoicmVmcmVzaF90b2tlbiJ9.P-JdUPGC4hdwVOxo08zd7kVxS6XVyhUV5YwC5XToqOU";
-const refresh_token ="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiZDoxIiwiZDoyIiwieDowIiwieDoxIiwieDoyIl0sImF0X2hhc2giOiJnQUFBQUFCcGxxakh5ekVBajNCeUhRY3Z0ZEpkeWx4WWNZY0tzdmNIQk12ZGJTdDZBWjlQRE9wcV9CeEFuek5OUmN0aHRtYWJqek1xeG1zeEpCdjZlRFptSFJ5Q0dEcVJ6c2Q5VVRpS2h3ems0SlFKc05tX2sxZz0iLCJkaXNwbGF5X25hbWUiOiIiLCJvbXMiOiJLMSIsImhzbV9rZXkiOiI5YzM5OTNlMTM2ZTkxYjJhNWNjNTI1NmMxNDlkMjI4ZDQ2YzU3NDJjZTg1ZjYyODAwMTIzYzIxZCIsImlzRGRwaUVuYWJsZWQiOiJOIiwiaXNNdGZFbmFibGVkIjoiTiIsImZ5X2lkIjoiRkFJNDY2NDAiLCJhcHBUeXBlIjoxMDAsImV4cCI6MTc3Mjc1NzAwMCwiaWF0IjoxNzcxNDgxMjg3LCJpc3MiOiJhcGkuZnllcnMuaW4iLCJuYmYiOjE3NzE0ODEyODcsInN1YiI6InJlZnJlc2hfdG9rZW4ifQ.o-_-luxPPPsWeWlzHnGz6SvGsfsE-eE_0NnDM_Iyoig"
+const refresh_token =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiZDoxIiwiZDoyIiwieDowIiwieDoxIiwieDoyIl0sImF0X2hhc2giOiJnQUFBQUFCcGxxakh5ekVBajNCeUhRY3Z0ZEpkeWx4WWNZY0tzdmNIQk12ZGJTdDZBWjlQRE9wcV9CeEFuek5OUmN0aHRtYWJqek1xeG1zeEpCdjZlRFptSFJ5Q0dEcVJ6c2Q5VVRpS2h3ems0SlFKc05tX2sxZz0iLCJkaXNwbGF5X25hbWUiOiIiLCJvbXMiOiJLMSIsImhzbV9rZXkiOiI5YzM5OTNlMTM2ZTkxYjJhNWNjNTI1NmMxNDlkMjI4ZDQ2YzU3NDJjZTg1ZjYyODAwMTIzYzIxZCIsImlzRGRwaUVuYWJsZWQiOiJOIiwiaXNNdGZFbmFibGVkIjoiTiIsImZ5X2lkIjoiRkFJNDY2NDAiLCJhcHBUeXBlIjoxMDAsImV4cCI6MTc3Mjc1NzAwMCwiaWF0IjoxNzcxNDgxMjg3LCJpc3MiOiJhcGkuZnllcnMuaW4iLCJuYmYiOjE3NzE0ODEyODcsInN1YiI6InJlZnJlc2hfdG9rZW4ifQ.o-_-luxPPPsWeWlzHnGz6SvGsfsE-eE_0NnDM_Iyoig";
 var tempauth;
 
 const raw = localStorage.getItem("token");
@@ -142,25 +145,27 @@ const analyzePattern = (emadata, bcvc) => {
   }
 
   if (latestCrossover.type === "BULLISH_CROSSOVER") {
-    // Collect ALL consecutive bearish BCVCs after crossover
+    // Collect ALL bearish BCVCs after crossover — orange AND maroon
     const bearishFormations = formationsAfterCrossover.filter(
-      (f) => f.isBearish || f.candleColor === "orange",
+      (f) =>
+        f.isBearish || f.candleColor === "orange" || f.candleColor === "maroon",
     );
 
     if (bearishFormations.length === 0) {
       return {
         found: false,
-        reason: "No BEARISH BCVC found after the bullish crossover",
+        reason:
+          "No BEARISH BCVC (orange/maroon) found after the bullish crossover",
       };
     }
 
-    // Take the LAST bearish BCVC as the reference point
+    // Take the bearish candle with the HIGHEST high as reference
     const lastBearishBCVC = bearishFormations.reduce((prev, curr) =>
       curr.high > prev.high ? curr : prev,
     );
     const bearishHigh = lastBearishBCVC.high;
 
-    // Look for a WHITE bullish candle AFTER the last bearish BCVC
+    // Look for a WHITE bullish candle AFTER the reference bearish BCVC
     const formationsAfterLastBearish = formationsAfterCrossover.filter(
       (f) => f.timestampUnix > lastBearishBCVC.timestampUnix,
     );
@@ -168,7 +173,7 @@ const analyzePattern = (emadata, bcvc) => {
     if (formationsAfterLastBearish.length === 0) {
       return {
         found: false,
-        reason: "No BCVC found after the last BEARISH BCVC",
+        reason: "No BCVC found after the last BEARISH BCVC (orange/maroon)",
       };
     }
 
@@ -180,7 +185,7 @@ const analyzePattern = (emadata, bcvc) => {
     if (!confirmingBullish) {
       return {
         found: false,
-        reason: `No BULLISH BCVC closed above last BEARISH BCVC high (${bearishHigh})`,
+        reason: `No BULLISH BCVC closed above last BEARISH BCVC high (${bearishHigh}) [orange/maroon ref: ${lastBearishBCVC.candleColor}]`,
       };
     }
     if (!isToday(confirmingBullish.timestampUnix)) {
@@ -193,11 +198,12 @@ const analyzePattern = (emadata, bcvc) => {
       found: true,
       crossoverType: "BULLISH_CROSSOVER",
       crossover: latestCrossover,
-      bearishBCVCs: bearishFormations, // all bearish BCVCs for reference
-      lastBearishBCVC: lastBearishBCVC, // the key reference candle
+      bearishBCVCs: bearishFormations,
+      lastBearishBCVC: lastBearishBCVC,
       bullishBCVC: confirmingBullish,
       validation: {
         totalBearishBCVCs: bearishFormations.length,
+        bearishCandleColor: lastBearishBCVC.candleColor, // tells you if it was orange or maroon
         bearishHigh: bearishHigh,
         bullishClose: confirmingBullish.close,
         bullishHigh: confirmingBullish.high,
@@ -215,7 +221,7 @@ const analyzePattern = (emadata, bcvc) => {
       },
     };
   } else if (latestCrossover.type === "BEARISH_CROSSOVER") {
-    // Collect ALL bullish (white) BCVCs after crossover
+    // Bearish crossover logic unchanged
     const bullishFormations = formationsAfterCrossover.filter(
       (f) => f.isBullish && f.candleColor === "white",
     );
@@ -227,13 +233,11 @@ const analyzePattern = (emadata, bcvc) => {
       };
     }
 
-    // Take the LAST bullish BCVC as the reference point
     const lastWhiteBCVC = bullishFormations.reduce((prev, curr) =>
       curr.low < prev.low ? curr : prev,
     );
     const whiteLow = lastWhiteBCVC.low;
 
-    // Look for red/orange candles AFTER the last bullish BCVC
     const formationsAfterLastWhite = formationsAfterCrossover.filter(
       (f) => f.timestampUnix > lastWhiteBCVC.timestampUnix,
     );
@@ -256,7 +260,6 @@ const analyzePattern = (emadata, bcvc) => {
       };
     }
 
-    // Find first red/orange candle whose CLOSE is below last white BCVC low
     const confirmingBearish = bearishCandlesAfterWhite.find(
       (f) => f.close < whiteLow,
     );
@@ -277,8 +280,8 @@ const analyzePattern = (emadata, bcvc) => {
       found: true,
       crossoverType: "BEARISH_CROSSOVER",
       crossover: latestCrossover,
-      bullishBCVCs: bullishFormations, // all bullish BCVCs for reference
-      lastWhiteBCVC: lastWhiteBCVC, // the key reference candle
+      bullishBCVCs: bullishFormations,
+      lastWhiteBCVC: lastWhiteBCVC,
       redCandle: confirmingBearish,
       validation: {
         totalBullishBCVCs: bullishFormations.length,
@@ -308,38 +311,67 @@ const analyzePattern = (emadata, bcvc) => {
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const getTrailingTradingDays = (tradingDaysCount) => {
+// const getTrailingTradingDays = (tradingDaysCount) => {
+//   const now = moment();
+//   let calendarDaysBack = 0;
+//   let tradingDaysFound = 0;
+
+//   while (tradingDaysFound < tradingDaysCount) {
+//     calendarDaysBack++;
+//     const checkDate = moment().subtract(calendarDaysBack, "days");
+//     const dayOfWeek = checkDate.day();
+
+//     if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+//       tradingDaysFound++;
+//     }
+//   }
+
+//   // ✅ FIX: Set lookback to 9:15 AM of that trading day, not current time
+//   const lookbackDate = moment()
+//     .subtract(calendarDaysBack, "days")
+//     .hour(9)
+//     .minute(15)
+//     .second(0)
+//     .millisecond(0);
+
+//   console.log(`📊 Trading Days Calculation:`);
+//   console.log(`  Requested: ${tradingDaysCount} trading days`);
+//   console.log(`  Requires: ${calendarDaysBack} calendar days to look back`);
+//   console.log(`  Lookback Date: ${lookbackDate.format("YYYY-MM-DD HH:mm:ss")}`);
+//   console.log(`  Today is: ${now.format("dddd, YYYY-MM-DD")}`);
+
+//   return { lookbackDate, calendarDaysBack, tradingDaysCount };
+// };
+
+const getLookbackDate = () => {
   const now = moment();
-  let calendarDaysBack = 0;
-  let tradingDaysFound = 0;
 
-  while (tradingDaysFound < tradingDaysCount) {
-    calendarDaysBack++;
-    const checkDate = moment().subtract(calendarDaysBack, "days");
-    const dayOfWeek = checkDate.day();
+  // Start from yesterday
+  let lookbackDate = moment().subtract(1, "days");
 
-    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-      tradingDaysFound++;
-    }
+  // Skip weekends (go back to Friday if today is Monday)
+  if (lookbackDate.day() === 0) {
+    // Sunday → go to Friday
+    lookbackDate.subtract(2, "days");
+  } else if (lookbackDate.day() === 6) {
+    // Saturday → go to Friday
+    lookbackDate.subtract(1, "days");
   }
 
-  // ✅ FIX: Set lookback to 9:15 AM of that trading day, not current time
-  const lookbackDate = moment()
-    .subtract(calendarDaysBack, "days")
-    .hour(9)
-    .minute(15)
-    .second(0)
-    .millisecond(0);
+  // Set to 2:30 PM
+  lookbackDate.hour(14).minute(30).second(0).millisecond(0);
 
-  console.log(`📊 Trading Days Calculation:`);
-  console.log(`  Requested: ${tradingDaysCount} trading days`);
-  console.log(`  Requires: ${calendarDaysBack} calendar days to look back`);
-  console.log(`  Lookback Date: ${lookbackDate.format("YYYY-MM-DD HH:mm:ss")}`);
-  console.log(`  Today is: ${now.format("dddd, YYYY-MM-DD")}`);
+  console.log(
+    `📊 Lookback Date: ${lookbackDate.format("YYYY-MM-DD HH:mm:ss")}`,
+  );
+  console.log(`📅 Today: ${now.format("dddd, YYYY-MM-DD")}`);
 
-  return { lookbackDate, calendarDaysBack, tradingDaysCount };
+  return {
+    lookbackDate,
+    calendarDaysBack: now.diff(lookbackDate, "days") + 1,
+    tradingDaysCount: 1,
+  };
 };
-
 const generatePatternId = (symbol, pattern) => {
   const crossoverTime = pattern.crossover.timestampUnix;
 
@@ -367,10 +399,11 @@ const startlogic = async (isFirstRun = false) => {
     const today = now.format("YYYY-MM-DD");
 
     const TRADING_DAYS_LOOKBACK = 0;
+    // const { lookbackDate, calendarDaysBack, tradingDaysCount } =
+    //   getTrailingTradingDays(TRADING_DAYS_LOOKBACK);
     const { lookbackDate, calendarDaysBack, tradingDaysCount } =
-      getTrailingTradingDays(TRADING_DAYS_LOOKBACK);
-
-    const BCVC_LOOKBACK_DAYS = calendarDaysBack + 2;
+      getLookbackDate();
+    const BCVC_LOOKBACK_DAYS = calendarDaysBack + 3;
 
     // For daily runs, we process ALL symbols that have recent crossovers
     // No need for "targeted scan" since it's fresh every morning
@@ -383,8 +416,8 @@ const startlogic = async (isFirstRun = false) => {
     let skippedSymbols = 0;
     let differentCrossoversDetected = 0; // Count of symbols with multiple crossovers today
 
-    const BATCH_SIZE = 20;
-    const WAIT_TIME = 15000;
+    const BATCH_SIZE = 25;
+    const WAIT_TIME = 10000;
 
     console.log(`\n🕐 Current Time: ${now.format("YYYY-MM-DD HH:mm:ss")}`);
     console.log(
@@ -540,6 +573,7 @@ const startlogic = async (isFirstRun = false) => {
             symbol,
             "5",
             BCVC_LOOKBACK_DAYS,
+            "maroon",
           );
         }
 
@@ -598,8 +632,9 @@ const startlogic = async (isFirstRun = false) => {
   • Price: ₹${pattern.crossover.price}
   • Age: ${formattedSummary.crossoverAge}
 
-🔴 <b>Bearish BCVCs (${pattern.validation.totalBearishBCVCs} found):</b>
+🔴 <b>Bearish BCVCs (${pattern.validation.totalBearishBCVCs} found - ${pattern.validation.bearishCandleColor.toUpperCase()}):</b>
   • Last Bearish Time: ${pattern.lastBearishBCVC.timestamp}
+  • Last Bearish Type: ${pattern.lastBearishBCVC.candleColor.toUpperCase()} candle
   • Last Bearish High: ₹${pattern.lastBearishBCVC.high}
   • Last Bearish Close: ₹${pattern.lastBearishBCVC.close}
 
@@ -611,6 +646,7 @@ const startlogic = async (isFirstRun = false) => {
 
 📊 <b>Validation:</b>
   • Total Bearish BCVCs: ${pattern.validation.totalBearishBCVCs}
+  • Ref Candle Color: ${pattern.validation.bearishCandleColor.toUpperCase()}
   • Last Bearish High: ₹${pattern.validation.bearishHigh}
   • Bullish High: ₹${pattern.validation.bullishHigh}
   • Bullish Close: ₹${pattern.validation.bullishClose}
@@ -663,15 +699,41 @@ const startlogic = async (isFirstRun = false) => {
 ⏰ <b>Detected:</b> ${moment().format("YYYY-MM-DD HH:mm:ss")}
 `.trim();
           }
+          const sendAndRecord = async () => {
+            // 1) Telegram
+            await bot.sendMessage(telegramchat, telegramMessage, {
+              parse_mode: "HTML",
+            });
+            console.log(`✅ Telegram notification sent for ${symbol}`);
 
+            // 2) Excel  (bcvc already in scope from the outer for-loop)
+            await writePatternToExcel(
+              symbol,
+              pattern,
+              isFirstRun,
+              SEND_FIRST_RUN_NOTIFICATIONS,
+              bcvc,
+            );
+
+            // 3) Mark as sent in memory
+            sentPatterns.add(patternId);
+            console.log(`📝 Pattern tracked: ${patternId}`);
+          };
           // ✅ NOW guard sending on isFirstRun / isNewPattern — message is always ready
           if (!isFirstRun && isNewPattern) {
             newPatternsFound++;
             try {
-              // await bot.sendMessage(telegramchat, telegramMessage, {
-              //   parse_mode: "HTML",
-              // });
+              await bot.sendMessage(telegramchat, telegramMessage, {
+                parse_mode: "HTML",
+              });
               console.log(`✅ Telegram notification sent for ${symbol}`);
+                  await writePatternToExcel(
+              symbol,
+              pattern,
+              isFirstRun,
+              SEND_FIRST_RUN_NOTIFICATIONS,
+              bcvc,
+            );
               sentPatterns.add(patternId);
               console.log(`📝 Pattern tracked: ${patternId}`);
             } catch (telegramError) {
@@ -687,12 +749,7 @@ const startlogic = async (isFirstRun = false) => {
                   `🔔 First run with notifications ENABLED - sending alert`,
                 );
                 try {
-                  await bot.sendMessage(telegramchat, telegramMessage, {
-                    parse_mode: "HTML",
-                  });
-                  console.log(`✅ Telegram notification sent for ${symbol}`);
-                  sentPatterns.add(patternId);
-                  console.log(`📝 Pattern tracked: ${patternId}`);
+                  await sendAndRecord();
                 } catch (telegramError) {
                   console.error(
                     `❌ Failed to send Telegram message:`,
@@ -702,9 +759,22 @@ const startlogic = async (isFirstRun = false) => {
               } else {
                 console.log(
                   `🔕 First run - storing pattern without notification`,
-                );
+                );      try {
+                  await writePatternToExcel(
+                    symbol,
+                    pattern,
+                    isFirstRun,
+                    SEND_FIRST_RUN_NOTIFICATIONS,
+                    bcvc,
+                  );
                 sentPatterns.add(patternId);
                 console.log(`📝 Pattern tracked: ${patternId}`);
+                 } catch (err) {
+                  console.error(
+                    `❌ Failed to save to Excel for ${symbol}:`,
+                    err.message,
+                  );
+                }
               }
             } else {
               console.log(`⏭️  Pattern already sent previously - skipping`);
@@ -773,11 +843,11 @@ const startPatternScheduler = () => {
   const startTime = moment().hour(9).minute(15).second(0).millisecond(0);
   const endTime = moment().hour(15).minute(45).second(0).millisecond(0);
 
-  // if (now.isAfter(endTime)) {
-  //   console.log("⏰ Trading hours ended (after 3:15 PM). Pattern scheduler will not start.");
-  //   console.log("⏰ Will resume tomorrow at 9:15 AM");
-  //   return;
-  // }
+  if (now.isAfter(endTime)) {
+    console.log("⏰ Trading hours ended (after 3:15 PM). Pattern scheduler will not start.");
+    console.log("⏰ Will resume tomorrow at 9:15 AM");
+    return;
+  }
 
   // if (now.isBefore(startTime)) {
   //   console.log("⏰ Before trading hours. Pattern scheduler will start at 9:15 AM");
@@ -895,7 +965,7 @@ const startPatternScheduler = () => {
     let nextRun = moment().hour(9).minute(15).second(0).millisecond(0);
 
     while (nextRun.isSameOrBefore(now)) {
-      nextRun.add(15, "minute");
+      nextRun.add(5, "minute");
     }
 
     return nextRun;
@@ -914,9 +984,10 @@ const stopPatternScheduler = () => {
 };
 
 // Start the scheduler
-startPatternScheduler();
+// startPatternScheduler();
 // runauth()
 // authenticate()
+runBacktest()
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3100;
 
