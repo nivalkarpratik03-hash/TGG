@@ -33,6 +33,7 @@ let isExecuting = false;
 const emaManager = new EMAManager(fyers);
 const bcvcManager = new BCVCManager(fyers);
 const SEND_FIRST_RUN_NOTIFICATIONS = false;
+const MAX_CANDLES = 10;
 // const symbols = ["NSE:ZYDUSLIFE-EQ","NSE:KALYANKJIL-EQ","NSE:COALINDIA-EQ"];
 
 const app = express();
@@ -181,7 +182,23 @@ const analyzePattern = (emadata, bcvc) => {
     const confirmingBullish = formationsAfterLastBearish.find(
       (f) => f.isBullish && f.candleColor === "white" && f.close > bearishHigh,
     );
-
+    const allFormationsSorted = [...bcvc.formations].sort(
+      (a, b) => a.timestampUnix - b.timestampUnix,
+    );
+    const crossoverIdx = allFormationsSorted.findIndex(
+      (f) => f.timestampUnix >= crossoverTimestamp,
+    );
+    const signalIdx = allFormationsSorted.findIndex(
+      (f) => f.timestampUnix === confirmingBullish.timestampUnix,
+    );
+    const candlesBetween =
+      crossoverIdx !== -1 && signalIdx !== -1 ? signalIdx - crossoverIdx : null;
+    if (candlesBetween === null || candlesBetween > MAX_CANDLES) {
+      return {
+        found: false,
+        reason: `Signal candle is ${candlesBetween ?? "unknown"} candles from crossover (max allowed: ${MAX_CANDLES})`,
+      };
+    }
     if (!confirmingBullish) {
       return {
         found: false,
@@ -201,13 +218,17 @@ const analyzePattern = (emadata, bcvc) => {
       bearishBCVCs: bearishFormations,
       lastBearishBCVC: lastBearishBCVC,
       bullishBCVC: confirmingBullish,
+      candlesBetween,
+      maxCandlesAllowed: MAX_CANDLES,
       validation: {
         totalBearishBCVCs: bearishFormations.length,
-        bearishCandleColor: lastBearishBCVC.candleColor, // tells you if it was orange or maroon
+        bearishCandleColor: lastBearishBCVC.candleColor,
         bearishHigh: bearishHigh,
         bullishClose: confirmingBullish.close,
         bullishHigh: confirmingBullish.high,
         closedAboveBearishHigh: true,
+        candlesBetween,
+        maxCandlesAllowed: MAX_CANDLES,
       },
       summary: {
         crossoverTime: latestCrossover.timestamp,
@@ -218,6 +239,7 @@ const analyzePattern = (emadata, bcvc) => {
         bearishClose: lastBearishBCVC.close,
         bullishClose: confirmingBullish.close,
         bullishHigh: confirmingBullish.high,
+        candlesBetween,
       },
     };
   } else if (latestCrossover.type === "BEARISH_CROSSOVER") {
@@ -263,7 +285,23 @@ const analyzePattern = (emadata, bcvc) => {
     const confirmingBearish = bearishCandlesAfterWhite.find(
       (f) => f.close < whiteLow,
     );
-
+    const allFormationsSorted = [...bcvc.formations].sort(
+      (a, b) => a.timestampUnix - b.timestampUnix,
+    );
+    const crossoverIdx = allFormationsSorted.findIndex(
+      (f) => f.timestampUnix >= crossoverTimestamp,
+    );
+    const signalIdx = allFormationsSorted.findIndex(
+      (f) => f.timestampUnix === confirmingBearish.timestampUnix,
+    );
+    const candlesBetween =
+      crossoverIdx !== -1 && signalIdx !== -1 ? signalIdx - crossoverIdx : null;
+    if (candlesBetween === null || candlesBetween > MAX_CANDLES) {
+      return {
+        found: false,
+        reason: `Signal candle is ${candlesBetween ?? "unknown"} candles from crossover (max allowed: ${MAX_CANDLES})`,
+      };
+    }
     if (!confirmingBearish) {
       return {
         found: false,
@@ -283,6 +321,8 @@ const analyzePattern = (emadata, bcvc) => {
       bullishBCVCs: bullishFormations,
       lastWhiteBCVC: lastWhiteBCVC,
       redCandle: confirmingBearish,
+      candlesBetween,
+      maxCandlesAllowed: MAX_CANDLES,
       validation: {
         totalBullishBCVCs: bullishFormations.length,
         whiteLow: whiteLow,
@@ -290,6 +330,8 @@ const analyzePattern = (emadata, bcvc) => {
         redClose: confirmingBearish.close,
         redLow: confirmingBearish.low,
         closedBelowWhiteLow: true,
+        candlesBetween, 
+        maxCandlesAllowed: MAX_CANDLES, 
       },
       summary: {
         crossoverTime: latestCrossover.timestamp,
@@ -300,6 +342,7 @@ const analyzePattern = (emadata, bcvc) => {
         whiteClose: lastWhiteBCVC.close,
         redClose: confirmingBearish.close,
         redLow: confirmingBearish.low,
+        candlesBetween, 
       },
     };
   }
@@ -650,6 +693,7 @@ const startlogic = async (isFirstRun = false) => {
   • Last Bearish High: ₹${pattern.validation.bearishHigh}
   • Bullish High: ₹${pattern.validation.bullishHigh}
   • Bullish Close: ₹${pattern.validation.bullishClose}
+  • 📏 Candles from Crossover to Signal: ${pattern.candlesBetween} / ${pattern.maxCandlesAllowed}
 
 ⏰ <b>Detected:</b> ${moment().format("YYYY-MM-DD HH:mm:ss")}
 `.trim();
@@ -695,6 +739,7 @@ const startlogic = async (isFirstRun = false) => {
   • Last White Low: ₹${pattern.validation.whiteLow}
   • Bearish Close: ₹${pattern.validation.redClose}
   • Bearish Low: ₹${pattern.validation.redLow}
+  • 📏 Candles from Crossover to Signal: ${pattern.candlesBetween} / ${pattern.maxCandlesAllowed}
 
 ⏰ <b>Detected:</b> ${moment().format("YYYY-MM-DD HH:mm:ss")}
 `.trim();
@@ -727,13 +772,13 @@ const startlogic = async (isFirstRun = false) => {
                 parse_mode: "HTML",
               });
               console.log(`✅ Telegram notification sent for ${symbol}`);
-                  await writePatternToExcel(
-              symbol,
-              pattern,
-              isFirstRun,
-              SEND_FIRST_RUN_NOTIFICATIONS,
-              bcvc,
-            );
+              await writePatternToExcel(
+                symbol,
+                pattern,
+                isFirstRun,
+                SEND_FIRST_RUN_NOTIFICATIONS,
+                bcvc,
+              );
               sentPatterns.add(patternId);
               console.log(`📝 Pattern tracked: ${patternId}`);
             } catch (telegramError) {
@@ -759,7 +804,8 @@ const startlogic = async (isFirstRun = false) => {
               } else {
                 console.log(
                   `🔕 First run - storing pattern without notification`,
-                );      try {
+                );
+                try {
                   await writePatternToExcel(
                     symbol,
                     pattern,
@@ -767,9 +813,9 @@ const startlogic = async (isFirstRun = false) => {
                     SEND_FIRST_RUN_NOTIFICATIONS,
                     bcvc,
                   );
-                sentPatterns.add(patternId);
-                console.log(`📝 Pattern tracked: ${patternId}`);
-                 } catch (err) {
+                  sentPatterns.add(patternId);
+                  console.log(`📝 Pattern tracked: ${patternId}`);
+                } catch (err) {
                   console.error(
                     `❌ Failed to save to Excel for ${symbol}:`,
                     err.message,
@@ -844,7 +890,9 @@ const startPatternScheduler = () => {
   const endTime = moment().hour(15).minute(45).second(0).millisecond(0);
 
   if (now.isAfter(endTime)) {
-    console.log("⏰ Trading hours ended (after 3:15 PM). Pattern scheduler will not start.");
+    console.log(
+      "⏰ Trading hours ended (after 3:15 PM). Pattern scheduler will not start.",
+    );
     console.log("⏰ Will resume tomorrow at 9:15 AM");
     return;
   }
@@ -987,7 +1035,7 @@ const stopPatternScheduler = () => {
 // startPatternScheduler();
 // runauth()
 // authenticate()
-runBacktest()
+// runBacktest()
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3100;
 

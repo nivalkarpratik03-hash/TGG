@@ -21,6 +21,7 @@ const HEADERS = [
   { header: "Target Price",        key: "targetPrice",     width: 18 },
   { header: "Run Type",            key: "runType",         width: 16 },
   { header: "Detected At",         key: "detectedAt",      width: 22 },
+  { header: "Candles (Crossover→Signal)", key: "candlesBetween", width: 28 }, 
 ];
 
 const HEADER_FONT  = { name: "Arial", bold: true, size: 11, color: { argb: "FFFFFFFF" } };
@@ -171,6 +172,7 @@ async function writePatternToExcel(symbol, pattern, isFirstRun, SEND_FIRST_RUN_N
     signalLow,
     signalClose,
     detectedAt:     moment().format(DT_FMT),
+    candlesBetween: pattern.candlesBetween ?? null,  // ← ADD
   });
 
   // Price columns: crossoverPrice(5), signalHigh(7), signalLow(8),
