@@ -1,0 +1,147 @@
+Synthesized profitable trading framework aligned with user's style
+Synthesized profitable trading framework aligned with user's style
+
+Your Complete Trading Framework
+🏗️ The Foundation — Before Market Opens (9:00-9:15 AM)
+Nifty Check — 3 Questions
+
+1. Is Nifty above its 20 EMA on 15min? → Bias = LONG
+2. Is Nifty below its 20 EMA on 15min? → Bias = SHORT
+3. Is Nifty choppy/sideways? → SKIP THE DAY
+This one filter alone would have saved you from most losing longs that week since market was clearly weak.
+
+📋 Your Stock Scanning Criteria (Already Working — Just Formalize It)
+For Long Setups:
+
+Price consolidating near a resistance level
+Short EMA (red) crossing above Long MA (white)
+Volume increasing during consolidation
+Sector index also showing strength
+For Short Setups:
+
+Price consolidating below a support level
+Short EMA below Long MA
+Volume increasing on down moves
+Sector index also weak
+💰 Position Sizing — The Rule That Saves You
+Fix your risk at ₹X per trade — same every single trade
+
+Step 1: Decide max daily loss limit
+        Example: ₹10,000/day max loss
+
+Step 2: Risk per trade = Daily limit ÷ 5
+        = ₹10,000 ÷ 5 = ₹2,000 per trade
+
+Step 3: Shares = Risk per trade ÷ (Entry - SL)
+
+Example Sammaan:
+= 2,000 ÷ (161.39 - 158.76)
+= 2,000 ÷ 2.63
+= 760 shares maximum
+This way Sammaan can go to ZERO and you only lose ₹2,000 — not your entire day's profit.
+
+🎯 Entry Rules — Your System
+✅ Nifty bias confirmed
+✅ Stock above/below key level
+✅ EMA crossover confirmed
+✅ Volume above average
+✅ Position size calculated BEFORE entry
+✅ Hard SL order placed IMMEDIATELY after entry
+If even one box is unchecked → NO TRADE
+
+📤 Exit Plan — 3 Tier System
+Tier 1 — At 1:1 Risk Reward
+
+Book 40% of position
+Move SL to breakeven on remaining
+Tier 2 — At 2:1 Risk Reward
+
+Book another 40% of position
+Trail SL below last higher low (longs) or higher high (shorts)
+Tier 3 — Remaining 20%
+
+Let it run with trailing SL
+This is your "home run" portion
+Exit only when trailing SL is hit
+Petronet Example with this system:
+Entry: 312.80 | SL: 307.60 | Risk: ₹5.20
+
+Tier 1 target: 318.00 → Book 40% ✅
+Tier 2 target: 323.20 → Book 40% ✅  
+Tier 3: Trail → Would have exited near 323-324 ✅
+
+Result: Maximum profit extracted, zero stress
+⏱️ Time Rules — Discipline Filter
+Rule	Action
+No movement within 1 hour of entry	Exit at breakeven
+Trade goes to 1:1 profit within 15 mins	Follow tier system
+3 consecutive SL hits in a day	STOP TRADING for the day
+Daily profit target hit (3:1 of daily risk)	STOP TRADING for the day
+🛑 Hard Rules — Non Negotiable
+1. ALWAYS place hard SL order immediately after entry
+   — No mental SL ever
+
+2. NEVER average a losing trade
+   — If SL hits, it hits. Move on.
+
+3. NEVER trade first 15 minutes (9:15-9:30)
+   — Too volatile, let price settle
+
+4. Maximum 5 trades per day
+   — More trades = more mistakes
+
+5. If you miss entry, SKIP it
+   — Never chase a breakout
+📊 Daily Trading Journal — Track This Every Day
+Date:
+Nifty Bias: LONG / SHORT / SKIP
+
+Trade 1:
+  Stock | Entry | SL | Target | Result | Rule Followed? Y/N
+
+Trade 2: ...
+
+Day Summary:
+  Total Trades:
+  Winners:
+  Losers:
+  Rules Broken: (most important column)
+  Lesson:
+Review every Friday. You'll notice losses cluster around days when rules were broken — not bad setups.
+
+🗓️ Weekly Review Checklist
+Did I follow position sizing? Y/N
+Did I place hard SL every time? Y/N
+Did I check Nifty bias before trading? Y/N
+Did I exit partially at 1:1? Y/N
+Which trade made most profit and why?
+Which trade lost most and why?
+📈 Realistic Monthly Expectation With This System
+Assuming 20 trading days:
+- 5 skip days (choppy market)
+- 15 active trading days
+- Average 3 trades/day = 45 trades
+- Win rate 50% = 22 winners, 23 losers
+- Average winner (with tiered exit) = 1.8R
+- Average loser = 1R
+
+Monthly P&L:
+(22 × 1.8R) - (23 × 1R)
+= 39.6R - 23R
+= +16.6R profit per month
+Your setups already have 50%+ win rate — the tiered exit system turns that into consistent monthly profit.
+
+🎯 The One Page Summary
+Before trade: Nifty bias ✅ + Setup valid ✅ + Size calculated ✅
+
+Entry: Hard SL placed immediately
+
+At 1:1: Book 40%, move SL to breakeven
+
+At 2:1: Book 40%, trail remainder
+
+Daily max loss hit: Stop for the day — no exceptions
+
+Sammaan situation: Impossible — position size rule prevents it
+
+Your edge already exists. This framework just protects it.
