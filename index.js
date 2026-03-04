@@ -9,6 +9,7 @@ const moment = require("moment");
 const { writePatternToExcel } = require("./src/excelReports");
 const UnifiedAnalyzer = require("./utils/func/Unifiedanalyze");
 const SRAnalyzer = require("./utils/func/srAnalyzer");
+const { analyzeDowTheory, buildDowTheoryTelegramBlock } = require("./utils/func/dowTheory");
 // const TelegramBot = require('node-telegram-bot-api');
 const EMAManager = require("./utils/func/emaManager");
 const BCVCManager = require("./utils/func/bcvcManager");
@@ -1029,6 +1030,10 @@ const startlogic = async (isFirstRun = false) => {
       );
       bcvc.srAnalysis = srAnalysis;
 
+      // ── DOW THEORY ANALYSIS — uses already-fetched rawCandles (no extra API call) ──
+      const signalDir = pattern.crossoverType === "BULLISH_CROSSOVER" ? "BULLISH" : "BEARISH";
+      const dowAnalysis = analyzeDowTheory(emadata.rawCandles, signalDir);
+
       // ── PATTERN ID + DEDUP ────────────────────────────────────────────
       const patternId    = generatePatternId(symbol, pattern);
       const isNewPattern = !sentPatterns.has(patternId);
@@ -1046,6 +1051,7 @@ const startlogic = async (isFirstRun = false) => {
         const bullRisk       = +(bullEntryPrice - bullSL).toFixed(2);
         const bullTarget     = +(bullEntryPrice + bullRisk).toFixed(2);
         const srBlock        = BCVCManager.buildSRTelegramBlock(bcvc.srAnalysis, "BULLISH");
+        const dowBlock       = buildDowTheoryTelegramBlock(dowAnalysis);
 
         telegramMessage = `
 🟢 <b>BULLISH PATTERN FOUND</b> ${symbol}
@@ -1062,6 +1068,7 @@ const startlogic = async (isFirstRun = false) => {
 🔴 <b>Bearish BCVCs (${pattern.validation.totalBearishBCVCs} found) :</b> ${pattern.lastBearishBCVC.timestamp} ${pattern.validation.bearishCandleColor.toUpperCase()} candle
 🚀 <b>Bullish BCVC (Entry Signal) :</b> ${pattern.bullishBCVC.timestamp} White Candle
 ${srBlock}
+${dowBlock}
 
 ⏰ <b>Detected :</b> ${moment().format("YYYY-MM-DD HH:mm:ss")}`.trim();
 
@@ -1071,6 +1078,7 @@ ${srBlock}
         const bearRisk       = +(bearSL - bearEntryPrice).toFixed(2);
         const bearTarget     = +(bearEntryPrice - bearRisk).toFixed(2);
         const srBlock        = BCVCManager.buildSRTelegramBlock(bcvc.srAnalysis, "BEARISH");
+        const dowBlock       = buildDowTheoryTelegramBlock(dowAnalysis);
 
         telegramMessage = `
 🔴 <b>BEARISH PATTERN FOUND</b> ${symbol}
@@ -1087,6 +1095,7 @@ ${srBlock}
 ⚪ <b>Bullish BCVCs (${pattern.validation.totalBullishBCVCs} found) :</b> ${pattern.lastWhiteBCVC.timestamp}
 🔻 <b>Bearish Candle (Entry Signal) :</b> ${pattern.redCandle.timestamp}
 ${srBlock}
+${dowBlock}
 
 ⏰ <b>Detected :</b> ${moment().format("YYYY-MM-DD HH:mm:ss")}`.trim();
       }
