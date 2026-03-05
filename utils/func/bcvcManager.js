@@ -1,12 +1,12 @@
 const moment = require('moment');
-const fyers  = require('./fyersapi')
+const fyers = require('./fyersapi')
 const bot = require('./telegram')
-const telegramchat ="8559767849"
+const telegramchat = "8559767849"
 
 class BCVCManager {
     constructor() {
         this.fyers = fyers;
-        
+
         this.config = {
             volumePeriod: 20,
             volumeProportion: 1.25,
@@ -16,6 +16,10 @@ class BCVCManager {
         };
 
         this.bcvcCache = new Map();
+
+        // IMPROVEMENT 9: Time-of-day relative volume tracking
+        // Key: 'HH:mm' slot, Value: array of last 10 volumes seen at that time slot
+        this.timeSlotVolumes = new Map();
 
         this.timeframes = {
             '1': { resolution: '1', duration: 1, unit: 'minutes', rollingDays: 30 },
@@ -103,7 +107,44 @@ class BCVCManager {
 
         if (!avgVolume || !avgRange) return null;
 
-        const volumeThreshold = avgVolume * this.config.volumeProportion;
+        // IMPROVEMENT 8: ATR Minimum Filter
+        // Skip stocks where the average candle range is less than 0.3% of the mid-price.
+        // These are too thin for a BCVC signal to be meaningful.
+        const midPrice = (open + close) / 2;
+        const minRangeThreshold = midPrice * 0.003;
+        if (avgRange < minRangeThreshold) {
+            console.log(`⚠️  ATR too small for BCVC (avgRange: ${avgRange.toFixed(2)}, min: ${minRangeThreshold.toFixed(2)}) — skipping`);
+            return {
+                timestamp: moment.unix(timestamp).format('YYYY-MM-DD HH:mm'),
+                timestampUnix: timestamp,
+                open, high, low, close, volume,
+                candleRange, candleBody,
+                isUpBar, isDownBar, isBullish: false, isBearish: false,
+                candleColor: 'none',
+                direction: 'NEUTRAL',
+                avgVolume, avgRange,
+                isBCVC: false,
+                bcvcStatus: 'Skipped — ATR too small',
+                bcvcType: null,
+                skipReason: 'ATR_TOO_SMALL',
+            };
+        }
+
+        // IMPROVEMENT 9: Time-of-Day Relative Volume
+        // Compare candle volume against the same time-slot's historical average
+        // rather than the generic 20-period rolling EMA, which is biased by morning volume.
+        const slotKey = moment.unix(timestamp).format('HH:mm');
+        const slotHistory = this.timeSlotVolumes.get(slotKey) || [];
+        // Record this candle's volume into the slot (keep last 10)
+        slotHistory.push(volume);
+        if (slotHistory.length > 10) slotHistory.shift();
+        this.timeSlotVolumes.set(slotKey, slotHistory);
+        // Use slot average if we have at least 3 data points (exclude current candle)
+        const slotAvgVol = slotHistory.length >= 3
+            ? slotHistory.slice(0, -1).reduce((a, b) => a + b, 0) / (slotHistory.length - 1)
+            : avgVolume; // fallback to rolling EMA
+
+        const volumeThreshold = slotAvgVol * this.config.volumeProportion;
         const rangeThreshold = avgRange * this.config.bigCandleProportion;
 
         const isHighVolume = volume > volumeThreshold;
@@ -144,7 +185,7 @@ class BCVCManager {
             bcvcType = '🔻 BEARISH BCVC (RED - Any Down Candle)';
         }
 
-        const volumeRatio = avgVolume > 0 ? volume / avgVolume : 0;
+        const volumeRatio = slotAvgVol > 0 ? volume / slotAvgVol : 0;
         const rangeRatio = avgRange > 0 ? candleRange / avgRange : 0;
 
         return {
@@ -155,7 +196,7 @@ class BCVCManager {
             isUpBar, isDownBar, isBullish, isBearish,
             candleColor,
             direction: isBullish ? 'BULLISH' : isBearish ? 'BEARISH' : 'NEUTRAL',
-            avgVolume, volumeThreshold,
+            avgVolume: slotAvgVol, volumeThreshold,
             volumeRatio: volumeRatio.toFixed(2),
             isHighVolume,
             volumeQualified: isHighVolume ? '✅' : '❌',
@@ -685,41 +726,41 @@ class BCVCManager {
         return report;
     }
     static buildSRTelegramBlock(srAnalysis, direction = "BULLISH") {
-  if (!srAnalysis || srAnalysis.error) return "";
+        if (!srAnalysis || srAnalysis.error) return "";
 
-  const fmtLevel = (l) => {
-    const scoreStr = l.score !== undefined ? ` · ${l.score}/100` : "";
-    const touchStr = l.touches !== undefined
-      ? ` · ${l.touches} touch${l.touches !== 1 ? "es" : ""}`
-      : "";
-    const flipStr = l.flippedFrom ? ` [flipped]` : "";
-    return `₹${l.price} (${l.distancePct}% away) [${l.strength}${scoreStr}${touchStr}${flipStr}]`;
-  };
+        const fmtLevel = (l) => {
+            const scoreStr = l.score !== undefined ? ` · ${l.score}/100` : "";
+            const touchStr = l.touches !== undefined
+                ? ` · ${l.touches} touch${l.touches !== 1 ? "es" : ""}`
+                : "";
+            const flipStr = l.flippedFrom ? ` [flipped]` : "";
+            return `₹${l.price} (${l.distancePct}% away) [${l.strength}${scoreStr}${touchStr}${flipStr}]`;
+        };
 
-  const lines = ["", "📊 <b>S/R Levels:</b>"];
+        const lines = ["", "📊 <b>S/R Levels:</b>"];
 
-  if (direction === "BULLISH") {
-    const supports = (srAnalysis.support || []).slice(0, 3);
-    const resistances = (srAnalysis.resistance || []).slice(0, 3);
-    supports.forEach((s, i)    => lines.push(`🟢 S${i + 1}: ${fmtLevel(s)}`));
-    resistances.forEach((r, i) => lines.push(`🔴 R${i + 1}: ${fmtLevel(r)}`));
-    if (srAnalysis.accumulation && srAnalysis.accumulation.length > 0) {
-      const a = srAnalysis.accumulation[0];
-      lines.push(`📦 Accum    : ₹${a.low}–₹${a.high} (${a.candleCount} candles)`);
+        if (direction === "BULLISH") {
+            const supports = (srAnalysis.support || []).slice(0, 3);
+            const resistances = (srAnalysis.resistance || []).slice(0, 3);
+            supports.forEach((s, i) => lines.push(`🟢 S${i + 1}: ${fmtLevel(s)}`));
+            resistances.forEach((r, i) => lines.push(`🔴 R${i + 1}: ${fmtLevel(r)}`));
+            if (srAnalysis.accumulation && srAnalysis.accumulation.length > 0) {
+                const a = srAnalysis.accumulation[0];
+                lines.push(`📦 Accum    : ₹${a.low}–₹${a.high} (${a.candleCount} candles)`);
+            }
+        } else {
+            const resistances = (srAnalysis.resistance || []).slice(0, 3);
+            const supports = (srAnalysis.support || []).slice(0, 3);
+            resistances.forEach((r, i) => lines.push(`🔴 R${i + 1}: ${fmtLevel(r)}`));
+            supports.forEach((s, i) => lines.push(`🟢 S${i + 1}: ${fmtLevel(s)}`));
+            if (srAnalysis.distribution && srAnalysis.distribution.length > 0) {
+                const d = srAnalysis.distribution[0];
+                lines.push(`📤 Dist     : ₹${d.low}–₹${d.high} (${d.candleCount} candles)`);
+            }
+        }
+
+        return lines.join("\n");
     }
-  } else {
-    const resistances = (srAnalysis.resistance || []).slice(0, 3);
-    const supports = (srAnalysis.support || []).slice(0, 3);
-    resistances.forEach((r, i) => lines.push(`🔴 R${i + 1}: ${fmtLevel(r)}`));
-    supports.forEach((s, i)    => lines.push(`🟢 S${i + 1}: ${fmtLevel(s)}`));
-    if (srAnalysis.distribution && srAnalysis.distribution.length > 0) {
-      const d = srAnalysis.distribution[0];
-      lines.push(`📤 Dist     : ₹${d.low}–₹${d.high} (${d.candleCount} candles)`);
-    }
-  }
-
-  return lines.join("\n");
-}
 }
 
 module.exports = BCVCManager;

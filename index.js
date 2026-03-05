@@ -8,7 +8,7 @@ const fs = require("fs");
 const moment = require("moment");
 const { writePatternToExcel } = require("./src/excelReports");
 // const TelegramBot = require('node-telegram-bot-api');
-const {authenticate, getStoredTokens}= require("./src/generate")
+const { authenticate, getStoredTokens } = require("./src/generate")
 const EMAManager = require("./utils/func/emaManager");
 const BCVCManager = require("./utils/func/bcvcManager");
 const SRAnalyzer = require("./utils/func/srAnalyzer");
@@ -265,6 +265,62 @@ ${strategyLine}
 
   return bias;
 };
+
+// ─────────────────────────────────────────────────────────────────
+// IMPROVEMENT 5: Daily EMA20 Bias per Symbol
+// Fetch daily candles for a stock and check price vs 20-period EMA.
+// Only take bullish 15m signals when daily trend is also LONG,
+// and bearish 15m signals when daily trend is SHORT.
+// ─────────────────────────────────────────────────────────────────
+const dailyBiasCache = new Map(); // symbol → { bias, time }
+
+const getDailyBias = async (symbol) => {
+  const cached = dailyBiasCache.get(symbol);
+  if (cached && Date.now() - cached.time < 60 * 60 * 1000) {
+    // cache valid for 1 hour (daily candles don't change intraday)
+    return cached.bias;
+  }
+
+  try {
+    const validTo = moment();
+    const validFrom = moment().subtract(80, "days"); // enough for EMA20
+
+    const response = await fyers.getHistory({
+      symbol,
+      resolution: "D",
+      date_format: "1",
+      range_from: validFrom.format("YYYY-MM-DD"),
+      range_to: validTo.format("YYYY-MM-DD"),
+      cont_flag: "1",
+    });
+
+    if (!response || !response.candles || response.candles.length < 21) {
+      return "UNKNOWN";
+    }
+
+    const closes = response.candles.map((c) => parseFloat(c[4]));
+    const period = 20;
+    const multiplier = 2 / (period + 1);
+    let ema20 = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
+    for (let i = period; i < closes.length; i++) {
+      ema20 = (closes[i] - ema20) * multiplier + ema20;
+    }
+
+    const lastClose = closes[closes.length - 1];
+    let bias;
+    if (lastClose > ema20 * 1.005) bias = "LONG";
+    else if (lastClose < ema20 * 0.995) bias = "SHORT";
+    else bias = "CHOPPY";
+
+    dailyBiasCache.set(symbol, { bias, time: Date.now() });
+    console.log(`📅 Daily bias for ${symbol}: ${bias} | Close ₹${lastClose.toFixed(0)} vs EMA20 ₹${ema20.toFixed(0)}`);
+    return bias;
+  } catch (err) {
+    console.error(`⚠️  getDailyBias failed for ${symbol}:`, err.message);
+    return "UNKNOWN";
+  }
+};
+
 const getSRBeforeSignal = (rawCandles, signalCandleTs, signalCandleClose) => {
   if (!rawCandles || rawCandles.length === 0) return null;
 
@@ -362,6 +418,7 @@ const analyzePattern = (emadata, bcvc) => {
   if (!emadata.crossover || emadata.crossover.length === 0) {
     return { found: false, reason: "No crossovers found" };
   }
+
   const isToday = (timestampUnix) => {
     const candleDate = moment.unix(timestampUnix).format("YYYY-MM-DD");
     const today = moment().format("YYYY-MM-DD");
@@ -369,6 +426,14 @@ const analyzePattern = (emadata, bcvc) => {
   };
   const latestCrossover = emadata.crossover[0];
   const crossoverTimestamp = latestCrossover.timestampUnix;
+
+  // IMPROVEMENT 2: Gap/Open Filter — reject crossovers formed before 09:30
+  if (isCrossoverInGapZone(crossoverTimestamp)) {
+    return {
+      found: false,
+      reason: `Crossover at ${moment.unix(crossoverTimestamp).format("HH:mm")} is in gap-open zone (before 09:30)`,
+    };
+  }
 
   const formationsAfterCrossover = bcvc.formations
     .filter((formation) => formation.timestampUnix > crossoverTimestamp)
@@ -429,6 +494,22 @@ const analyzePattern = (emadata, bcvc) => {
     );
     const candlesBetween =
       elapsedMinutes <= 150 ? 10 : Math.ceil(elapsedMinutes / 15);
+
+    // IMPROVEMENT 3: Hard cap — pattern must complete within 10 candles (2.5h)
+    if (candlesBetween > 10) {
+      return {
+        found: false,
+        reason: `Pattern too old: ${candlesBetween} candles since crossover (max 10)`,
+      };
+    }
+
+    // IMPROVEMENT 1: Time-window filter — signal candle must be in trading window
+    if (!isInTradingWindow(confirmingBullish.timestampUnix)) {
+      return {
+        found: false,
+        reason: `Bullish signal candle at ${moment.unix(confirmingBullish.timestampUnix).format("HH:mm")} is outside high-probability window (09:30-11:30 or 14:00-15:15)`,
+      };
+    }
 
     if (!isToday(confirmingBullish.timestampUnix)) {
       return {
@@ -525,6 +606,23 @@ const analyzePattern = (emadata, bcvc) => {
     );
     const candlesBetween =
       elapsedMinutes <= 150 ? 10 : Math.ceil(elapsedMinutes / 15);
+
+    // IMPROVEMENT 3: Hard cap — pattern must complete within 10 candles (2.5h)
+    if (candlesBetween > 10) {
+      return {
+        found: false,
+        reason: `Pattern too old: ${candlesBetween} candles since crossover (max 10)`,
+      };
+    }
+
+    // IMPROVEMENT 1: Time-window filter — signal candle must be in trading window
+    if (!isInTradingWindow(confirmingBearish.timestampUnix)) {
+      return {
+        found: false,
+        reason: `Bearish signal candle at ${moment.unix(confirmingBearish.timestampUnix).format("HH:mm")} is outside high-probability window (09:30-11:30 or 14:00-15:15)`,
+      };
+    }
+
     if (!isToday(confirmingBearish.timestampUnix)) {
       return {
         found: false,
@@ -570,6 +668,29 @@ const analyzePattern = (emadata, bcvc) => {
 };
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ─────────────────────────────────────────────────────────────────
+// IMPROVEMENT 1: Time-Window Filter
+// Only accept signal candles in high-probability windows:
+//   Morning  : 09:30 – 11:30 (mins 570–690)
+//   Afternoon: 14:00 – 15:15 (mins 840–915)
+// ─────────────────────────────────────────────────────────────────
+const isInTradingWindow = (timestampUnix) => {
+  const m = moment.unix(timestampUnix);
+  const mins = m.hours() * 60 + m.minutes();
+  return (mins >= 570 && mins <= 690) || (mins >= 840 && mins <= 915);
+};
+
+// ─────────────────────────────────────────────────────────────────
+// IMPROVEMENT 2: Gap/Open Filter
+// Reject crossovers that formed during the noisy gap-open period
+// (before 09:30 AM — first 15-min candle open).
+// ─────────────────────────────────────────────────────────────────
+const isCrossoverInGapZone = (timestampUnix) => {
+  const m = moment.unix(timestampUnix);
+  const mins = m.hours() * 60 + m.minutes();
+  return mins < 570; // before 09:30
+};
 
 const getTradingViewLink = (symbol) => {
   // Strip NSE: prefix and -EQ suffix → e.g. "NSE:BAJAJFINSV-EQ" → "BAJAJFINSV"
@@ -825,20 +946,50 @@ const startlogic = async (isFirstRun = false) => {
               ? pattern.bullishBCVC
               : pattern.redCandle;
 
-          // const srAnalysis = getSRBeforeSignal(
-          //   emadata.rawCandles,
-          //   signalCandle.timestampUnix,
-          //   signalCandle.close,
-          // );
+          // IMPROVEMENT 5: Daily EMA20 alignment — skip counter-trend setups
+          const dailyBias = await getDailyBias(symbol);
+          if (
+            (pattern.crossoverType === "BULLISH_CROSSOVER" && dailyBias === "SHORT") ||
+            (pattern.crossoverType === "BEARISH_CROSSOVER" && dailyBias === "LONG")
+          ) {
+            console.log(
+              `⏭️  Skipping ${symbol}: Daily bias (${dailyBias}) is counter to 15m signal (${pattern.crossoverType})`,
+            );
+            continue;
+          }
+
           const srAnalysis = getSRBeforeSignal(
             emadata.rawCandles,
-            pattern.crossover.timestampUnix, // ← cut off AT crossover, not signal candle
-            // pattern.crossover.price,
-            signalCandle.close,  
+            pattern.crossover.timestampUnix,
+            signalCandle.close,
           );
 
           // Attach to bcvc so buildSRTelegramBlock (already called below) gets real data
           bcvc.srAnalysis = srAnalysis;
+
+          // IMPROVEMENT 7: S/R-Based SL Optimization
+          // Tighten SL to nearest validated S/R level if it's within 0.5% of signal candle's low/high
+          let optimizedSL;
+          if (pattern.crossoverType === "BULLISH_CROSSOVER") {
+            const rawSL = signalCandle.low;
+            const ns = srAnalysis && !srAnalysis.error && srAnalysis.support?.[0];
+            if (ns && ns.price < rawSL && Math.abs(ns.price - rawSL) / rawSL <= 0.005) {
+              optimizedSL = ns.price;
+              console.log(`📍 SL tightened from ₹${rawSL} to ₹${optimizedSL.toFixed(2)} (S/R support level)`);
+            } else {
+              optimizedSL = rawSL;
+            }
+          } else {
+            const rawSL = signalCandle.high;
+            const nr = srAnalysis && !srAnalysis.error && srAnalysis.resistance?.[0];
+            if (nr && nr.price > rawSL && Math.abs(nr.price - rawSL) / rawSL <= 0.005) {
+              optimizedSL = nr.price;
+              console.log(`📍 SL tightened from ₹${rawSL} to ₹${optimizedSL.toFixed(2)} (S/R resistance level)`);
+            } else {
+              optimizedSL = rawSL;
+            }
+          }
+
           const dowAnalysis = analyzeDowTheory(
             emadata.rawCandles,
             pattern.crossoverType,
@@ -867,7 +1018,7 @@ const startlogic = async (isFirstRun = false) => {
             console.error("⚠️ Wave analysis failed:", e.message);
           }
 
-          // Entry quality scoring
+          // Entry quality scoring — use optimizedSL for accurate R/R
           let entryScore = null;
           let entryMapBlock = "";
           try {
@@ -876,24 +1027,31 @@ const startlogic = async (isFirstRun = false) => {
                 ? pattern.bullishBCVC
                 : pattern.redCandle;
             const ep = sc.close;
-            const sl =
-              pattern.crossoverType === "BULLISH_CROSSOVER" ? sc.low : sc.high;
             entryScore = scoreEntry({
               pattern,
               srAnalysis,
               dowAnalysis,
               wyckoffAnalysis,
-               waveAnalysis,  
+              waveAnalysis,
               niftyBias,
               signalCandle: sc,
               entryPrice: ep,
-              stopLoss: sl,
+              stopLoss: optimizedSL,
               direction: pattern.crossoverType,
             });
             entryMapBlock = buildEntryMapTelegramBlock(entryScore);
           } catch (e) {
             console.error("⚠️ Entry scoring failed:", e.message);
           }
+
+          // IMPROVEMENT 4: Score Gate — only proceed with Grade A or A+ (score >= 65)
+          if (entryScore && entryScore.totalScore < 65) {
+            console.log(
+              `⏭️  Skipping ${symbol}: Entry score ${entryScore.totalScore}/100 (${entryScore.grade}) — below minimum threshold (65). ${entryScore.recommendation}`,
+            );
+            continue;
+          }
+
           patternsFound++;
 
           const patternId = generatePatternId(symbol, pattern);
@@ -925,7 +1083,7 @@ const startlogic = async (isFirstRun = false) => {
           if (pattern.crossoverType === "BULLISH_CROSSOVER") {
             const tvLink = getTradingViewLink(symbol);
             const bullEntryPrice = pattern.bullishBCVC.close;
-            const bullSL = pattern.bullishBCVC.low;
+            const bullSL = optimizedSL; // IMPROVEMENT 6+7: uses S/R-optimized SL
             const { risk, t1, t2 } = calcTieredExits(
               bullEntryPrice,
               bullSL,
@@ -938,6 +1096,8 @@ const startlogic = async (isFirstRun = false) => {
                 : niftyBias.bias === "SHORT"
                   ? `${niftyBias.emoji} ${niftyBias.bias} — Counter Trend ⚠️`
                   : `${niftyBias.emoji} ${niftyBias.bias} — Choppy ⚠️`;
+
+            const dailyBiasLabel = dailyBias === "LONG" ? "📅🟢 Daily Trend: BULLISH — Aligned" : `📅 Daily Trend: ${dailyBias}`;
 
             const srBlock = BCVCManager.buildSRTelegramBlock(
               bcvc.srAnalysis,
@@ -955,10 +1115,11 @@ const startlogic = async (isFirstRun = false) => {
 
 🎯 <b>Tiered Exits:</b>
    T1 → ₹${t1}   Book 40% → move SL to breakeven
-   T2 → ₹${t2}   Book 40% → trail remainder
-   T3 → Trail 20% with SL below each higher low
+   T2 → ₹${t2}   Book 40% → trail the rest
+   T3 → Trail remaining 20%: SL below each new EMA9-Low close 🔍
 ${entryMapBlock ? `\n${entryMapBlock}` : ""}
 🧭 Nifty Bias  : ${alignLabel}
+${dailyBiasLabel}
 
 🔄 <b>Crossover  :</b> ${pattern.crossover.timestamp} (${moment.unix(pattern.crossover.timestampUnix).fromNow()})
 🔴 <b>Bearish BCVCs :</b> ${pattern.validation.totalBearishBCVCs} found | Last: ${pattern.lastBearishBCVC.timestamp} [${pattern.validation.bearishCandleColor.toUpperCase()}]
@@ -966,16 +1127,16 @@ ${entryMapBlock ? `\n${entryMapBlock}` : ""}
 ${srBlock}
 ${dowBlock}
 ${wyckoffBlock ? `\n${wyckoffBlock}` : ""}
-${waveBlock    ? `\n${waveBlock}`    : ""}
+${waveBlock ? `\n${waveBlock}` : ""}
 ⏰ <b>Detected :</b> ${moment().format("YYYY-MM-DD HH:mm:ss")}
 `.trim();
           }
 
-          // ── BEARISH message  (replace your existing bearish telegramMessage string) ──
+          // ── BEARISH message ──
           else if (pattern.crossoverType === "BEARISH_CROSSOVER") {
             const tvLink = getTradingViewLink(symbol);
             const bearEntryPrice = pattern.redCandle.close;
-            const bearSL = pattern.redCandle.high;
+            const bearSL = optimizedSL; // IMPROVEMENT 6+7: uses S/R-optimized SL
             const { risk, t1, t2 } = calcTieredExits(
               bearEntryPrice,
               bearSL,
@@ -988,6 +1149,8 @@ ${waveBlock    ? `\n${waveBlock}`    : ""}
                 : niftyBias.bias === "LONG"
                   ? `${niftyBias.emoji} ${niftyBias.bias} — Counter Trend ⚠️`
                   : `${niftyBias.emoji} ${niftyBias.bias} — Choppy ⚠️`;
+
+            const dailyBiasLabel = dailyBias === "SHORT" ? "📅🔴 Daily Trend: BEARISH — Aligned" : `📅 Daily Trend: ${dailyBias}`;
 
             const srBlock = BCVCManager.buildSRTelegramBlock(
               bcvc.srAnalysis,
@@ -1005,10 +1168,11 @@ ${waveBlock    ? `\n${waveBlock}`    : ""}
 
 🎯 <b>Tiered Exits:</b>
    T1 → ₹${t1}   Book 40% → move SL to breakeven
-   T2 → ₹${t2}   Book 40% → trail remainder
-   T3 → Trail 20% with SL above each lower high
+   T2 → ₹${t2}   Book 40% → trail the rest
+   T3 → Trail remaining 20%: SL above each new EMA9-High close 🔍
 ${entryMapBlock ? `\n${entryMapBlock}` : ""}
 🧭 Nifty Bias  : ${alignLabel}
+${dailyBiasLabel}
 
 🔄 <b>Crossover  :</b> ${pattern.crossover.timestamp} (${moment.unix(pattern.crossover.timestampUnix).fromNow()})
 ⚪ <b>Bullish BCVCs :</b> ${pattern.validation.totalBullishBCVCs} found | Last: ${pattern.lastWhiteBCVC.timestamp}
@@ -1016,7 +1180,7 @@ ${entryMapBlock ? `\n${entryMapBlock}` : ""}
 ${srBlock}
 ${dowBlock}
 ${wyckoffBlock ? `\n${wyckoffBlock}` : ""}
-${waveBlock    ? `\n${waveBlock}`    : ""}
+${waveBlock ? `\n${waveBlock}` : ""}
 ⏰ <b>Detected :</b> ${moment().format("YYYY-MM-DD HH:mm:ss")}
 `.trim();
           }
