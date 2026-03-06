@@ -9,6 +9,7 @@ const moment = require("moment");
 const { writePatternToExcel } = require("./src/excelReports");
 // const TelegramBot = require('node-telegram-bot-api');
 const { authenticate, getStoredTokens } = require("./src/generate")
+const { authenticate, getStoredTokens } = require("./src/generate")
 const EMAManager = require("./utils/func/emaManager");
 const BCVCManager = require("./utils/func/bcvcManager");
 const SRAnalyzer = require("./utils/func/srAnalyzer");
@@ -1033,6 +1034,7 @@ const startlogic = async (isFirstRun = false) => {
               dowAnalysis,
               wyckoffAnalysis,
               waveAnalysis,
+              waveAnalysis,
               niftyBias,
               signalCandle: sc,
               entryPrice: ep,
@@ -1128,6 +1130,7 @@ ${srBlock}
 ${dowBlock}
 ${wyckoffBlock ? `\n${wyckoffBlock}` : ""}
 ${waveBlock ? `\n${waveBlock}` : ""}
+${waveBlock ? `\n${waveBlock}` : ""}
 ⏰ <b>Detected :</b> ${moment().format("YYYY-MM-DD HH:mm:ss")}
 `.trim();
           }
@@ -1180,6 +1183,7 @@ ${dailyBiasLabel}
 ${srBlock}
 ${dowBlock}
 ${wyckoffBlock ? `\n${wyckoffBlock}` : ""}
+${waveBlock ? `\n${waveBlock}` : ""}
 ${waveBlock ? `\n${waveBlock}` : ""}
 ⏰ <b>Detected :</b> ${moment().format("YYYY-MM-DD HH:mm:ss")}
 `.trim();
@@ -1473,10 +1477,10 @@ const stopPatternScheduler = () => {
 
 // Start the scheduler
 // startPatternScheduler();
-runauth();
+// runauth();
 // startlogic(true)
 // authenticate()
-// runBacktest();
+runBacktest();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3100;
 
 app.listen(PORT, async () => {
