@@ -1480,7 +1480,7 @@ const stopPatternScheduler = () => {
 // runauth();
 // startlogic(true)
 // authenticate()
-runBacktest();
+// runBacktest();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3100;
 
 app.listen(PORT, async () => {
