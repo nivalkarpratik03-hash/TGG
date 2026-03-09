@@ -1,94 +1,53 @@
 const readline = require('readline');
 const fs = require('fs');
-const https = require('https');
-const crypto = require('crypto');
+require("dotenv").config();
+const { fyersModel } = require('fyers-api-v3');
 
-// Replace these values with your actual API credentials
-const client_id = "";
-const secret_key = "";
-const redirect_uri = "https://trade.fyers.in/api-login/redirect-uri/index.html";
+const client_id = "KETLMLSN3I-100";
+const secret_key = process.env.ST_KEY;
+const redirect_uri = "https://trade.fyers.in/api-login/redirect-uri/index.html"
 const response_type = "code";
 const state = "sample_state";
 const grant_type = "authorization_code";
 
-function generateAuthUrl() {
-  const params = new URLSearchParams({
+const fyers = new fyersModel({
+  path: "",
+  enableLogging: false
+});
+
+function prompt(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => rl.question(question, (ans) => { rl.close(); resolve(ans); }));
+}
+
+async function authenticate() {
+  // Step 1: Generate the auth URL (equivalent to session.generate_authcode())
+  const authUrl = fyers.generateAuthCode({
     client_id,
     redirect_uri,
     response_type,
     state,
   });
-  return `https://api-t2.fyers.in/api/v3/generate-authcode?${params.toString()}`;
-}
 
-function generateToken(auth_code) {
-  return new Promise((resolve, reject) => {
-    const appIdHash = crypto
-      .createHash('sha256')
-      .update(`${client_id}:${secret_key}`)
-      .digest('hex');
-
-    const body = JSON.stringify({
-      grant_type,
-      appIdHash,
-      code: auth_code,
-    });
-
-    const options = {
-      hostname: 'api-t2.fyers.in',
-      path: '/api/v3/validate-authcode',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body),
-      },
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => (data += chunk));
-      res.on('end', () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch (e) {
-          reject(e);
-        }
-      });
-    });
-
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
-}
-
-function prompt(question) {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer);
-    });
-  });
-}
-
-async function authenticate() {
-  const authUrl = generateAuthUrl();
   console.log("Auth URL:", authUrl);
-  console.log("Open the above URL in your browser to get the auth code.");
+  console.log("Open the above URL in your browser and copy the auth_code from the redirect.");
 
+  // Step 2: Get auth code from user
   const auth_code = await prompt("Enter Auth Code: ");
 
-  const response = await generateToken(auth_code.trim());
+  // Step 3: Exchange auth code for tokens (equivalent to session.set_token() + session.generate_token())
+  const response = await fyers.generate_access_token({
+    client_id,
+    secret_key,
+    auth_code: auth_code.trim(),
+    grant_type,
+  });
 
-  const { access_token, refresh_token } = response;
-
-  if (!access_token) {
+  if (response.s !== 'ok') {
     throw new Error(`Failed to get access token: ${JSON.stringify(response)}`);
   }
+
+  const { access_token, refresh_token } = response;
 
   console.log("Access Token:", access_token);
   console.log("Refresh Token:", refresh_token);
@@ -98,6 +57,8 @@ async function authenticate() {
   fs.writeFileSync("fyers_refresh_token.txt", refresh_token);
 
   console.log("Tokens saved to files.");
+
+  fyers.setAccessToken(access_token);
 
   return { client_id, access_token, refresh_token };
 }
@@ -110,9 +71,4 @@ function getStoredTokens() {
   };
 }
 
-module.exports = {
-  authenticate,
-  generateAuthUrl,
-  generateToken,
-  getStoredTokens,
-};
+module.exports = { authenticate, getStoredTokens };

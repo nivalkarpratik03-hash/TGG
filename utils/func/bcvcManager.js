@@ -1,12 +1,12 @@
 const moment = require('moment');
-const fyers  = require('./fyersapi')
+const fyers = require('./fyersapi')
 const bot = require('./telegram')
-const telegramchat ="8559767849"
+const telegramchat = "8559767849"
 
 class BCVCManager {
     constructor() {
         this.fyers = fyers;
-        
+
         this.config = {
             volumePeriod: 20,
             volumeProportion: 1.25,
@@ -121,6 +121,13 @@ class BCVCManager {
             candleColor = 'white';
             isBullish = true;
             bcvcType = '🚀 BULLISH BCVC (WHITE)';
+        }
+        else if (isUpBar && isHighVolume && !isBigCandle) {
+            // WHITE: high volume, small range, up bar (mirrors maroon logic)
+            isBCVC = true;
+            candleColor = 'white';
+            isBullish = true;
+            bcvcType = '🚀 BULLISH BCVC (WHITE - High Vol, Small Range)';
         }
         else if (isDownBar && isHighVolume && isBigCandle) {
             // ORANGE: high volume, big range, down bar
