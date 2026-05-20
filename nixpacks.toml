@@ -1,0 +1,8 @@
+[phases.build]
+cmds = [
+  "cd frontend && npm ci && REACT_APP_BACKEND_URL= npm run build",
+  "cd backend && npm ci"
+]
+
+[start]
+cmd = "cd backend && node src/server.js"

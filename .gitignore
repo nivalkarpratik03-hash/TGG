@@ -1,2 +1,22 @@
 README.md
 tgg-clean.zip
+node_modules/
+.env
+.env.local
+.env.production
+*.log
+
+# Fyers tokens — NEVER commit these
+fyers_access_token.txt
+fyers_refresh_token.txt
+.fyers_token
+backend/.fyers_token
+backend/fyers_access_token.txt
+backend/fyers_refresh_token.txt
+
+# React build (Railway builds this fresh)
+frontend/build/
+
+# OS
+.DS_Store
+Thumbs.db

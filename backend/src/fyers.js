@@ -29,12 +29,13 @@ function saveToken(token) {
 
 function getFyersClient() {
   const token = loadToken();
-  if (!token) throw new Error("No access token. Run: node src/generate.js");
+  if (!token) throw new Error("No access token. Visit /auth to login.");
   const appId = process.env.APP_ID;
   if (!appId) throw new Error("APP_ID missing in .env");
+  const redirectUri = process.env.FYERS_REDIRECT_URI || "https://trade.fyers.in/api-login/redirect-uri/index.html";
   const fyers = new fyersModel({ path: "", enableLogging: false });
   fyers.setAppId(appId);
-  fyers.setRedirectUrl("https://trade.fyers.in/api-login/redirect-uri/index.html");
+  fyers.setRedirectUrl(redirectUri);
   fyers.setAccessToken(token);
   return fyers;
 }
@@ -42,10 +43,11 @@ function getFyersClient() {
 function getAuthURL() {
   const appId = process.env.APP_ID;
   if (!appId) throw new Error("APP_ID not set in .env");
+  const redirectUri = process.env.FYERS_REDIRECT_URI || "https://trade.fyers.in/api-login/redirect-uri/index.html";
   const fyers = new fyersModel({ path: "", enableLogging: false });
   return fyers.generateAuthCode({
     client_id: appId,
-    redirect_uri: "https://trade.fyers.in/api-login/redirect-uri/index.html",
+    redirect_uri: redirectUri,
     response_type: "code",
     state: "sample_state",
   });

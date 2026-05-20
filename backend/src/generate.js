@@ -8,7 +8,7 @@ const { fyersModel } = require("fyers-api-v3");
 
 const client_id = process.env.APP_ID;
 const secret_key = process.env.ST_KEY;
-const redirect_uri = "https://trade.fyers.in/api-login/redirect-uri/index.html";
+const redirect_uri = "https://YOUR-APP.railway.app/api/auth/callback";
 const response_type = "code";
 const state = "sample_state";
 const grant_type = "authorization_code";
@@ -92,10 +92,10 @@ async function authenticate() {
 function getStoredTokens() {
   const rootDir = path.resolve(__dirname, "..");
   const refreshTokenPath = path.join(rootDir, "fyers_refresh_token.txt");
-  const accessTokenPath  = path.join(rootDir, "fyers_access_token.txt");
+  const accessTokenPath = path.join(rootDir, "fyers_access_token.txt");
   return {
     refresh_token: fs.existsSync(refreshTokenPath) ? fs.readFileSync(refreshTokenPath, "utf8").trim() : null,
-    access_token:  fs.existsSync(accessTokenPath)  ? fs.readFileSync(accessTokenPath,  "utf8").trim() : null,
+    access_token: fs.existsSync(accessTokenPath) ? fs.readFileSync(accessTokenPath, "utf8").trim() : null,
   };
 }
 

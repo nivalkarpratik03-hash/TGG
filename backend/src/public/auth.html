@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>TGG — Daily Auth</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+      background: #0d0d0d;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      color: #e0e0e0;
+    }
+    .card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+      padding: 40px 48px;
+      width: 100%;
+      max-width: 420px;
+      text-align: center;
+    }
+    .logo { font-size: 28px; font-weight: 700; color: #00e676; margin-bottom: 6px; }
+    .subtitle { font-size: 13px; color: #666; margin-bottom: 32px; }
+    .status-row {
+      display: flex; align-items: center; justify-content: center;
+      gap: 10px; margin-bottom: 28px;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 14px; font-weight: 500;
+    }
+    .status-row.ok    { background: #0a1f0a; color: #00e676; border: 1px solid #1a3a1a; }
+    .status-row.bad   { background: #1f0a0a; color: #ff5252; border: 1px solid #3a1a1a; }
+    .status-row.wait  { background: #1a1a0a; color: #ffd740; border: 1px solid #3a3a1a; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .dot.green  { background: #00e676; box-shadow: 0 0 6px #00e676; }
+    .dot.red    { background: #ff5252; box-shadow: 0 0 6px #ff5252; }
+    .dot.yellow { background: #ffd740; box-shadow: 0 0 6px #ffd740; animation: pulse 1.2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .btn {
+      display: block; width: 100%;
+      padding: 14px;
+      border: none; border-radius: 8px;
+      font-size: 15px; font-weight: 600;
+      cursor: pointer; text-decoration: none;
+      transition: opacity 0.15s;
+      margin-bottom: 12px;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn-primary { background: #00e676; color: #0d0d0d; }
+    .btn-secondary { background: #2a2a2a; color: #aaa; font-size: 13px; }
+    .info {
+      font-size: 12px; color: #555;
+      margin-top: 24px; line-height: 1.7;
+    }
+    .info b { color: #888; }
+    .token-preview {
+      background: #111; border: 1px solid #2a2a2a; border-radius: 6px;
+      padding: 10px 14px; font-family: monospace; font-size: 11px;
+      color: #00e676; margin-top: 16px; word-break: break-all;
+      text-align: left; display: none;
+    }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">TG LEVELS</div>
+  <div class="subtitle">Daily Fyers Authentication</div>
+
+  <div id="status" class="status-row wait">
+    <div class="dot yellow"></div>
+    <span>Checking token...</span>
+  </div>
+
+  <a id="btn-login" class="btn btn-primary" href="#" style="display:none">
+    🔐 Login with Fyers (enter PIN only)
+  </a>
+
+  <button id="btn-refresh" class="btn btn-secondary" style="display:none" onclick="checkStatus()">
+    ↻ Re-check status
+  </button>
+
+  <div id="token-preview" class="token-preview"></div>
+
+  <div class="info">
+    <b>How it works:</b><br>
+    Click the button above → Fyers login page opens.<br>
+    Since you're already logged in, only your <b>PIN</b> is needed.<br>
+    After PIN entry, the token is saved automatically.<br>
+    <b>Valid until midnight IST.</b>
+  </div>
+</div>
+
+<script>
+  async function checkStatus() {
+    const statusEl = document.getElementById('status');
+    const btnLogin = document.getElementById('btn-login');
+    const btnRefresh = document.getElementById('btn-refresh');
+    const preview = document.getElementById('token-preview');
+
+    statusEl.className = 'status-row wait';
+    statusEl.innerHTML = '<div class="dot yellow"></div><span>Checking token...</span>';
+    btnLogin.style.display = 'none';
+    btnRefresh.style.display = 'none';
+
+    try {
+      const res = await fetch('/api/auth/status');
+      const data = await res.json();
+
+      if (data.authenticated) {
+        statusEl.className = 'status-row ok';
+        statusEl.innerHTML = '<div class="dot green"></div><span>Token valid ✓ — App is live</span>';
+        btnRefresh.style.display = 'block';
+        // Show partial token for confirmation
+        const tokenRes = await fetch('/api/auth/token-preview');
+        if (tokenRes.ok) {
+          const t = await tokenRes.json();
+          if (t.preview) {
+            preview.textContent = 'Token: ' + t.preview;
+            preview.style.display = 'block';
+          }
+        }
+      } else {
+        statusEl.className = 'status-row bad';
+        statusEl.innerHTML = '<div class="dot red"></div><span>No valid token — login required</span>';
+        if (data.authUrl) {
+          btnLogin.href = data.authUrl;
+          btnLogin.style.display = 'block';
+        }
+        btnRefresh.style.display = 'block';
+      }
+    } catch (e) {
+      statusEl.className = 'status-row bad';
+      statusEl.innerHTML = '<div class="dot red"></div><span>Cannot reach backend</span>';
+      btnRefresh.style.display = 'block';
+    }
+  }
+
+  checkStatus();
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "tgg-levels",
+  "version": "1.0.0",
+  "description": "TG Levels Trading Dashboard",
+  "scripts": {
+    "build": "cd frontend && npm ci && npm run build && cd ../backend && npm ci",
+    "start": "cd backend && node src/server.js",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm start"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

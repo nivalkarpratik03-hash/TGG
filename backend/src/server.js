@@ -11,6 +11,7 @@ const { getAuthURL, generateToken, fetchCandles, validateToken, loadToken } = re
 const { CandleBuilder, deriveTimeframe } = require("./candleBuilder");
 const { TickStream, isMarketOpen, isLiveMarket, isTradingDay } = require("./tickStream");
 const symbolsRouter = require("./symbolsRouter");
+const authRouter = require("./authRouter");
 
 const app = express();
 const server = http.createServer(app);
@@ -291,21 +292,9 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", time: new Date().toISOString(), tickStreamActive: tickStream.isConnected(), liveMarket: isLiveMarket(), tradingDay: isTradingDay(), tickSymbols: getActiveTickSymbols() });
 });
 
-app.get("/api/auth/status", async (req, res) => {
-  try { const valid = await validateToken(); res.json({ authenticated: valid, authUrl: valid ? null : getAuthURL() }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get("/api/auth/url", (req, res) => {
-  try { res.json({ url: getAuthURL() }); } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.post("/api/auth/token", async (req, res) => {
-  const { code } = req.body;
-  if (!code) return res.status(400).json({ error: "auth_code required" });
-  try { await generateToken(code); await maybeStartTickStream(); res.json({ success: true, message: "Token saved successfully" }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
-});
+// Auth: daily login page (/auth) + OAuth callback + status API
+// After callback saves a new token, restart tick stream if market is live
+app.use("/", authRouter);
 
 app.get("/api/chart", async (req, res) => {
   const symbol = req.query.symbol || SYMBOL;
