@@ -536,7 +536,7 @@ app.get("*", (req, res, next) => {
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-const PORT = parseInt(process.env.PORT || "9004");
+const PORT = parseInt(process.env.PORT || "9011");
 server.listen(PORT, async () => {
   console.log(`\n✅ TGG Backend running on http://localhost:${PORT}`);
   console.log(`   Health  : http://localhost:${PORT}/health`);

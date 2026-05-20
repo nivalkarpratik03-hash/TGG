@@ -9,4 +9,4 @@
  */
 export const BACKEND =
   process.env.REACT_APP_BACKEND_URL ||
-  `${window.location.protocol}//${window.location.hostname}:9004`;
+  `${window.location.protocol}//${window.location.hostname}:9011`;

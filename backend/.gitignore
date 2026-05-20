@@ -5,3 +5,7 @@ fyers_access_token.txt
 fyers_refresh_token.txt
 *.log
 
+
+build/
+dist/
+coverage/
