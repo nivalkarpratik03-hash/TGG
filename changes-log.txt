@@ -314,3 +314,158 @@ Format per entry: DATE | FILES | bug → fix
 
   STYLE (OptionChainPanel.css):
     — Added .ocp-spot-stale for the greyed "(last close)" annotation.
+
+2026-06-26 | server.js, useSocket.js, optionsChain.js, ChartsPage.js,
+             ChartsPage.css
+  • Feature: Auto-ATM strike switching for option charts. Opening a strike
+    (e.g. SENSEX 77000 CE) never updated as spot moved — chart stayed
+    pinned to that one contract forever. Added opt-in auto-switching with
+    hysteresis so normal price chop near a strike boundary doesn't cause
+    rapid re-switching.
+
+  BACKEND (server.js):
+    — Added socketUnderlyings map (socket.id → underlying symbol) as a
+      side-channel, separate from socketSymbols/the main chart subscription.
+    — Added deriveUnderlyingSymbol(optionSymbol) — parses an option contract
+      and returns its index/equity underlying (e.g. SENSEX25JUL77000CE →
+      BSE:SENSEX-INDEX). MCX options return null (not supported).
+    — getActiveTickSymbols() now also includes socketUnderlyings values, so
+      Fyers WebSocket subscribes to the underlying alongside the option.
+    — New socket.on("set_underlying", optionSymbol) — registers/clears the
+      underlying LTP feed for that socket; re-validated on disconnect.
+    — tickStream "tick" handler now also emits "underlying_tick"
+      {symbol, ltp} to any socket whose registered underlying matches —
+      pure LTP passthrough, no candle building, no DB writes.
+
+  FRONTEND (useSocket.js):
+    — Added underlyingTick state + setUnderlying(optionSymbol|null) method.
+    — set_underlying re-sent on socket reconnect (socketUnderlyings is
+      keyed by socket.id, which changes on reconnect).
+
+  FRONTEND (optionsChain.js):
+    — Added isOptionSymbol() / parseOptionSymbol() — recognize and decompose
+      a contract symbol into {exch, root, expiryCode, strike, kind}.
+    — Added getStrikeStep(spot, parsedRoot) — resolves the real per-
+      underlying strike step (e.g. SENSEX=100), since getOptionRoot() alone
+      always reports a generic 50 for indices.
+    — Added nearestStrikeWithHysteresis(spot, currentStrike, step,
+      bufferRatio) — dead-zone logic: only suggests a new strike once spot
+      moves >(step/2 + buffer) past the current strike's centre. Verified
+      against the 77096↔77105 chop case — no switch; a sustained move past
+      the dead zone switches correctly.
+    — Added NSE_INDEX_TICKERS — inverse of NSE_INDEX_ROOTS, used to rebuild
+      a full underlying symbol from a parsed option's root.
+
+  FRONTEND (ChartsPage.js):
+    — Added "Auto ATM" toggle button next to the symbol overlay, shown only
+      when the loaded symbol is an option contract. OFF by default,
+      persisted per-panel via savePref.
+    — On toggle/symbol change, calls setUnderlying(symbol) to start/stop the
+      backend LTP side-channel.
+    — New effect watches underlyingTick: computes the hysteresis-suggested
+      strike, requires the breach to hold for 3s (debounce, kills single-
+      tick spikes) before calling handleSymbolChange/handleRefresh with the
+      new strike — same expiry and CE/PE kind preserved.
+
+  STYLE (ChartsPage.css):
+    — Added .chart-auto-atm-btn / .chart-auto-atm-btn-on (green, matches
+      existing --green/--green-dim usage elsewhere in the app).
+
+  NOTE: Fyers option-chain API does not return Greeks (Delta/Gamma/Theta/
+    Vega) — confirmed via Fyers community threads, only OI/LTP/bid/ask are
+    provided. Not implemented; would need self-computed Black-Scholes.
+
+2026-06-26 (S2) | optionsChain.js, OptionsChainModal.js, server.js,
+                  SymbolSearch.js, ChartsPage.js, ChartsPage.css
+  • Bug: SENSEX/NIFTY options chain showed the wrong nearest expiry (e.g.
+    "30 JUL" instead of "02 JUL" on 26 Jun) — nextMonthlyExpiries always
+    jumped to lastThursdayOfMonth(), never checking that SENSEX (Thursday)
+    and NIFTY (Tuesday) also trade WEEKLY, skipping every weekly expiry
+    in the current month.
+  • Deeper bug found while fixing the above: Fyers encodes WEEKLY option
+    symbols differently from monthly ones — {YY}{monthChar}{DD} (e.g.
+    "2670277000" = 02 Jul 2026) instead of {YY}{MON} — confirmed against
+    real Fyers symbols (NIFTY2543024500CE = 30 Apr 2025,
+    NIFTY24D2622700CE = 26 Dec 2024). The old code would have generated
+    an INVALID symbol for every SENSEX/NIFTY weekly contract.
+  • Feature: Ctrl+Q / Ctrl+D — open ATM CE / PE for the active panel's
+    symbol. Warns instead of acting if the symbol has no options.
+  • Feature: type-to-search — start typing anywhere on the page (no click
+    needed) to open the active panel's existing SymbolSearch modal,
+    pre-filled with what was typed.
+
+  UTIL (optionsChain.js):
+    — Added INDEX_WEEKLY_EXPIRY_DAY = {NIFTY:Tue, SENSEX:Thu} (exported).
+      Every other index — BANKNIFTY/FINNIFTY/MIDCPNIFTY/NIFTYIT — stays
+      monthly-only per SEBI's Oct-2024 circular.
+    — Added NSE_INDEX_TICKERS — inverse of NSE_INDEX_ROOTS (option root →
+      index ticker), derived once so the two tables can't drift apart.
+    — nextMonthlyExpiries(count, commodityRoot, indexRoot) — new 3rd param;
+      routes NIFTY/SENSEX through the (renamed/generalized) weekly path.
+    — nextWeeklyExpiries(count, weekday, {fyersWeeklyCode}) — generalized
+      from a Friday-only/SILVERMIC-only helper to accept any weekday.
+      fyersWeeklyCode:true emits the real {YY}{monthChar}{DD} Fyers format
+      (indices); fyersWeeklyCode:false keeps the prior YYMON-style code
+      for MCX weekly (unverified against a real MCX weekly symbol, so left
+      unchanged rather than guessed at).
+    — Added FYERS_WEEKLY_MONTH_CHAR table (1-9 digit, O/N/D for Oct/Nov/Dec).
+    — OPTION_SYMBOL_RE (isOptionSymbol/parseOptionSymbol) widened to match
+      BOTH the YYMON and the new YY+monthChar+DD formats — otherwise the
+      Auto-ATM feature (added earlier today) would silently stop recognizing
+      any SENSEX/NIFTY weekly option symbol.
+    — getStrikeStep/nearestStrikeWithHysteresis/optionSymbol unchanged.
+
+  FRONTEND (OptionsChainModal.js):
+    — isWeeklyExpiry now also true for NIFTY/SENSEX (was commodity-only);
+      passes indexRoot through to nextMonthlyExpiries; expiry count bumped
+      3→6 when weekly, to show roughly a month of weekly expiries.
+    — WEEKLY badge tooltip is now generic (names the actual weekday) instead
+      of hardcoded "Silver Micro" text.
+
+  BACKEND (server.js):
+    — OPTION_SUFFIX_RE (deriveUnderlyingSymbol, used by the Auto-ATM
+      set_underlying handler) widened with the same YY+monthChar+DD
+      alternation, kept in sync with the frontend regex.
+
+  FRONTEND (SymbolSearch.js):
+    — Added initialQuery prop — seeds the search box on open and places the
+      cursor at the end (not a full selection) so further typing extends it.
+
+  FRONTEND (ChartsPage.js):
+    — Added OPTIONS_ELIGIBLE_RE module constant (equities/indices/MCX dated
+      futures) — shared by the existing "Options" button and the new
+      Ctrl+Q/Ctrl+D shortcuts, so both agree on eligibility.
+    — Added openOptionsAtm(kind) — resolves the active symbol's (or, if
+      already on an option chart, its underlying's) nearest expiry + ATM
+      strike from the last candle close, builds the CE/PE symbol, and loads
+      it. Shows a 3.5s warning bar instead if the symbol has no options or
+      no price is loaded yet. Registered on panelActionsRef (same pattern
+      as toggleHide/trashAll) in its own effect — added AFTER openOptionsAtm
+      is defined, since the earlier registration effect runs before it
+      exists and referencing it there would throw "used before initialized".
+    — Added page-level Ctrl+Q/Ctrl+D keydown listener — Ctrl+Q always CE,
+      Ctrl+D always PE (no toggle), guarded against firing while typing in
+      an input/textarea. Calls panelActionsRef.current.openOptionsAtm on
+      whichever panel is active.
+    — Added openSearchWithQuery(firstChar) — opens this panel's
+      SymbolSearch pre-seeded with the typed character. APPENDS rather than
+      replaces if called again before the modal's own <input> has gained
+      focus (~60ms open delay) — uses a ref (searchOpenRef) mirrored from
+      searchOpen via its own effect, so fast typing right as the modal
+      opens can't lose characters to a stomped overwrite.
+    — Added page-level type-to-search keydown listener — fires only on a
+      single plain printable character with zero modifiers held, so it
+      can't collide with Ctrl+Q/D, Alt+letter toolbar shortcuts, or
+      Ctrl+Z/Delete/Arrow drawing shortcuts (all of those require a
+      modifier or a non-printable key).
+
+  STYLE (ChartsPage.css):
+    — Added .shortcut-warning-bar (amber/yellow, var(--yellow)/--yellow-dim)
+      — visually distinct from the red .error-bar it shares layout with,
+      since a "no options for this symbol" warning isn't a connection error.
+
+  KNOWN LIMITATION: Ctrl+Q is the OS/browser "quit" shortcut in some setups
+    (Firefox closes the whole window on Ctrl+Q with no confirmation by
+    default, on any OS). preventDefault() cannot reliably override a
+    browser-chrome-level binding. Fine for a controlled office/single-app
+    deployment; flagging in case this app is ever opened in Firefox.
