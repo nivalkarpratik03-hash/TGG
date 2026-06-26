@@ -1,0 +1,316 @@
+CHANGELOG — TGG Project (compressed)
+Format per entry: DATE | FILES | bug → fix
+================================================================================
+
+2026-06-06 | candleBuilder.js, server.js
+  • _validateCandle anchored open=prevClose, inflating high/low beyond real
+    tick range → snapshot tick high/low before anchoring, rebuild high/low
+    from those.
+  • _oneMinHistory grew unbounded in memory (DB pruned at boot only) →
+    binary-search trim to 90d on every candle close.
+  • DB prune only ran at boot, never during long uptime → rolling daily
+    prune via lastPruneDateUtc check in onFinalize.
+
+2026-06-06 (S2) | server.js
+  • fetchAndProcess skipped Fyers fetch whenever DB had ANY rows, even
+    stale ones → added Step 1b staleness check (26h weekday / 60h weekend
+    flat-age threshold) forcing a Fyers refetch + idempotent upsert.
+
+2026-06-06 (S3) | candleBuilder.js
+  • _aggregateCandles used Math.max(...hugeArray)/Math.min(...) → silent
+    -Infinity/NaN on large spreads (1D/1W bars) → replaced with explicit
+    for-loop accumulators.
+
+2026-06-08 | useSocket.js
+  • Live tick updates on 1W/1D/1h compared candle times at 1-minute
+    granularity (meaningless for multi-day bars) → appended duplicate
+    bars on every tick → switched to resolution-aware bar-period
+    comparison (periodMs = resolution*60000) in both handleCandleUpdate
+    and new_candle.
+
+2026-06-08 (S2) | ChartsPage.js, StatusBar.js, EmaFloatPanel.js
+  • Crosshair mouse-move drove React setState at 60fps → full subtree
+    re-render → visible stutter/lag → replaced state with refs; OHLC/EMA
+    values now written directly to DOM nodes, bypassing React entirely.
+
+2026-06-09 | candleBuilder.js
+  • _validateCandle force-anchored every open to prevClose (hid real
+    gaps); processTick also opened new candles at lastClosed.close
+    instead of the real tick price → chart diverged from TradingView on
+    nearly every bar → removed both anchors; opens are now the real
+    first-traded price.
+
+2026-06-09 (S2) | server.js
+  • VALIDATE button repaired the DB but never reseeded the in-memory
+    builder or broadcast fresh data → chart stayed stale post-repair →
+    repairDay now followed by candleBuilders.delete + fetchAndProcess +
+    broadcast to all TF rooms. Also: BUILDER_FRESH_MS 2min→5min, added
+    DB_AHEAD_THRESHOLD=5 to force re-seed when DB gains many candles
+    (post-repair) instead of skipping.
+
+2026-06-09 (S3) | candleBuilder.js, validationEngine.js, server.js
+  • seedHistory used UTC ms instead of IST ms for the "nearly done"
+    minute guard → wrong candle occasionally excluded → convert to IST
+    before modulo.
+  • validateHistorical raced the async onFinalize DB write (21749 vs
+    21750) → spurious GAP → capped query `to` at (current IST minute − 2min).
+  • periodicSync existed in recoveryEngine.js but was never called from
+    server.js → added startPeriodicValidation(): 2-min periodicSync +
+    8-min deep validateHistorical, both reseed+broadcast on recovery.
+
+2026-06-10 | (integration)
+  • Merged TGG-TGG's frontend (BacktestPage, new indicators, multi-panel
+    layout, ErrorBoundary) + backtestRunner.js/backtestRouter.js onto
+    cleancopy's backend. Database layer and DB-first pipeline untouched.
+
+2026-06-11 | useSocket.js, server.js, CandleChart.js
+  • Socket never sent set_resolution on first connect if pref ≠ default →
+    stuck in res:3 room → no live updates for other TFs → send whenever
+    ref is non-null (not just truthy).
+  • No GET fallback when POST /api/chart/refresh failed all retries →
+    "No Data Yet" shown despite cached data → fallback to GET on failure.
+  • startPeriodicValidation reseeded with RESOLUTION (default 3) instead
+    of 1 → non-default TF panels stayed stale after gap recovery → always
+    reseed with resolution=1.
+  • CandleChart timer interval had `candles` in its dep array → restarted
+    every tick → visible flicker → removed (already read via ref).
+
+2026-06-11 (S2) | useSocket.js, motherwave.js, server.js
+  • REST health-poll fallback overwrote ticksFlowing after socket
+    disconnect handler had already set it → "offline" flash → poll only
+    applies when socket is confirmed disconnected.
+  • backtestRunner imported detectMotherWaveForAPI, which didn't exist →
+    TypeError on every scan → added the wrapper (chain format, fibLevels).
+  • /health response was missing ticksFlowing → added.
+
+2026-06-11 (S3) | server.js
+  • GET /api/motherwave route didn't exist → FibDashboard showed "backend
+    error" → added the route (detectMotherWave on cached candles, mapped
+    to col1/col2 shape).
+
+2026-06-15 | backtestRunner.js, scannerRunner.js
+  • Both ran fetchCandles() (Fyers REST) directly per symbol on every
+    run/scan, bypassing the DB → slow, rate-limited, 60d/90d presets
+    empty → switched to DB-first: loadCandles(1) → Fyers fallback only if
+    DB has <10 rows → deriveTimeframe() in memory.
+  • backtestRunner's require() path was 3 levels up (wrong, crashed on
+    boot) → fixed to 2 levels up, matching server.js.
+  • triggerNow()'s lookbackDays param was dead code → removed (filtering
+    is correctly client-side in BacktestPage.js).
+
+2026-06-17 | server.js, recoveryEngine.js
+  • fetchAndProcess's flat 26h staleness check didn't catch a mid-day
+    restart landing under the threshold (e.g. last candle 16 Jun 12:30,
+    restart 17 Jun 09:45 ≈ 21h) → builder seeded from stale data, tick
+    stream started a fresh candle with no catch-up → added cross-day
+    check: force refetch if today is a trading day, past market open, and
+    latest DB candle is from an earlier IST date.
+  • repairDay()/fullRefetch() deleted data FIRST, then validated the
+    refetch as all-or-nothing — any single GAP/duplicate flag anywhere in
+    the fetched range aborted with NO restore, permanently wiping the
+    deleted day → reordered to fetch+validate BEFORE delete; validation
+    issues are now warnings only (upsertCandles already filters corrupt
+    rows on its own, idempotently).
+
+2026-06-17 (S2) | validationEngine.js, server.js
+  • validateCandleArray's gap check used a "sameDay" test — ANY gap
+    crossing midnight was waved through as a normal overnight close, even
+    when it represented real data loss (server down mid-afternoon, back
+    the next morning) → now only treated as a normal close if the prior
+    candle is near market close (15:30) AND the next is near market open
+    (09:15); everything else is flagged regardless of date.
+  • Both auto-repair triggers (manual VALIDATE route + 8-min auto-validate)
+    hardcoded tradingDay: new Date() → always repaired "today" instead of
+    the actual problem day → now uses issues[0].time.
+
+2026-06-18 | (feature) optionChainRouter.js [NEW], server.js,
+             OptionChainPage.js [NEW], OptionChainPage.css [NEW],
+             App.js, HomePage.js
+  • No option chain view existed — users had to switch to Fyers platform
+    to check strikes, OI, and PCR while analysing charts → added full
+    TradingView-style option chain page backed entirely by Fyers getQuotes.
+
+  NEW: backend/src/optionChainRouter.js
+    — GET /api/options/expiries?symbol=&underlying=
+        Generates upcoming weekly expiry codes in Fyers compact format
+        (YYMMDD for NSE/BSE weekly, YYMMM for MCX monthly).
+        Expiry day-of-week: NSE/MCX = Thursday, BSE SENSEX = Friday.
+    — GET /api/options/chain?symbol=&underlying=&expiry=&strikes=&step=
+        Fetches spot price for the underlying to pin ATM, builds strike
+        list (numStrikes each side at the configured step), constructs all
+        CE/PE Fyers symbols (e.g. NSE:NIFTY2662324000CE), batches them
+        into getQuotes calls (50 symbols per batch, 15s timeout), and
+        returns per-row LTP / OI / IV / volume / bid / ask / changePct
+        for both legs plus computed ATM and spot.
+    — makeFyersClient() mirrors fyers.js getFyersClient() using existing
+      exported loadToken + loadClientId — no new exports required in
+      fyers.js, no changes to the DB or candle pipeline.
+    — UNDERLYING_CONFIG table covers NIFTY (50), BANKNIFTY (100),
+      FINNIFTY (50), MIDCPNIFTY (25), SENSEX (100), BANKEX (100),
+      CRUDEOIL (50), SILVER (100), GOLD (100), NATURALGAS (5).
+
+  NEW: frontend/src/pages/OptionChainPage.js
+    — Underlying tab bar (NIFTY / BANKNIFTY / FINNIFTY / MIDCPNIFTY /
+      SENSEX / BANKEX / CRUDEOIL / GOLD / SILVER).
+    — Expiry dropdown populated from /api/options/expiries on underlying
+      change; defaults to nearest weekly.
+    — Strikes selector: 10 / 15 / 20 / 25 rows each side of ATM.
+    — Info bar: SPOT, ATM, PCR by OI, total CALL OI, total PUT OI,
+      last-updated timestamp.
+    — Table layout mirrors TradingView option chain: Call columns on left
+      (OI · OI bar · chg OI · Vol · IV · LTP · Chg% · Bid · Ask),
+      strike centre column, Put columns mirrored on right.
+    — ATM row highlighted; OI bars scaled relative to max OI across all
+      strikes; up/down colour on changePct and OI change.
+    — Auto-refresh toggle (15s interval); manual refresh button; error
+      and loading states.
+
+  NEW: frontend/src/styles/OptionChainPage.css
+    — Full dark/light theme via existing CSS variables (--bg, --green,
+      --red, --yellow, --accent, --border, --font-mono, etc.).
+    — Call side: subtle red tint per cell; Put side: subtle green tint.
+    — OI bars: red fill for calls, green fill for puts.
+    — Sticky header row; thin custom scrollbar on table wrapper.
+
+  MODIFIED: backend/src/server.js
+    — Imported optionChainRouter and registered at /api/options alongside
+      existing /api/symbols, /api/scanner, /api/backtest mounts.
+      Two lines added, nothing else touched.
+
+  MODIFIED: frontend/src/App.js
+    — Added import for OptionChainPage and route at /option-chain wrapped
+      in existing ErrorBoundary pattern. Two lines added.
+
+  MODIFIED: frontend/src/pages/HomePage.js
+    — Added "Option Chain" nav card to NAV_ITEMS (tagColor: blue,
+      stats: ATM highlight · OI bars · PCR live). One block added.
+2026-06-18 (S2) | optionChainRouter.js, OptionChainPage.js, OptionChainPage.css
+  • Option chain showed all dashes — spot price fetch used wrong symbol
+    format for MCX/BSE and index building was fragile; stock options were
+    entirely unsupported → reworked both backend and frontend.
+
+  BACKEND (optionChainRouter.js):
+    • Added isEquitySymbol() — detects -EQ/-BE/-BZ/-SM/-ST suffix to
+      switch into stock mode automatically from the symbol param.
+    • Added generateStockExpiryCodes() — generates monthly last-Thursday
+      expiry codes in YYMMMM format (e.g. "25JUN") used by Fyers for
+      stock options; separate from the existing weekly index codes.
+    • Added buildStockOptionSym() — constructs NSE:TICKER+YYMMMSTRIKE+TYPE
+      format for equity options vs the existing index format.
+    • Auto-derives strike step for stocks from spot price (2–500 range
+      brackets) when step param is not passed by caller.
+    • UNDERLYING_CONFIG now carries spotSymbol per index so the correct
+      Fyers index quote symbol is always used (no more manual string
+      concatenation that was producing invalid symbols).
+    • /api/options/expiries now returns { isStock } flag so the frontend
+      can show the right expiry codes for stock vs index mode.
+    • /api/options/chain passes step back in the response so the info
+      bar can display it (useful for stocks where step is auto-derived).
+
+  FRONTEND (OptionChainPage.js):
+    • Added SymbolSearchInput component — debounced search against
+      /api/symbols/search, filters to equities only (type=equity or -EQ
+      suffix), shows name + Fyers symbol in dropdown.
+    • Selecting a stock from search triggers the same expiry→chain flow
+      as clicking an index tab; stock mode is tracked via isStock flag.
+    • Info bar shows a coloured badge with the stock name when in stock
+      mode; also displays auto-derived step size.
+    • INDEX_UNDERLYINGS tab buttons deactivate visually when a stock is
+      selected; clicking an index tab clears the stock search and switches
+      back to index mode.
+    • Empty state text updated: "Select an underlying or search a stock…"
+
+  STYLE (OptionChainPage.css):
+    • Added .oc-search-wrap / .oc-search-input / .oc-search-dropdown /
+      .oc-search-item / .oc-search-name / .oc-search-sym rules for the
+      inline symbol search with shadow dropdown.
+    • Added .oc-stock-badge for the accent-coloured stock name pill in
+      the info bar.
+
+2026-06-18 (S3) | OptionChainPanel.js [NEW], OptionChainPanel.css [NEW],
+                  ChartsPage.js, ChartsPage.css
+  • Separate /option-chain page was a full-dashboard with irrelevant columns
+    and showed all dashes — replaced with a TradingView-style inline panel
+    that opens over the active chart panel on demand.
+
+  NEW: frontend/src/components/OptionChainPanel.js
+    — Self-contained overlay panel rendered inside .chart-area (position:
+      absolute, top:0) — not a route, not a page, not full-screen.
+    — Triggered by a new "Options" button in the top-right of the chart
+      area; button only appears for symbols with listed options (indices,
+      NSE/BSE equities, MCX commodities — checked via symbolHasOptions()).
+    — Three-column table: Calls | Strike | Puts. Each cell shows the
+      readable option label (e.g. "NIFTY 24,200 CE") and LTP when
+      available. No OI bars, no IV column, no bogus columns.
+    — Spot price inlined as a horizontal separator row between the strike
+      just below and just above spot (same as TradingView). ATM row is
+      highlighted in yellow; ITM strikes get a subtle background shade.
+    — Expiry tabs across the header (weekly for NSE/BSE, monthly for MCX
+      and stocks); tab format: "23 Jun" / "Jul '26" etc.
+    — Strikes selector: 5 / 10 / 15 / 20 each side of ATM.
+    — Closes on Escape key; ATM row auto-scrolls into view after load.
+    — Reuses backend /api/options/expiries and /api/options/chain — no
+      new backend routes.
+    — Exported symbolHasOptions() used by ChartsPage to conditionally
+      show the Options button.
+
+  NEW: frontend/src/styles/OptionChainPanel.css
+    — Panel drops from top of chart-area with border-radius on bottom
+      corners only (TradingView style). 560px wide, scrollable body.
+    — Spot separator: accent-coloured horizontal line with price tag.
+    — All colours via existing CSS variables (--bg, --accent, --yellow,
+      --red, --green, --border, --font-mono). Light/dark theme works
+      automatically.
+
+  MODIFIED: frontend/src/pages/ChartsPage.js
+    — Import OptionChainPanel and symbolHasOptions.
+    — Added optionsOpen state to ChartPanel.
+    — Added chart-options-btn button (top-right of chart-area) and
+      conditional <OptionChainPanel> render. Four lines added.
+
+  MODIFIED: frontend/src/styles/ChartsPage.css
+    — Added .chart-options-btn style (position: absolute, top-right).
+      Eight lines added, nothing else touched.
+
+  NOTE: The /option-chain route and OptionChainPage.js are still present
+  in the codebase (not removed). The new panel is the primary UX; the
+  full-page view remains as a fallback reachable from HomePage.
+
+2026-06-18 (S4) | optionChainRouter.js, OptionChainPanel.js, OptionChainPanel.css,
+                  ChartsPage.js
+  • Option chain showed hardcoded strikes (e.g. 25000 for SENSEX, 24000 for
+    all indices) after market close because Fyers getQuotes returns nothing
+    outside trading hours — spot price was 0, so centre fell back to a
+    hardcoded literal.
+
+  BACKEND (optionChainRouter.js):
+    — Added db = require("../../database/src") import.
+    — Step 1 (spot price) now has a three-tier fallback chain:
+        1. Fyers getQuotes live price (market hours, unchanged).
+        2. db.getLatestCandle(spotSymbol, 1).close — the last 1-minute
+           candle stored in PostgreSQL; always available after market close.
+           Tries spotSymbol first, then the raw symbol param as fallback.
+        3. hintPrice query param — last candle close forwarded by the
+           frontend from the chart's in-memory candle data (websocket/
+           candleBuilder). Used if DB also has nothing (e.g. new symbol
+           not yet seeded).
+    — If all three fail the route now returns HTTP 503 with an explicit
+      error message instead of silently rendering 50 bogus strikes centred
+      on 24000/1000.
+    — centre is now always roundToStep(spotPrice, step) — the hardcoded
+      fallback literals (24000 for indices, 1000 for stocks) are removed.
+
+  FRONTEND (OptionChainPanel.js):
+    — Accepts new lastPrice prop (last candle close from the active chart
+      panel's candle array — always present, even post-close).
+    — Passes lastPrice as ?hintPrice= to /api/options/chain so the backend
+      has it available as tier-3 fallback.
+    — Spot bar now shows lastPrice immediately while the chain is loading,
+      labelled "(last close)" so the user knows it's the closed price.
+
+  FRONTEND (ChartsPage.js):
+    — Passes lastPrice={candles[candles.length-1].close} to OptionChainPanel
+      when candles are present. One line changed.
+
+  STYLE (OptionChainPanel.css):
+    — Added .ocp-spot-stale for the greyed "(last close)" annotation.
