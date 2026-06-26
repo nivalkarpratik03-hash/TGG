@@ -350,38 +350,95 @@ function buildPayload(candles, result, symbol, resolution, isAutoRefresh = false
 }
 
 // ─── Core fetch & process ─────────────────────────────────────────────────────
+// ─── Cache TTL constants ─────────────────────────────────────────────────────
+// During live market: always re-derive from builder (ticks keep it live).
+// After close / holiday / weekend: cache is final — never re-fetch.
+// A fresh cache = populated within the last CACHE_STALE_MS.
+const CACHE_STALE_MS = 5 * 60 * 1000; // 5 minutes (only matters during live market)
+
+function isCacheFresh(symbol, resolution) {
+  const c = getCache(symbol, resolution);
+  return c.candles.length > 0 && c.result != null && (Date.now() - c.lastFetch) < CACHE_STALE_MS;
+}
+
 async function fetchAndProcess(symbol = SYMBOL, resolution = RESOLUTION) {
-  const raw1m = await fetchCandles(symbol, 1, CANDLES_TO_FETCH);
+  // ── Fast path: serve from in-memory cache ───────────────────────────────────
+  // When market is closed (after hours, weekend, holiday) the data is final.
+  // Never re-read DB or call Fyers — just return what's already in memory.
+  // During live market we skip this only if the cache is genuinely stale.
+  if (!isLiveMarket(symbol) && isCacheFresh(symbol, resolution)) {
+    const c = getCache(symbol, resolution);
+    return { candles: c.candles, result: c.result };
+  }
 
-  if (candleBuilders.has(symbol)) {
-    const existing = candleBuilders.get(symbol).getOneMinHistory();
-    if (existing.length > 0 && raw1m.length > 0) {
-      const ratio = existing[0].close > 0 ? Math.abs(raw1m[0].close - existing[0].close) / existing[0].close : 1;
-      if (ratio > 0.5) { console.log(`[Server] Price scale mismatch for ${symbol} — resetting builder`); candleBuilders.delete(symbol); }
+  // ── Load 1m base data ────────────────────────────────────────────────────────
+  // If the builder for this symbol already has 1m history (seeded earlier this
+  // boot), skip the DB read — the builder is the in-memory source of truth.
+  // Only read DB when the builder is cold (first time this symbol is seen).
+  let raw1m = [];
+  const builderAlreadySeeded = candleBuilders.has(symbol) &&
+    candleBuilders.get(symbol).getOneMinHistory().length > 0;
+
+  if (builderAlreadySeeded) {
+    raw1m = candleBuilders.get(symbol).getOneMinHistory();
+  } else {
+    // Builder is cold — load from DB first, fall back to Fyers REST if empty.
+    if (dbEnabled) {
+      try {
+        const from = new Date(Date.now() - 30 * 86400 * 1000);
+        const dbCandles = await db.loadCandles(symbol, 1, { from, limit: 100000 });
+        if (dbCandles.length > 0) {
+          raw1m = dbCandles;
+          console.log(`[DB] Loaded ${raw1m.length} 1m candles for ${symbol} from DB`);
+        }
+      } catch (err) {
+        console.warn(`[DB] loadCandles failed for ${symbol} — falling back to Fyers REST:`, err.message);
+      }
     }
+
+    if (raw1m.length === 0) {
+      console.log(`[Server] DB empty for ${symbol} — fetching 1m from Fyers REST (initial seed)`);
+      raw1m = await fetchCandles(symbol, 1, CANDLES_TO_FETCH);
+      if (dbEnabled && raw1m.length > 0) {
+        db.upsertCandles(symbol, 1, raw1m).then((n) => {
+          console.log(`[DB] Initial seed: upserted ${n} 1m candles for ${symbol}`);
+        }).catch((err) => {
+          console.error(`[DB] Initial seed upsert failed for ${symbol}:`, err.message);
+        });
+      }
+    }
+
+    // Seed the builder once — all future calls for this symbol reuse it.
+    const builder = getOrCreateBuilder(symbol);
+    builder.seedHistory(raw1m);
   }
 
-  const builder = getOrCreateBuilder(symbol);
-  builder.seedHistory(raw1m);
-
-  // ── DB: bulk-save REST 1m candles on every fetch ────────────────────────
-  // This backfills the DB with historical 1m candles from Fyers REST.
-  // upsertCandles is idempotent (ON CONFLICT DO UPDATE) so re-fetching is safe.
-  if (dbEnabled && raw1m.length > 0) {
-    db.upsertCandles(symbol, 1, raw1m).then((n) => {
-      console.log(`[DB] Upserted ${n} REST 1m candles for ${symbol}`);
-    }).catch((err) => {
-      console.error(`[DB] REST upsert failed for ${symbol}:`, err.message);
-    });
-  }
-
+  // ── Derive requested resolution from in-memory 1m ───────────────────────────
+  // 1m, 3m, 5m, 15m, 60m — all derived from builder (never a separate Fyers call).
+  // Daily (1440) and weekly (10080) are too long to derive from 30d of 1m data,
+  // so they still call Fyers REST — but only if cache is stale/missing.
   let candles;
-  if (resolution === 1) { candles = raw1m; }
-  else { candles = await fetchCandles(symbol, resolution, CANDLES_TO_FETCH); }
+  const builder = getOrCreateBuilder(symbol);
+
+  if (resolution === 1) {
+    candles = raw1m.length > 0 ? raw1m : builder.getOneMinHistory();
+  } else if (resolution === 1440 || resolution === 10080) {
+    const cached = getCache(symbol, resolution);
+    if (cached.candles.length > 0) {
+      // Daily/weekly: already cached — return without another Fyers call
+      return { candles: cached.candles, result: cached.result };
+    }
+    candles = await fetchCandles(symbol, resolution, CANDLES_TO_FETCH);
+  } else {
+    candles = builder.getCandlesForResolution(resolution);
+  }
 
   const result = runSignalEngine(candles);
   setCache(symbol, resolution, candles, result);
-  if (resolution !== 1) { try { setCache(symbol, 1, raw1m, runSignalEngine(raw1m)); } catch { } }
+  // Keep res=1 cache populated so isCacheFresh(sym, 1) works
+  if (resolution !== 1 && raw1m.length > 0) {
+    try { setCache(symbol, 1, raw1m, runSignalEngine(raw1m)); } catch { }
+  }
   return { candles, result };
 }
 
@@ -412,6 +469,7 @@ app.use(createChartRouter({
   tickStream, ticksFlowing, getActiveTickSymbols, updateTickSubscription, maybeStartTickStream,
   getAuthURL, generateToken, validateToken,
   detectMotherWaveForAPI,
+  db, dbEnabled, fetchCandles,
 }));
 
 app.use("/api/symbols", symbolsRouter);
@@ -421,7 +479,9 @@ app.use("/api/backtest", backtestRouter);
 // ─── Tick Watchdog ────────────────────────────────────────────────────────────
 function startTickWatchdog() {
   setInterval(() => {
-    if (!isTradingDay() || !isAnyMarketLive(getActiveTickSymbols()) || !tickStream.isConnected()) return;
+    // Skip entirely if market is closed — no ticks expected, no need to reconnect
+    if (!isTradingDay() || !isAnyMarketLive(getActiveTickSymbols())) return;
+    if (!tickStream.isConnected()) return;
     const now = Date.now();
     if (lastConnectAt > 0 && now - lastConnectAt < WATCHDOG_GRACE_MS) return;
     if (lastTickAt === 0) return;
@@ -503,24 +563,92 @@ function startAutoRefresh() {
 // ─── Initial REST fetch ───────────────────────────────────────────────────────
 async function initialRestFetch() {
   const valid = await validateToken().catch(() => false);
-  if (!valid) { console.log("[INIT] Not authenticated — skipping initial REST fetch. Chart will be empty."); return; }
-  const dayLabel = isTradingDay() ? (isAnyMarketLive(getActiveTickSymbols()) ? "live market" : "weekday (market closed)") : "weekend/holiday";
-  console.log(`[INIT] Pre-warming all resolutions for ${SYMBOL} (${dayLabel})...`);
-  const ALL_RESOLUTIONS = [1, 3, 5, 15, 60, 1440, 10080];
-  for (const res of ALL_RESOLUTIONS) {
+  if (!valid) { console.log("[INIT] Not authenticated — skipping initial fetch. Chart will be empty."); return; }
+
+  const dayLabel = isTradingDay()
+    ? (isAnyMarketLive(getActiveTickSymbols()) ? "live market" : "weekday (market closed)")
+    : "weekend/holiday";
+  console.log(`[INIT] Booting for ${SYMBOL} (${dayLabel})...`);
+
+  // ── Step 1: Load 1m ONCE from DB (or Fyers if DB empty) ─────────────────
+  // All intraday TFs (1/3/5/15/60m) are derived from this single load.
+  // Daily and weekly still need separate Fyers REST calls (can't derive from 30d of 1m).
+  let raw1m = [];
+
+  if (dbEnabled) {
+    try {
+      const from = new Date(Date.now() - 30 * 86400 * 1000);
+      const dbCandles = await db.loadCandles(SYMBOL, 1, { from, limit: 100000 });
+      if (dbCandles.length > 0) {
+        raw1m = dbCandles;
+        console.log(`[DB] Loaded ${raw1m.length} 1m candles for ${SYMBOL} from DB`);
+      }
+    } catch (err) {
+      console.warn(`[DB] loadCandles failed — falling back to Fyers REST:`, err.message);
+    }
+  }
+
+  if (raw1m.length === 0) {
+    console.log(`[INIT] DB empty — fetching 1m from Fyers REST (initial seed)`);
+    try {
+      raw1m = await fetchCandles(SYMBOL, 1, CANDLES_TO_FETCH);
+      if (dbEnabled && raw1m.length > 0) {
+        db.upsertCandles(SYMBOL, 1, raw1m).then((n) => {
+          console.log(`[DB] Initial seed: upserted ${n} 1m candles for ${SYMBOL}`);
+        }).catch((err) => console.error(`[DB] Initial seed failed:`, err.message));
+      }
+    } catch (err) {
+      console.error(`[INIT] Fyers 1m fetch failed: ${err.message}`);
+    }
+  }
+
+  if (raw1m.length === 0) {
+    console.error("[INIT] No 1m candle data available — chart will be empty.");
+    return;
+  }
+
+  // ── Step 2: Seed builder ONCE ─────────────────────────────────────────────
+  const builder = getOrCreateBuilder(SYMBOL);
+  builder.seedHistory(raw1m);
+  console.log(`[INIT] Builder seeded with ${raw1m.length} 1m candles ✓`);
+
+  // ── Step 3: Derive all intraday TFs in one pass (no more Fyers calls) ─────
+  for (const res of [1, 3, 5, 15, 60]) {
+    try {
+      const candles = res === 1 ? raw1m : builder.getCandlesForResolution(res);
+      const result = runSignalEngine(candles);
+      setCache(SYMBOL, res, candles, result);
+      console.log(`[INIT] res=${res} ✓ (${candles.length} candles, derived from 1m)`);
+    } catch (err) {
+      console.error(`[INIT] res=${res} derive failed: ${err.message}`);
+    }
+  }
+
+  // ── Step 4: Daily and weekly — Fyers REST (separate lookback needed) ──────
+  for (const res of [1440, 10080]) {
     const MAX_RETRIES = 3;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try { await fetchAndProcess(SYMBOL, res); console.log(`[INIT] res=${res} ✓`); break; }
-      catch (err) {
+      try {
+        const candles = await fetchCandles(SYMBOL, res, CANDLES_TO_FETCH);
+        const result = runSignalEngine(candles);
+        setCache(SYMBOL, res, candles, result);
+        console.log(`[INIT] res=${res} ✓ (${candles.length} candles, Fyers REST)`);
+        break;
+      } catch (err) {
         console.error(`[INIT] res=${res} attempt ${attempt}/${MAX_RETRIES} failed: ${err.message}`);
         if (attempt < MAX_RETRIES) await new Promise((r) => setTimeout(r, 2000 * attempt));
       }
     }
   }
+
+  // ── Step 5: Push initial chart_update to any already-connected sockets ────
   try {
     const cache = getCache(SYMBOL, RESOLUTION);
-    if (cache.result && cache.candles.length > 0) io.emit("chart_update", buildPayload(cache.candles, cache.result, SYMBOL, RESOLUTION, false));
+    if (cache.result && cache.candles.length > 0) {
+      io.emit("chart_update", buildPayload(cache.candles, cache.result, SYMBOL, RESOLUTION, false));
+    }
   } catch { }
+
   console.log("[INIT] All resolutions loaded ✓  Chart is ready.");
 }
 
@@ -637,6 +765,11 @@ server.listen(PORT, async () => {
       const ok = await db.healthCheck();
       if (ok) {
         console.log("[DB] ✅  PostgreSQL connection healthy");
+
+        // Inject Socket.IO emitter so repair_status events reach the frontend
+        db.injectStatusEmitter((event, data) => io.emit(event, data));
+        console.log("[DB] Status emitter injected → repair_status events active");
+
         // Prune candles older than 90 days on startup
         const pruned = await db.pruneOldCandles(null, 1, 90);
         if (pruned > 0) console.log(`[DB] Pruned ${pruned} old candles (>90 days)`);
@@ -648,6 +781,26 @@ server.listen(PORT, async () => {
       console.warn("[DB] ⚠️  PostgreSQL startup error — DB writes disabled:", err.message);
       dbEnabled = false;
     }
+  }
+
+  // ── DB: periodic sync loop (every 2 min during live market) ─────────────
+  // Compares latest DB 1m candle vs latest broker candle and fills any gaps.
+  // This is the only place Fyers REST is called during live market for sync —
+  // fetchAndProcess itself reads from DB and does NOT call Fyers on repeat.
+  if (dbEnabled) {
+    const PERIODIC_SYNC_MS = 2 * 60 * 1000; // 2 minutes
+    setInterval(async () => {
+      if (!isTradingDay() || !isAnyMarketLive(getActiveTickSymbols())) return;
+      const symbols = [...new Set([SYMBOL, ...socketSymbols.values()])].filter(Boolean);
+      for (const sym of symbols) {
+        try {
+          await db.periodicSync({ symbol: sym, fetchCandles });
+        } catch (err) {
+          console.error(`[PeriodicSync] Error for ${sym}:`, err.message);
+        }
+      }
+    }, PERIODIC_SYNC_MS);
+    console.log("[DB] Periodic sync started (every 2 min, live market only)");
   }
 
   await initialRestFetch();

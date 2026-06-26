@@ -281,7 +281,21 @@ class TickStream extends EventEmitter {
   }
 
   _onError(err) {
-    console.error("[TickStream] Socket error:", err?.message || err);
+    // Cloudflare/Fyers rate-limit (HTTP 429 / error_code 1015)
+    // The error payload includes retry_after in seconds — respect it.
+    const retryAfterS = err?.retry_after || err?.retryAfter;
+    if (retryAfterS && Number.isFinite(Number(retryAfterS))) {
+      const waitMs = Number(retryAfterS) * 1000 + 2000; // add 2s safety margin
+      console.warn(`[TickStream] Rate-limited (429) — pausing ${retryAfterS}s before next reconnect.`);
+      this._userStopped = true;   // prevent _onClose from firing another reconnect
+      setTimeout(() => {
+        this._userStopped = false;
+        if (isAnyMarketLive(this._symbols)) this._connect();
+        else console.log(`[TickStream] Rate-limit backoff finished but market is closed — not reconnecting.`);
+      }, waitMs);
+    } else {
+      console.error("[TickStream] Socket error:", err?.message || err);
+    }
     this.emit("error", err);
   }
 
@@ -295,14 +309,25 @@ class TickStream extends EventEmitter {
 
   _scheduleReconnect() {
     if (this._userStopped) return;
+
+    // ── Market-closed guard ────────────────────────────────────────────────
+    // If no subscribed symbol has an open market right now, stop reconnecting.
+    // This prevents the endless reconnect storm seen on holidays / after 15:30.
+    // MCX symbols keep reconnecting after NSE close (their market stays open).
+    if (this._symbols.length > 0 && !isAnyMarketLive(this._symbols)) {
+      console.log(`[TickStream] Market closed — not reconnecting. Will restart when market opens.`);
+      this._running = false;
+      return;
+    }
+
     if (this._reconnects >= MAX_RECONNECT) {
       console.warn("[TickStream] Max reconnects reached — giving up.");
       this._running = false;
       return;
     }
     this._reconnects++;
-    // Exponential backoff: 3s, 6s, 9s, 12s, 15s (capped)
-    const delay = RECONNECT_DELAY_MS * Math.min(this._reconnects, 5);
+    // Exponential backoff: 3s, 6s, 12s, 24s, 60s (capped at 60s)
+    const delay = Math.min(RECONNECT_DELAY_MS * Math.pow(2, this._reconnects - 1), 60_000);
     console.log(`[TickStream] Reconnecting in ${delay / 1000}s (attempt ${this._reconnects})…`);
     this._reconnTimer = setTimeout(() => {
       this._disconnect();

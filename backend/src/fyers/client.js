@@ -341,4 +341,43 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
   return deduped;
 }
 
-module.exports = { loadToken, saveToken, getAuthURL, generateToken, validateToken, fetchCandles };
+/**
+ * fetchOptionExpiries — returns available expiry dates for an underlying symbol.
+ *
+ * Uses the Fyers v3 `getOptionChain` API (strike_count=1 to minimise payload)
+ * and extracts the `expiryData` list from the response.
+ *
+ * @param {string} underlyingSymbol  e.g. "NSE:NIFTY50-INDEX", "BSE:SENSEX-INDEX"
+ * @returns {Promise<string[]>}       Array of expiry date strings in "DD-MM-YYYY"
+ *                                    format (Fyers native), sorted nearest-first.
+ *                                    Returns [] if unavailable (token expired, holiday, etc.)
+ */
+async function fetchOptionExpiries(underlyingSymbol) {
+  try {
+    const fyers = getFyersClient();
+    // strike_count=1 → smallest possible payload; we only need expiryData not strikes
+    const res = await Promise.race([
+      fyers.getOptionChain({ symbol: underlyingSymbol, strikecount: 1, timestamp: "" }),
+      rejectAfter(10_000, "fetchOptionExpiries"),
+    ]);
+    if (!res || res.s !== "ok" || !res.data?.expiryData) {
+      console.warn(`[Fyers] fetchOptionExpiries: no expiry data for ${underlyingSymbol} — s=${res?.s} msg="${res?.message || res?.errmsg || "?"}"`);
+      return [];
+    }
+    // expiryData items have shape { date: "DD-MM-YYYY", ... }
+    const dates = res.data.expiryData
+      .map((e) => e.date || e.expiry || e)
+      .filter(Boolean)
+      .sort((a, b) => {
+        // Parse DD-MM-YYYY for chronological sort
+        const parse = (s) => { const [d, m, y] = String(s).split("-"); return new Date(`${y}-${m}-${d}`).getTime(); };
+        return parse(a) - parse(b);
+      });
+    return dates;
+  } catch (err) {
+    console.warn(`[Fyers] fetchOptionExpiries error for ${underlyingSymbol}:`, err.message);
+    return [];
+  }
+}
+
+module.exports = { loadToken, saveToken, getAuthURL, generateToken, validateToken, fetchCandles, fetchOptionExpiries };

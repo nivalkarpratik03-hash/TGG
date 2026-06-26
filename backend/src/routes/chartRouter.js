@@ -56,6 +56,7 @@ function createChartRouter(deps) {
     updateTickSubscription,
     getAuthURL, generateToken, validateToken,
     detectMotherWaveForAPI,
+    db, dbEnabled, fetchCandles,
   } = deps;
 
   const router = express.Router();
@@ -239,6 +240,71 @@ function createChartRouter(deps) {
       res.json(payload);
     } catch (err) {
       console.error("[/api/motherwave] Error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── DB Management Routes ──────────────────────────────────────────────────
+  // Implements the architecture /api/db/* surface: validate, refetch, stats, repair-history.
+  // All mutating ops are fire-and-forget (async) — status arrives via repair_status socket events.
+
+  router.get("/api/db/stats", async (req, res) => {
+    const symbol = req.query.symbol || SYMBOL;
+    if (!dbEnabled) return res.json({ dbEnabled: false, symbol });
+    try {
+      const latest = await db.getLatestCandle(symbol, 1);
+      const from = new Date(Date.now() - 30 * 86400 * 1000);
+      const count = await db.countCandles(symbol, 1, from, new Date());
+      res.json({ dbEnabled: true, symbol, latestCandle: latest, candlesLast30d: count });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  router.get("/api/db/repair-history", async (req, res) => {
+    const symbol = req.query.symbol || null;
+    if (!dbEnabled) return res.json({ dbEnabled: false, history: [] });
+    try {
+      const history = await db.getRepairHistory(symbol, 20);
+      res.json({ history });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  router.post("/api/db/validate", async (req, res) => {
+    const symbol = req.query.symbol || SYMBOL;
+    if (!dbEnabled) return res.status(503).json({ error: "DB not enabled" });
+    const valid = await validateToken().catch(() => false);
+    if (!valid) return res.status(401).json({ error: "Not authenticated" });
+    res.json({ symbol, status: "validation_started" });
+    db.validateHistorical(symbol, 1, {
+      fetchCandles: (s, r) => fetchCandles(s, r),
+      onRepair: (opts) => db.repairDay({ ...opts, fetchCandles: (s, r) => fetchCandles(s, r) }),
+    }).catch((err) => console.error(`[DB Validate] ${symbol}:`, err.message));
+  });
+
+  router.post("/api/db/refetch", async (req, res) => {
+    const symbol = req.query.symbol || SYMBOL;
+    if (!dbEnabled) return res.status(503).json({ error: "DB not enabled" });
+    const valid = await validateToken().catch(() => false);
+    if (!valid) return res.status(401).json({ error: "Not authenticated" });
+    res.json({ symbol, status: "refetch_started" });
+    db.fullRefetch({ symbol, fetchCandles: (s, r) => fetchCandles(s, r) })
+      .then(() => fetchAndProcess(symbol, 1))  // reload into memory from fresh DB data
+      .catch((err) => console.error(`[DB Refetch] ${symbol}:`, err.message));
+  });
+
+  // ── GET /api/options/expiries?symbol=NSE:NIFTY50-INDEX ────────────────────
+  // Returns live expiry dates from Fyers — no hardcoding, no calendar math.
+  // Frontend calls this whenever it opens the options chain modal.
+  router.get("/api/options/expiries", async (req, res) => {
+    const symbol = req.query.symbol;
+    if (!symbol) return res.status(400).json({ error: "symbol query param required" });
+    try {
+      const valid = await validateToken();
+      if (!valid) return res.status(401).json({ error: "Not authenticated" });
+      const { fetchOptionExpiries } = require("../fyers/client");
+      const expiries = await fetchOptionExpiries(symbol);
+      res.json({ symbol, expiries });
+    } catch (err) {
+      console.error("[/api/options/expiries] Error:", err.message);
       res.status(500).json({ error: err.message });
     }
   });

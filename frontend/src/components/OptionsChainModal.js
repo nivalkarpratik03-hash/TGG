@@ -7,7 +7,7 @@
 // Supports: NSE equities, NSE/BSE indices, MCX commodities.
 // ─────────────────────────────────────────────────────────────────────────
 
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState, useEffect, useCallback } from "react";
 import "../styles/OptionsChainModal.css";
 import {
   nextMonthlyExpiries,
@@ -18,6 +18,7 @@ import {
   WEEKLY_EXPIRY_COMMODITIES,
   INDEX_WEEKLY_EXPIRY_DAY,
 } from "../utils/optionsChain";
+import { BACKEND } from "../config";
 
 // Props:
 //   isOpen      — boolean
@@ -42,9 +43,10 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
   const isWeeklyIndex = isIndex && INDEX_WEEKLY_EXPIRY_DAY[root] != null;
   const isWeeklyExpiry = isWeeklyCommodity || isWeeklyIndex;
 
-  // nextMonthlyExpiries uses the same roll logic as symbolsRouter so the
-  // first expiry tab always matches the contract month shown in search results.
-  const expiries = useMemo(
+  // ── Expiry list: fetch live from Fyers via backend, fall back to local calc ──
+  // Local calc (nextMonthlyExpiries) uses hardcoded calendar math and can be
+  // wrong around expiry day. Fyers always knows the exact dates.
+  const localExpiries = useMemo(
     () => nextMonthlyExpiries(
       isWeeklyExpiry ? 6 : 3,
       isCommodity ? root : null,
@@ -52,6 +54,46 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
     ),
     [isCommodity, isIndex, isWeeklyExpiry, root]
   );
+  const [expiries, setExpiries] = useState(localExpiries);
+  const [expiriesSource, setExpiriesSource] = useState("local"); // "local" | "fyers"
+
+  const fetchLiveExpiries = useCallback(async () => {
+    if (!underlying?.symbol) return;
+    // Derive the underlying symbol for option chains
+    // (e.g. option symbol → its index, equity → itself)
+    const underlyingSym = underlying.symbol;
+    try {
+      const res = await fetch(`${BACKEND}/api/options/expiries?symbol=${encodeURIComponent(underlyingSym)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.expiries && data.expiries.length > 0) {
+        // Convert "DD-MM-YYYY" strings to the { label, code, approx } shape
+        // that the rest of the modal expects from nextMonthlyExpiries.
+        // code = the Fyers monthly expiry code used in option symbols (e.g. "26JUL")
+        const MONTH_SHORT = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+        const shaped = data.expiries.map((dateStr) => {
+          const [dd, mm, yyyy] = dateStr.split("-");
+          const yy = yyyy.slice(2);
+          const monIdx = parseInt(mm, 10) - 1;
+          const code = `${yy}${MONTH_SHORT[monIdx]}`;
+          return { label: dateStr, code, approx: false };
+        });
+        setExpiries(shaped);
+        setExpiriesSource("fyers");
+      }
+    } catch (err) {
+      // Silently fall back to local — no error shown to user
+      setExpiries(localExpiries);
+      setExpiriesSource("local");
+    }
+  }, [underlying?.symbol, localExpiries]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setExpiries(localExpiries);   // show local immediately
+    setExpiriesSource("local");
+    fetchLiveExpiries();          // then upgrade to live Fyers data
+  }, [isOpen, underlying?.symbol]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Pass override step for commodities; for indices pass the root so INDEX_STRIKE_STEPS kicks in
   const { strikes, atm } = useMemo(
@@ -125,11 +167,17 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
                 key={e.code + i}
                 className={`oc-expiry-tab${i === expiryIdx ? " oc-expiry-tab-active" : ""}`}
                 onClick={() => setExpiryIdx(i)}
-                title={e.approx ? "Approximate — verify exact expiry date with your broker before expiry day" : undefined}
+                title={e.approx ? "Approximate — verify exact expiry date with your broker before expiry day" : "Expiry date from Fyers"}
               >
                 {e.label}
               </button>
             ))}
+            <span
+              className={`oc-expiry-source-badge oc-expiry-source-${expiriesSource}`}
+              title={expiriesSource === "fyers" ? "Expiry dates fetched live from Fyers" : "Approximate dates — could not reach Fyers"}
+            >
+              {expiriesSource === "fyers" ? "● live" : "~ approx"}
+            </span>
           </div>
           {expiry?.approx && (
             <div className="oc-expiry-approx-note">
