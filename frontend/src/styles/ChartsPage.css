@@ -154,6 +154,24 @@
   letter-spacing: 0.02em;
 }
 
+.chart-auto-atm-btn {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.chart-auto-atm-btn-on {
+  background: var(--green-dim);
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.chart-auto-atm-btn-on:hover {
+  background: var(--green-dim);
+  border-color: var(--green);
+  color: var(--green);
+}
+
 .chart-symbol-overlay-ticker {
   font-size: 12px;
   font-weight: 700;
@@ -207,6 +225,12 @@
   font-size: 11px;
   padding: 4px 12px;
   z-index: 20;
+}
+
+.shortcut-warning-bar {
+  background: var(--yellow-dim);
+  border-bottom: 1px solid var(--yellow);
+  color: var(--yellow);
 }
 
 /* ─── Loading / no-data ─────────────────────────────────────────── */

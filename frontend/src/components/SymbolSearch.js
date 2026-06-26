@@ -131,7 +131,11 @@ const SEARCH_ALIASES = {
 //                         when picking a result while the "Options" tab is
 //                         active, since options need a strike chain, not a
 //                         single symbol)
-export default function SymbolSearch({ isOpen, onClose, onSelect, onOpenOptionsChain }) {
+//   initialQuery — string (optional) — seeds the search box on open, used by
+//                  the "type anywhere to search" shortcut (the keystroke that
+//                  triggered the open is the first character of the query,
+//                  so the modal must open already showing it, not empty).
+export default function SymbolSearch({ isOpen, onClose, onSelect, onOpenOptionsChain, initialQuery }) {
   const [symbols, setSymbols] = useState([]);
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState("all");
@@ -147,14 +151,21 @@ export default function SymbolSearch({ isOpen, onClose, onSelect, onOpenOptionsC
   // Fresh recent list when opened
   useEffect(() => {
     if (isOpen) {
-      setQuery("");
+      setQuery(initialQuery || "");
       setTab("all");
       setActiveIdx(-1);
       setRecent(getRecent());
-      const t = setTimeout(() => inputRef.current?.focus(), 60);
+      const t = setTimeout(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        el.focus();
+        // Cursor at the end, not a full selection — so the next keystroke
+        // extends what was already typed instead of replacing it.
+        if (initialQuery) el.setSelectionRange(el.value.length, el.value.length);
+      }, 60);
       return () => clearTimeout(t);
     }
-  }, [isOpen]);
+  }, [isOpen, initialQuery]);
 
   // Live search filter
   useEffect(() => {

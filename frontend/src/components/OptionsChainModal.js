@@ -16,6 +16,7 @@ import {
   optionSymbol,
   MCX_COMMODITIES,
   WEEKLY_EXPIRY_COMMODITIES,
+  INDEX_WEEKLY_EXPIRY_DAY,
 } from "../utils/optionsChain";
 
 // Props:
@@ -35,13 +36,21 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
     [underlying]
   );
 
-  const isWeeklyExpiry = isCommodity && WEEKLY_EXPIRY_COMMODITIES.has(root);
+  const isWeeklyCommodity = isCommodity && WEEKLY_EXPIRY_COMMODITIES.has(root);
+  // NIFTY/SENSEX trade weekly (Tuesday/Thursday respectively) — every other
+  // index (BANKNIFTY, FINNIFTY, MIDCPNIFTY, NIFTYIT) is monthly-only.
+  const isWeeklyIndex = isIndex && INDEX_WEEKLY_EXPIRY_DAY[root] != null;
+  const isWeeklyExpiry = isWeeklyCommodity || isWeeklyIndex;
 
   // nextMonthlyExpiries uses the same roll logic as symbolsRouter so the
   // first expiry tab always matches the contract month shown in search results.
   const expiries = useMemo(
-    () => nextMonthlyExpiries(isWeeklyExpiry ? 4 : 3, isCommodity ? root : null),
-    [isCommodity, isWeeklyExpiry, root]
+    () => nextMonthlyExpiries(
+      isWeeklyExpiry ? 6 : 3,
+      isCommodity ? root : null,
+      isIndex ? root : null
+    ),
+    [isCommodity, isIndex, isWeeklyExpiry, root]
   );
 
   // Pass override step for commodities; for indices pass the root so INDEX_STRIKE_STEPS kicks in
@@ -89,7 +98,16 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
                 <span className="oc-badge oc-badge-index">INDEX</span>
               )}
               {isWeeklyExpiry && (
-                <span className="oc-badge oc-badge-weekly" title="Silver Micro has weekly expiries every Friday">WEEKLY</span>
+                <span
+                  className="oc-badge oc-badge-weekly"
+                  title={
+                    isWeeklyIndex
+                      ? `${root} has a weekly expiry every ${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][INDEX_WEEKLY_EXPIRY_DAY[root]]}`
+                      : "Silver Micro has weekly expiries every Friday"
+                  }
+                >
+                  WEEKLY
+                </span>
               )}
               {commCfg && (
                 <span className="oc-badge oc-badge-unit">{commCfg.unit}</span>

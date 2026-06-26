@@ -50,10 +50,15 @@ export function useSocket() {
   const [error, setError] = useState(null);
   const [tickStreamActive, setTickStreamActive] = useState(false);
   const [ticksFlowing, setTicksFlowing] = useState(null); // null = not yet known, true/false = server confirmed
+  // Auto-ATM side-channel: LTP of the underlying index/equity, only populated
+  // while setUnderlying(optionSymbol) has been called with a non-null value.
+  // { symbol, ltp, timestamp } | null — independent of chartData/candles.
+  const [underlyingTick, setUnderlyingTick] = useState(null);
 
   const socketRef = useRef(null);
   const activeResolutionRef = useRef(null);
   const activeSymbolRef = useRef(null);
+  const underlyingOptionSymbolRef = useRef(null); // last symbol passed to setUnderlying
   const latestRequestIdRef = useRef(0);
   const lastSocketUpdateRef = useRef(0);
   const hasDataRef = useRef(false);
@@ -150,6 +155,10 @@ export function useSocket() {
       // so the server's socketSymbols map is populated before any refresh fires.
       if (activeSymbolRef.current) socket.emit("set_symbol", activeSymbolRef.current);
       if (activeResolutionRef.current) socket.emit("set_resolution", activeResolutionRef.current);
+      // Auto-ATM: re-register the underlying side-channel after a reconnect —
+      // the server's socketUnderlyings map is keyed by socket.id, which is
+      // fresh after every reconnect, so this would otherwise silently drop.
+      if (underlyingOptionSymbolRef.current) socket.emit("set_underlying", underlyingOptionSymbolRef.current);
       // Only fall back to a GET fetch if there's genuinely no data and nothing is in-flight.
       // ChartsPage calls refresh() (POST) on mount which already covers the initial load.
       // The latestRequestIdRef check inside fetchChart prevents stale responses from landing.
@@ -164,6 +173,14 @@ export function useSocket() {
       // when the socket reconnects. Server will re-send market_status on connect.
       setTicksFlowing(null);
       setTickStreamActive(false);
+      setUnderlyingTick(null);
+    });
+
+    // Auto-ATM side-channel — pure LTP passthrough, independent of chartData.
+    // Only arrives while setUnderlying() has registered a symbol server-side.
+    socket.on("underlying_tick", (d) => {
+      if (!d?.symbol) return;
+      setUnderlyingTick(d);
     });
 
     socket.on("chart_update", (d) => {
@@ -332,5 +349,20 @@ export function useSocket() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return { chartData, connected, loading, error, refresh, tickStreamActive, ticksFlowing };
+  // ── setUnderlying — Auto-ATM side-channel control ──────────────────────────
+  // Pass the OPTION symbol currently on the chart to start/refresh the
+  // underlying LTP feed (server derives the underlying itself), or null/
+  // undefined to stop it (toggle off, switched to a non-option symbol, etc).
+  // Cheap to call on every render — it no-ops if the symbol hasn't changed.
+  const setUnderlying = useCallback((optionSymbolOrNull) => {
+    if (underlyingOptionSymbolRef.current === (optionSymbolOrNull || null)) return;
+    underlyingOptionSymbolRef.current = optionSymbolOrNull || null;
+    if (!optionSymbolOrNull) setUnderlyingTick(null);
+    if (socketRef.current?.connected) socketRef.current.emit("set_underlying", optionSymbolOrNull || null);
+  }, []);
+
+  return {
+    chartData, connected, loading, error, refresh, tickStreamActive, ticksFlowing,
+    underlyingTick, setUnderlying,
+  };
 }

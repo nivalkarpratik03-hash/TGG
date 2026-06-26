@@ -35,10 +35,21 @@ import { buildDefaultIndicators } from "../indicators/indicatorRegistry";
 import { toISTDate } from "../utils/istUtils";
 import { loadPref, savePref } from "../utils/prefs";
 import { formatResolution } from "../utils/formatResolution";
+import {
+  isOptionSymbol, parseOptionSymbol, getOptionRoot,
+  getStrikeStep, nearestStrikeWithHysteresis, optionSymbol,
+  NSE_INDEX_TICKERS, nextMonthlyExpiries,
+} from "../utils/optionsChain";
 import { LAYOUTS } from "../components/layout/LayoutPicker";
 import ErrorBoundary from "../components/ErrorBoundary";
 import { ChartPanelPropTypes } from "./ChartPanelPropTypes";
 import "../styles/ChartsPage.css";
+
+// Symbol types that support an options chain: NSE/BSE equities & indices,
+// and MCX dated commodity futures. Shared by the "Options" overlay button
+// and the Ctrl+Q/Ctrl+D ATM shortcuts so both always agree on eligibility.
+const OPTIONS_ELIGIBLE_RE = /^(NSE:[A-Z0-9&]+-(EQ|INDEX)|BSE:[A-Z0-9&]+-INDEX|MCX:[A-Z0-9]+\d{2}[A-Z]{3}FUT)$/i;
+
 
 // ─── SidebarSection — defined OUTSIDE so it never remounts ────────────────────
 const SidebarSection = memo(function SidebarSection({ id, title, color, tab, onTabChange, children }) {
@@ -101,7 +112,7 @@ const ChartPanel = memo(function ChartPanel({
   onSyncCrosshair,        // (price: number|null, symbol: string) => void
 }) {
   // ── EACH PANEL has its own socket/data — fully independent ─────────────────
-  const { chartData, connected, loading, error, refresh, tickStreamActive, ticksFlowing } = useSocket();
+  const { chartData, connected, loading, error, refresh, tickStreamActive, ticksFlowing, underlyingTick, setUnderlying } = useSocket();
 
   // ── Symbol / resolution / mode — all namespaced by pfx ────────────────────
   const [symbol, setSymbol] = useState(() => urlSymbol || loadPref(pfx + "symbol", "NSE:NIFTY50-INDEX"));
@@ -145,6 +156,7 @@ const ChartPanel = memo(function ChartPanel({
   useEffect(() => {
     if (!isActivePanel || !panelActionsRef) return;
     panelActionsRef.current = {
+      ...panelActionsRef.current,
       toggleHide: handleToggleHide,
       trashAll: handleTrashAll,
       drawingsHidden,
@@ -278,10 +290,169 @@ const ChartPanel = memo(function ChartPanel({
 
   // ── Symbol search modal ────────────────────────────────────────────────────
   const [searchOpen, setSearchOpen] = useState(false);
+  const [searchInitialQuery, setSearchInitialQuery] = useState("");
+
+  // Type-to-search: opens this panel's SymbolSearch pre-seeded with the
+  // character that was typed. Registered on panelActionsRef like
+  // openOptionsAtm, so the page-level keydown listener can call it on
+  // whichever panel is active without that listener needing to know about
+  // panel internals.
+  //
+  // APPENDS rather than replaces: the modal's own <input> only gains focus
+  // ~60ms after opening (see SymbolSearch's effect), so if someone types
+  // faster than that, the global page-level listener — not the input — is
+  // still the one catching keystrokes for a moment. Appending here means
+  // those extra fast keystrokes build up the query correctly instead of
+  // each one stomping the last. Once the input is focused, normal typing
+  // takes over via onChange as usual. searchOpenRef mirrors searchOpen
+  // synchronously (refs don't batch/replay the way setState updaters can),
+  // so this is safe to call repeatedly in quick succession.
+  const searchOpenRef = useRef(false);
+  useEffect(() => { searchOpenRef.current = searchOpen; }, [searchOpen]);
+  const openSearchWithQuery = useCallback((firstChar) => {
+    setSearchInitialQuery((prev) => (searchOpenRef.current ? prev + firstChar : firstChar));
+    searchOpenRef.current = true;
+    setSearchOpen(true);
+  }, []);
+  useEffect(() => {
+    if (!isActivePanel || !panelActionsRef) return;
+    panelActionsRef.current = { ...panelActionsRef.current, openSearchWithQuery };
+  }, [isActivePanel, openSearchWithQuery, panelActionsRef]);
 
   // ── Options chain modal ────────────────────────────────────────────────────
   const [optionsChainOpen, setOptionsChainOpen] = useState(false);
   const [optionsChainUnderlying, setOptionsChainUnderlying] = useState(null);
+
+  // ── Auto-ATM: keep an open option chart pinned to the at-the-money strike ──
+  // Off by default — user opts in per panel via the toggle near the symbol
+  // overlay. Persisted like other panel prefs so it survives a reload.
+  const [autoAtmOn, setAutoAtmOn] = useState(() => loadPref(pfx + "autoAtm", false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { savePref(pfx + "autoAtm", autoAtmOn); }, [autoAtmOn]);
+
+  // Parsed view of the current symbol, if it's an option contract.
+  const parsedOption = useMemo(
+    () => (isOptionSymbol(symbol) ? parseOptionSymbol(symbol) : null),
+    [symbol]
+  );
+
+  // Register/clear the underlying LTP side-channel whenever the symbol or the
+  // toggle changes. setUnderlying() itself no-ops if nothing actually changed,
+  // so this is safe to run on every relevant render.
+  useEffect(() => {
+    setUnderlying(autoAtmOn && parsedOption ? symbol : null);
+  }, [autoAtmOn, parsedOption, symbol, setUnderlying]);
+
+  // Debounce bookkeeping — a breach of the hysteresis dead zone must hold for
+  // AUTO_ATM_DEBOUNCE_MS before it actually triggers a switch. This is what
+  // protects against a single spike tick causing a switch that then reverts.
+  const AUTO_ATM_DEBOUNCE_MS = 3000;
+  const pendingStrikeRef = useRef(null);   // strike the dead zone has been breached toward
+  const pendingSinceRef = useRef(0);       // Date.now() when that breach was first observed
+
+  useEffect(() => {
+    if (!autoAtmOn || !parsedOption || !underlyingTick?.ltp) {
+      pendingStrikeRef.current = null;
+      return;
+    }
+    // getOptionRoot() expects an UNDERLYING symbol ("BSE:SENSEX-INDEX"), not
+    // an option contract ("BSE:SENSEX25JUL77000CE") — rebuild the underlying
+    // symbol from the parsed option so step/index lookup resolves correctly.
+    const underlyingSymbolForLookup = NSE_INDEX_TICKERS[parsedOption.root]
+      ? `${parsedOption.exch}:${NSE_INDEX_TICKERS[parsedOption.root]}`
+      : `${parsedOption.exch}:${parsedOption.root}-EQ`;
+    const underlyingInfo = getOptionRoot(underlyingSymbolForLookup);
+
+    const spot = underlyingTick.ltp;
+    const step = getStrikeStep(spot, underlyingInfo);
+    const suggested = nearestStrikeWithHysteresis(spot, parsedOption.strike, step, 0.2);
+
+    if (suggested === parsedOption.strike) {
+      pendingStrikeRef.current = null; // back inside the dead zone — cancel any pending switch
+      return;
+    }
+
+    const now = Date.now();
+    if (pendingStrikeRef.current !== suggested) {
+      // New breach direction/target — start (or restart) the debounce timer.
+      pendingStrikeRef.current = suggested;
+      pendingSinceRef.current = now;
+      return;
+    }
+    if (now - pendingSinceRef.current < AUTO_ATM_DEBOUNCE_MS) return; // still settling
+
+    // Debounce satisfied — switch the chart to the new strike, same expiry/kind.
+    const newSymbol = optionSymbol(
+      parsedOption.exch, parsedOption.root,
+      parsedOption.expiryCode, suggested, parsedOption.kind
+    );
+    pendingStrikeRef.current = null;
+    handleSymbolChange(newSymbol);
+    handleRefresh(newSymbol, resolution);
+    // handleSymbolChange/handleRefresh are stable useCallback refs; resolution
+    // is read at call time. Re-running this effect on every underlyingTick is
+    // intentional — that's the whole point of the watcher.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoAtmOn, parsedOption, underlyingTick]);
+
+  // ── Ctrl+Q / Ctrl+D shortcuts: open CE/PE at ATM for the active panel ──────
+  // Reuses the exact eligibility check the "Options" overlay button already
+  // uses, so the shortcut and the button always agree on which symbols
+  // support an options chain (equities, NSE/BSE indices, MCX dated futures).
+  const [shortcutWarning, setShortcutWarning] = useState(null);
+  useEffect(() => {
+    if (!shortcutWarning) return;
+    const t = setTimeout(() => setShortcutWarning(null), 3500);
+    return () => clearTimeout(t);
+  }, [shortcutWarning]);
+
+  const openOptionsAtm = useCallback((kind) => {
+    // If a CE/PE symbol is ALREADY loaded, treat its own underlying as the
+    // basis (so the shortcut works while already viewing an option chart,
+    // not just from the underlying's chart).
+    const optionHere = isOptionSymbol(symbol) ? parseOptionSymbol(symbol) : null;
+    const baseSymbol = optionHere
+      ? (NSE_INDEX_TICKERS[optionHere.root]
+          ? `${optionHere.exch}:${NSE_INDEX_TICKERS[optionHere.root]}`
+          : `${optionHere.exch}:${optionHere.root}-EQ`)
+      : symbol;
+
+    if (!baseSymbol || !OPTIONS_ELIGIBLE_RE.test(baseSymbol)) {
+      setShortcutWarning(`Options aren't available for ${symbol || "this symbol"}.`);
+      return;
+    }
+    const lastClose = candles.length ? candles[candles.length - 1].close : null;
+    if (!lastClose || lastClose <= 0) {
+      setShortcutWarning("No price loaded yet — open the chart first.");
+      return;
+    }
+
+    const info = getOptionRoot(baseSymbol);
+    const expiries = nextMonthlyExpiries(
+      1,
+      info.isCommodity ? info.root : null,
+      info.isIndex ? info.root : null
+    );
+    const nearestExpiry = expiries[0];
+    if (!nearestExpiry) {
+      setShortcutWarning(`Couldn't determine an expiry for ${symbol}.`);
+      return;
+    }
+    const step = getStrikeStep(lastClose, info);
+    const atmStrike = Math.round(lastClose / step) * step;
+    const newSymbol = optionSymbol(info.exch, info.root, nearestExpiry.code, atmStrike, kind);
+    handleSymbolChange(newSymbol);
+    handleRefresh(newSymbol, resolution);
+  }, [symbol, candles, resolution, handleSymbolChange, handleRefresh]);
+
+  // Registered separately from the main panelActionsRef effect above (which
+  // runs earlier in this component, before openOptionsAtm exists yet) —
+  // spreads onto whatever's already in the ref so neither effect clobbers
+  // the other's keys, regardless of mount/update order.
+  useEffect(() => {
+    if (!isActivePanel || !panelActionsRef) return;
+    panelActionsRef.current = { ...panelActionsRef.current, openOptionsAtm };
+  }, [isActivePanel, openOptionsAtm, panelActionsRef]);
 
   // ── Crosshair ──────────────────────────────────────────────────────────────
   const [crosshairBar, setCrosshairBar] = useState(null);
@@ -369,6 +540,7 @@ const ChartPanel = memo(function ChartPanel({
       <SymbolSearch
         isOpen={searchOpen}
         onClose={() => setSearchOpen(false)}
+        initialQuery={searchInitialQuery}
         onSelect={(sym) => {
           handleSymbolChange(sym);
           handleRefresh(sym, resolution);
@@ -405,6 +577,7 @@ const ChartPanel = memo(function ChartPanel({
       <div className="cp-body">
         <div className="chart-area">
           {error && <div className="error-bar">⚠ {error}</div>}
+          {shortcutWarning && !error && <div className="error-bar shortcut-warning-bar">⚠ {shortcutWarning}</div>}
 
           {/* Symbol overlay + quick Options button */}
           <div className="chart-overlay-row">
@@ -423,7 +596,7 @@ const ChartPanel = memo(function ChartPanel({
 
             {/* Only for plain equity/index symbols — the underlying types an
                 options chain can actually be built from */}
-            {symbol && /^(NSE:[A-Z0-9&]+-(EQ|INDEX)|BSE:[A-Z0-9&]+-INDEX|MCX:[A-Z0-9]+\d{2}[A-Z]{3}FUT)$/i.test(symbol) && (
+            {symbol && OPTIONS_ELIGIBLE_RE.test(symbol) && (
               <button
                 className="chart-symbol-overlay chart-options-btn"
                 onClick={() => {
@@ -436,6 +609,25 @@ const ChartPanel = memo(function ChartPanel({
                 title="View options chain for this symbol"
               >
                 Options
+              </button>
+            )}
+
+            {/* Auto-ATM toggle — only shown while an option contract (CE/PE) is
+                loaded. Off by default; switching on registers the underlying
+                LTP side-channel and keeps this chart pinned near the at-the-
+                money strike as spot moves, with a hysteresis dead zone so
+                normal chop near a strike boundary doesn't keep re-switching. */}
+            {parsedOption && (
+              <button
+                className={`chart-symbol-overlay chart-auto-atm-btn${autoAtmOn ? " chart-auto-atm-btn-on" : ""}`}
+                onClick={() => setAutoAtmOn((v) => !v)}
+                title={
+                  autoAtmOn
+                    ? "Auto ATM is ON — this chart will switch strikes as spot moves"
+                    : "Auto ATM is OFF — click to keep this chart pinned to the ATM strike as spot moves"
+                }
+              >
+                {autoAtmOn ? "Auto ATM ✓" : "Auto ATM"}
               </button>
             )}
           </div>
@@ -873,7 +1065,11 @@ export default function ChartsPage() {
   const [drawColor, setDrawColor] = useState("white");
   const [activePanel, setActivePanel] = useState(0);
 
-  const panelActionsRef = useRef({ toggleHide: null, trashAll: null, drawingsHidden: false });
+  const panelActionsRef = useRef({
+    toggleHide: null, trashAll: null, drawingsHidden: false,
+    openOptionsAtm: null,      // (kind: "CE"|"PE") => void — Ctrl+Q / Ctrl+D
+    openSearchWithQuery: null, // (firstChar: string) => void — type-to-search
+  });
   const [activePanelHidden, setActivePanelHidden] = useState(false);
 
   const panelLinkRef = useRef({ linked: false, setLinked: null });
@@ -896,6 +1092,52 @@ export default function ChartsPage() {
     function onKey(e) { if (e.key === "Escape") setSelectedTool("cursor"); }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Ctrl+Q / Ctrl+D globally → open ATM CE / PE option chart on the active panel.
+  // Ctrl+Q is always CE, Ctrl+D is always PE — neither toggles. Acts on
+  // whichever panel was last clicked (panelActionsRef is re-registered by
+  // that panel's own effect whenever it becomes active or its dependencies
+  // change — see openOptionsAtm in ChartPanel).
+  useEffect(() => {
+    function onKey(e) {
+      if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      const key = e.key.toLowerCase();
+      if (key !== "q" && key !== "d") return;
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+      e.preventDefault();
+      panelActionsRef.current?.openOptionsAtm?.(key === "q" ? "CE" : "PE");
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // panelActionsRef is a stable ref — reading .current at call time is
+    // intentional, not a missing dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Type-to-search (TradingView-style): start typing anywhere on the page —
+  // no need to click the search icon first — and the active panel's symbol
+  // search opens already showing what was typed. Only triggers on a single
+  // plain printable character with no modifier held, so it can never collide
+  // with Ctrl+Q/D above, Alt+letter toolbar shortcuts, or Ctrl+Z/Delete/Arrow
+  // drawing shortcuts — all of those require a modifier or a non-printable
+  // key, neither of which this listener responds to.
+  useEffect(() => {
+    function onKey(e) {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+      // e.key is exactly one printable character for plain letter/digit keys
+      // (e.g. "a", "5"); anything else ("Enter", "Shift", "ArrowUp", " "
+      // for space, etc.) has length !== 1 or is whitespace — ignore those so
+      // this never fires on navigation, selection, or accidental space-bar.
+      if (e.key.length !== 1 || e.key === " ") return;
+      if (!panelActionsRef.current?.openSearchWithQuery) return;
+      e.preventDefault();
+      panelActionsRef.current.openSearchWithQuery(e.key);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const panelCount = LAYOUTS.find((l) => l.id === layoutId)?.panels ?? 1;
