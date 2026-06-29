@@ -263,6 +263,51 @@ async function listSymbols() {
   return rows.map((r) => r.symbol);
 }
 
+// ─── Symbol Access Log (options/futures retention) ──────────────────────────
+
+/**
+ * Record that an option or future symbol was just loaded/viewed.
+ * Call this whenever fetchAndProcess / getOrCreateBuilder is invoked for a
+ * CE/PE/FUT symbol so retentionCleanup knows when it was last seen.
+ *
+ * Underlying equity/index symbols should NOT be passed here — the 2-day
+ * staleness rule only applies to option and future contract symbols.
+ *
+ * @param {string} symbol  e.g. "NSE:NIFTY26JUN24000CE" or "NSE:RELIANCE26JUNFUT"
+ */
+async function touchSymbolAccess(symbol) {
+  await query(
+    `INSERT INTO symbol_access_log (symbol, last_accessed)
+     VALUES ($1, NOW())
+     ON CONFLICT (symbol) DO UPDATE SET last_accessed = NOW()`,
+    [symbol]
+  );
+}
+
+/**
+ * Return a Map of symbol → last_accessed Date for all entries in symbol_access_log.
+ * Used by retentionCleanup.js to decide which option/future symbols are stale.
+ *
+ * @returns {Promise<Map<string, Date>>}
+ */
+async function getSymbolAccessMap() {
+  const rows = await query("SELECT symbol, last_accessed FROM symbol_access_log");
+  const map = new Map();
+  for (const r of rows) {
+    map.set(r.symbol, new Date(r.last_accessed));
+  }
+  return map;
+}
+
+/**
+ * Delete the access log entry for a symbol (called when its candle data is deleted).
+ *
+ * @param {string} symbol
+ */
+async function deleteSymbolAccess(symbol) {
+  await query("DELETE FROM symbol_access_log WHERE symbol=$1", [symbol]);
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function isValidCandle(c) {
@@ -291,4 +336,7 @@ module.exports = {
   countCandles,
   listSymbols,
   isValidCandle,
+  touchSymbolAccess,
+  getSymbolAccessMap,
+  deleteSymbolAccess,
 };

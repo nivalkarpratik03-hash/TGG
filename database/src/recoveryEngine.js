@@ -165,14 +165,37 @@ async function repairDay(opts) {
         emit("repair_status", { symbol, resolution, status: "validation_warning", issues: issues.length });
       }
 
+      // Filter fetched range down to ONLY the target trading day before upserting.
+      // The fetch window is ±1 day (for timezone safety), but we must not silently
+      // rewrite neighbor days' candles as a side-effect of repairing one bad day.
+      // Use the same UTC midnight boundary logic as deleteDayCandles() so that
+      // deleted and inserted always refer to the exact same set of candles.
+      const targetDay = new Date(tradingDay);
+      const dayStart = new Date(targetDay);
+      dayStart.setUTCHours(0, 0, 0, 0);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
+      const dayStartMs = dayStart.getTime();
+      const dayEndMs   = dayEnd.getTime();
+      const targetDayCandles = fresh.filter(c => c.time >= dayStartMs && c.time < dayEndMs);
+
+      if (targetDayCandles.length === 0) {
+        const errMsg = `Broker returned ${fresh.length} candles but none fall within target day ${new Date(tradingDay).toISOString().slice(0,10)} — aborting repair without touching existing DB data`;
+        console.error(`[Recovery] ${symbol} res=1: ${errMsg}`);
+        emit("repair_status", { symbol, resolution, status: "error", error: errMsg });
+        await logRepairFinish(logId, { status: "error", detail: errMsg }).catch(() => null);
+        return { success: false, error: errMsg };
+      }
+
       // Step 3: NOW it's safe to delete the corrupted/affected day — a
       // validated replacement is already in hand and about to be written back.
       console.log(`[Recovery] Deleting 1m day data for ${symbol} day=${new Date(tradingDay).toISOString().slice(0,10)}`);
       const deleted = await deleteDayCandles(symbol, resolution, tradingDay);
       emit("repair_status", { symbol, resolution, status: "deleted", deleted });
 
-      // Step 4: Store the freshly fetched 1m candles into DB.
-      const inserted = await upsertCandles(symbol, resolution, fresh);
+      // Step 4: Store only the target day's 1m candles into DB.
+      // (neighbor-day candles from the padded fetch window are discarded)
+      const inserted = await upsertCandles(symbol, resolution, targetDayCandles);
       console.log(`[Recovery] ${symbol} res=1: inserted ${inserted} 1m candles`);
       emit("repair_status", { symbol, resolution, status: "restored", inserted });
 

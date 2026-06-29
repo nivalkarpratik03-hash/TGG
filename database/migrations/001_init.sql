@@ -46,6 +46,22 @@ CREATE TABLE IF NOT EXISTS repair_log (
 CREATE INDEX IF NOT EXISTS idx_repair_log_symbol_time
   ON repair_log (symbol, started_at DESC);
 
+-- ── symbol_access_log ────────────────────────────────────────
+-- Tracks the last time each option/future symbol was loaded/viewed.
+-- Used by retentionCleanup.js to determine stale option contracts
+-- (delete if ≥2 trading days since last access) and expired futures
+-- (delete immediately once the contract month has passed).
+-- Underlying equity/index symbols are never inserted here — the 2-day
+-- rule only applies to option (CE/PE) and future contract symbols.
+
+CREATE TABLE IF NOT EXISTS symbol_access_log (
+  symbol        TEXT        PRIMARY KEY,
+  last_accessed TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_symbol_access_log_last_accessed
+  ON symbol_access_log (last_accessed DESC);
+
 -- ── validation_state ──────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS validation_state (
   symbol       TEXT        NOT NULL,

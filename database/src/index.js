@@ -10,6 +10,7 @@ const candleStore   = require("./candleStore");
 const validationEngine = require("./validationEngine");
 const recoveryEngine   = require("./recoveryEngine");
 const repairLog        = require("./repairLog");
+const retentionCleanup = require("./retentionCleanup");
 
 module.exports = {
   ...pool,
@@ -17,4 +18,5 @@ module.exports = {
   ...validationEngine,
   ...recoveryEngine,
   ...repairLog,
+  ...retentionCleanup,
 };

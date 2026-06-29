@@ -451,6 +451,23 @@ async function fetchAndProcess(symbol = SYMBOL, resolution = RESOLUTION) {
     return { candles: c.candles, result: c.result };
   }
 
+  // ── Option/future access tracking (retention cleanup) ──────────────────────
+  // Touch the access log whenever an option (CE/PE) or future (FUT) symbol is
+  // loaded — this is the "last viewed" timestamp used by retentionCleanup.js
+  // to decide when to delete stale contract data. Underlying equity/index
+  // symbols are skipped. Non-critical: fire-and-forget (never blocks the fetch).
+  if (dbEnabled) {
+    const symUpper = symbol.toUpperCase();
+    const isContract =
+      /\d{2}(?:[A-Z]{3}|[0-9][A-Z0-9]\d{2})\d+(CE|PE)$/.test(symUpper) || // option
+      /\d{2}[A-Z]{3}FUT$/.test(symUpper);                                    // future
+    if (isContract) {
+      db.touchSymbolAccess(symbol).catch((err) =>
+        console.warn(`[Retention] touchSymbolAccess failed for ${symbol}:`, err.message)
+      );
+    }
+  }
+
   // ── Load 1m base data ────────────────────────────────────────────────────────
   // If the builder for this symbol already has 1m history (seeded earlier this
   // boot), skip the DB read — the builder is the in-memory source of truth.
@@ -853,6 +870,17 @@ server.listen(PORT, async () => {
         // Prune candles older than 90 days on startup
         const pruned = await db.pruneOldCandles(null, 1, 90);
         if (pruned > 0) console.log(`[DB] Pruned ${pruned} old candles (>90 days)`);
+
+        // Retention cleanup: delete expired futures and stale options.
+        // Runs on every boot so it catches up even after a week offline.
+        try {
+          const { deletedFutures, deletedOptions } = await db.runRetentionCleanup();
+          if (deletedFutures.length + deletedOptions.length > 0) {
+            console.log(`[DB] Retention cleanup: removed ${deletedFutures.length} expired future(s), ${deletedOptions.length} stale option(s)`);
+          }
+        } catch (err) {
+          console.warn("[DB] Retention cleanup error (non-fatal):", err.message);
+        }
       } else {
         console.warn("[DB] ⚠️  PostgreSQL health check failed — DB writes disabled");
         dbEnabled = false;
