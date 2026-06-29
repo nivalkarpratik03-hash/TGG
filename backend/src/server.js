@@ -109,10 +109,90 @@ function setCache(symbol, resolution, candles, result) {
 // ─── Candle Builder ───────────────────────────────────────────────────────────
 const candleBuilders = new Map();
 
+// ── Gap backfill (REST) ────────────────────────────────────────────────────
+// Fired by CandleBuilder.onGapDetected whenever a silent WebSocket gap left
+// synthetic placeholder candles in the in-memory history. Pulls the real 1m
+// candles for just that window from Fyers REST and splices them in, then
+// re-derives caches and persists the corrected candles to DB so the repaired
+// data survives a restart and doesn't get re-corrupted by the next periodic
+// sync comparing against a stale DB row.
+//
+// Concurrency note: per-symbol, only one backfill runs at a time — a second
+// gap on the same symbol while one is already in flight is queued behind it
+// via gapBackfillQueues so two REST fetches never race to patch overlapping
+// windows.
+const gapBackfillQueues = new Map(); // symbol → Promise chain
+
+async function handleTickGapDetected(symbol, fromTimeMs, toTimeMs) {
+  const prevPromise = gapBackfillQueues.get(symbol) || Promise.resolve();
+  const next = prevPromise.then(() => doBackfillGap(symbol, fromTimeMs, toTimeMs));
+  gapBackfillQueues.set(symbol, next.catch(() => {})); // never block the queue on error
+  return next;
+}
+
+async function doBackfillGap(symbol, fromTimeMs, toTimeMs) {
+  const gapMinutes = Math.round((toTimeMs - fromTimeMs) / 60000);
+  console.log(`[GapBackfill:${symbol}] Fetching ${gapMinutes}min of real 1m candles from Fyers REST for ` +
+    `${new Date(fromTimeMs).toISOString()} → ${new Date(toTimeMs).toISOString()}...`);
+  io.emit("repair_status", { symbol, resolution: 1, status: "gap_backfill_start", fromTimeMs, toTimeMs, gapMinutes });
+
+  try {
+    // Small lookbackDaysOverride — this is a few-minute hole, not a historical
+    // refetch. 1 day of lookback comfortably covers any same-day gap.
+    const fresh = await fetchCandles(symbol, 1, 10000, 1);
+    const inWindow = fresh.filter((c) => c.time >= fromTimeMs && c.time < toTimeMs);
+
+    if (inWindow.length === 0) {
+      console.warn(`[GapBackfill:${symbol}] Broker returned no candles inside the gap window — ` +
+        `placeholders left in place, periodic sync / VALIDATE can retry later.`);
+      io.emit("repair_status", { symbol, resolution: 1, status: "gap_backfill_empty", fromTimeMs, toTimeMs });
+      return;
+    }
+
+    const builder = candleBuilders.get(symbol);
+    const patched = builder ? builder.patchGapCandles(inWindow) : 0;
+    console.log(`[GapBackfill:${symbol}] Patched ${patched}/${gapMinutes} placeholder candle(s) with real broker data`);
+
+    if (dbEnabled && patched > 0) {
+      db.upsertCandles(symbol, 1, inWindow).then((n) => {
+        console.log(`[DB] GapBackfill: persisted ${n} corrected 1m candle(s) for ${symbol}`);
+      }).catch((err) => {
+        console.error(`[DB] GapBackfill upsert failed for ${symbol}:`, err.message);
+      });
+    }
+
+    // Re-derive every cached resolution from the corrected 1m history so the
+    // chart updates immediately instead of waiting for the next tick/close.
+    if (builder && patched > 0) {
+      for (const res of [1, 3, 5, 15, 60]) {
+        try {
+          const candles = builder.getCandlesForResolution(res);
+          if (candles.length === 0) continue;
+          const result = runSignalEngine(candles);
+          setCache(symbol, res, candles, result);
+        } catch (err) {
+          console.error(`[GapBackfill:${symbol}] Re-derive res=${res} failed:`, err.message);
+        }
+      }
+      fetchAndBroadcast(symbol, RESOLUTION, true).catch(() => {});
+    }
+
+    io.emit("repair_status", { symbol, resolution: 1, status: "gap_backfill_ok", patched, gapMinutes });
+  } catch (err) {
+    console.error(`[GapBackfill:${symbol}] REST fetch failed:`, err.message);
+    io.emit("repair_status", { symbol, resolution: 1, status: "gap_backfill_error", error: err.message, fromTimeMs, toTimeMs });
+  }
+}
+
 function getOrCreateBuilder(symbol) {
   if (!candleBuilders.has(symbol)) {
     const builder = new CandleBuilder({
       symbol,
+      onGapDetected: (sym, fromTimeMs, toTimeMs) => {
+        handleTickGapDetected(sym, fromTimeMs, toTimeMs).catch((err) => {
+          console.error(`[GapBackfill:${sym}] Unhandled error:`, err.message);
+        });
+      },
       onTick: (formingCandles) => { emitCandleUpdate(symbol, formingCandles); },
       onFinalize: (finalizedCandle, formingCandles) => {
         console.log(`[Builder:${symbol}] Candle finalized @ ${new Date(finalizedCandle.time).toISOString()} close=${finalizedCandle.close}`);
@@ -801,6 +881,68 @@ server.listen(PORT, async () => {
       }
     }, PERIODIC_SYNC_MS);
     console.log("[DB] Periodic sync started (every 2 min, live market only)");
+  }
+
+  // ── DB: automatic historical validation (startup + every 10 min) ────────
+  // ROOT-CAUSE FIX: validateHistorical previously only ran when the user
+  // manually clicked the VALIDATE button — it was never scheduled, so a
+  // gap/corruption sitting in the middle of the day (not just the very
+  // latest candle, which is all periodicSync checks) could go undetected
+  // indefinitely. This runs the same check automatically: once shortly after
+  // boot (after initial data is loaded) and then on a recurring timer, and
+  // auto-triggers repairDay for whatever it finds — same as clicking the
+  // button, just without having to remember to click it.
+  if (dbEnabled) {
+    const HISTORICAL_VALIDATION_MS = 10 * 60 * 1000; // 10 minutes
+    let validationInFlight = false;
+
+    async function runScheduledValidation(trigger) {
+      if (validationInFlight) {
+        console.log(`[Validator] Skipping ${trigger} validation — previous run still in progress`);
+        return;
+      }
+      validationInFlight = true;
+      const symbols = [...new Set([SYMBOL, ...socketSymbols.values()])].filter(Boolean);
+      for (const sym of symbols) {
+        const startedAt = Date.now();
+        console.log(`[Validator] (${trigger}) Starting historical validation for ${sym}...`);
+        io.emit("repair_status", { symbol: sym, resolution: 1, status: "validation_running", trigger });
+        try {
+          const { valid, issues, candlesChecked } = await db.validateHistorical(sym, 1, {
+            fetchCandles: (s, r) => fetchCandles(s, r),
+            onRepair: (opts) => db.repairDay({ ...opts, fetchCandles: (s, r) => fetchCandles(s, r) }),
+          });
+          const tookMs = Date.now() - startedAt;
+          if (valid) {
+            console.log(`[Validator] (${trigger}) ${sym}: ✅ clean — ${candlesChecked} candles checked, 0 issues (${tookMs}ms)`);
+            io.emit("repair_status", { symbol: sym, resolution: 1, status: "validation_clean", candlesChecked, trigger });
+          } else {
+            console.warn(`[Validator] (${trigger}) ${sym}: ⚠️  ${issues.length} issue(s) found across ${candlesChecked} candles ` +
+              `(${issues.slice(0, 5).map((i) => i.type).join(", ")}${issues.length > 5 ? ", ..." : ""}) — repair auto-triggered (${tookMs}ms)`);
+            io.emit("repair_status", { symbol: sym, resolution: 1, status: "validation_issues_found", issueCount: issues.length, candlesChecked, trigger });
+          }
+        } catch (err) {
+          console.error(`[Validator] (${trigger}) ${sym}: error —`, err.message);
+          io.emit("repair_status", { symbol: sym, resolution: 1, status: "validation_error", error: err.message, trigger });
+        }
+      }
+      validationInFlight = false;
+    }
+
+    // Run once shortly after boot (give initialRestFetch time to populate data first).
+    // Runs regardless of trading day — useful to catch stale issues even when
+    // checking in over a weekend/holiday.
+    setTimeout(() => runScheduledValidation("startup").catch((err) => console.error("[Validator] startup run error:", err.message)), 15_000);
+
+    // Recurring pass — gated to trading days only (same reasoning as
+    // periodicSync/tick stream: no point hammering Fyers REST every 10 min
+    // on a weekend/holiday when nothing in the DB can have changed).
+    setInterval(() => {
+      if (!isTradingDay()) return;
+      runScheduledValidation("periodic").catch((err) => console.error("[Validator] periodic run error:", err.message));
+    }, HISTORICAL_VALIDATION_MS);
+
+    console.log(`[DB] Automatic historical validation scheduled (startup +15s, then every ${HISTORICAL_VALIDATION_MS / 60000} min)`);
   }
 
   await initialRestFetch();

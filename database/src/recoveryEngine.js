@@ -165,11 +165,13 @@ async function repairDay(opts) {
         return { success: false, error: errMsg, deleted, inserted };
       }
 
+      console.log(`[Recovery] ${symbol} res=1: ✅ COMPLETE — day ${new Date(tradingDay).toISOString().slice(0,10)} repaired (deleted=${deleted}, inserted=${inserted})`);
       emit("repair_status", { symbol, resolution, status: "ok", inserted, deleted });
       await logRepairFinish(logId, { status: "ok", deleted, inserted }).catch(() => null);
       return { success: true, inserted, deleted };
 
     } catch (err) {
+      console.error(`[Recovery] ${symbol} res=1: ❌ FAILED — ${err.message}`);
       emit("repair_status", { symbol, resolution, status: "error", error: err.message });
       await logRepairFinish(logId, { status: "error", detail: err.message }).catch(() => null);
       throw err;
@@ -261,6 +263,7 @@ async function fullRefetch(opts) {
     console.log(`[Recovery] Full refetch ${symbol} res=1: ${inserted} 1m candles stored`);
     emit("repair_status", { symbol, resolution: DB_RESOLUTION, status: "full_refetch_res_ok", inserted });
 
+    console.log(`[Recovery] ${symbol}: ✅ COMPLETE — full refetch done (deleted=${totalDeleted}, inserted=${totalInserted})`);
     emit("repair_status", { symbol, status: "full_refetch_complete", totalInserted, totalDeleted });
     await logRepairFinish(logId, {
       status: totalInserted > 0 ? "ok" : "error",

@@ -274,10 +274,17 @@ function createChartRouter(deps) {
     const valid = await validateToken().catch(() => false);
     if (!valid) return res.status(401).json({ error: "Not authenticated" });
     res.json({ symbol, status: "validation_started" });
+    console.log(`[DB Validate] ${symbol}: manual validation requested via UI`);
     db.validateHistorical(symbol, 1, {
       fetchCandles: (s, r) => fetchCandles(s, r),
       onRepair: (opts) => db.repairDay({ ...opts, fetchCandles: (s, r) => fetchCandles(s, r) }),
-    }).catch((err) => console.error(`[DB Validate] ${symbol}:`, err.message));
+    }).then(({ valid, issues, candlesChecked, repairedDays }) => {
+      if (valid) {
+        console.log(`[DB Validate] ${symbol}: ✅ COMPLETE — clean, ${candlesChecked} candles checked, no issues`);
+      } else {
+        console.log(`[DB Validate] ${symbol}: ✅ COMPLETE — ${issues.length} issue(s) found, ${repairedDays} day(s) repaired`);
+      }
+    }).catch((err) => console.error(`[DB Validate] ${symbol}: FAILED —`, err.message));
   });
 
   router.post("/api/db/refetch", async (req, res) => {
@@ -286,9 +293,13 @@ function createChartRouter(deps) {
     const valid = await validateToken().catch(() => false);
     if (!valid) return res.status(401).json({ error: "Not authenticated" });
     res.json({ symbol, status: "refetch_started" });
+    console.log(`[DB Refetch] ${symbol}: manual full refetch requested via UI`);
     db.fullRefetch({ symbol, fetchCandles: (s, r) => fetchCandles(s, r) })
-      .then(() => fetchAndProcess(symbol, 1))  // reload into memory from fresh DB data
-      .catch((err) => console.error(`[DB Refetch] ${symbol}:`, err.message));
+      .then((result) => {
+        fetchAndProcess(symbol, 1);  // reload into memory from fresh DB data
+        console.log(`[DB Refetch] ${symbol}: ✅ COMPLETE — deleted ${result.totalDeleted}, inserted ${result.totalInserted}`);
+      })
+      .catch((err) => console.error(`[DB Refetch] ${symbol}: FAILED —`, err.message));
   });
 
   // ── GET /api/options/expiries?symbol=NSE:NIFTY50-INDEX ────────────────────

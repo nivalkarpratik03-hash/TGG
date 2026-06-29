@@ -469,3 +469,58 @@ Format per entry: DATE | FILES | bug → fix
     default, on any OS). preventDefault() cannot reliably override a
     browser-chrome-level binding. Fine for a controlled office/single-app
     deployment; flagging in case this app is ever opened in Firefox.
+
+2026-06-29 | candleBuilder.js, server.js, validationEngine.js, recoveryEngine.js,
+             chartRouter.js
+  • Root cause of TGG chart not matching TradingView (HH/LH/HL shape correct,
+    but a synthetic flat plateau + one giant cliff candle near the latest
+    bars that doesn't exist on the broker's own chart): processTick's gap
+    filler pinned every silent WS-gap minute to a flat doji at the stale
+    last price; when real ticks resumed, the next forming candle opened at
+    that stale price too (not the incoming tick) → fixed both: gap minutes
+    now pushed as `synthetic:true` placeholders + onGapDetected callback
+    fires a small Fyers REST backfill (lookbackDaysOverride=1) that splices
+    real OHLCV in via new patchGapCandles(); new forming candle now opens at
+    the real incoming tick price, not the previous close.
+  • _validateCandle's "no-gap" rule unconditionally overwrote every 1m
+    candle's open with the prior close, erasing real micro-gaps vs broker →
+    now only used as a fallback when open is missing/invalid.
+  • validateHistorical accepted opts.fetchCandles/opts.onRepair but never
+    called either — manual VALIDATE button (and the architecture doc's
+    "VALIDATE → repairDay if issues" flow) never actually auto-repaired
+    anything, just logged issue counts → now groups issues by IST trading
+    day and calls onRepair once per affected day.
+  • validateHistorical was never scheduled — only ran on manual button
+    click, so mid-day gaps could go undetected indefinitely (periodicSync
+    only checks the latest candle) → added automatic validation: once 15s
+    after boot (any day) + every 10min during trading days, auto-triggering
+    repairDay via the now-working onRepair wiring above.
+  • repair_status terminal/socket visibility was inconsistent (some steps
+    logged, completion wasn't always obvious) → added explicit "✅ COMPLETE"
+    / "❌ FAILED" console lines to repairDay/fullRefetch/manual validate+
+    refetch routes; new gap_backfill_* and validation_* repair_status events
+    so the frontend repair badge also reflects gap-backfills and scheduled
+    validation passes, not just manual button clicks.
+
+2026-06-29 (S2) | validationEngine.js
+  • Follow-up to the same-day fix above: candleBuilder no longer CREATES new
+    cliff candles, but the user's DB already had one baked in from before
+    the fix (today, mid-session) — GAP/DUPLICATE/CORRUPT_OHLC checks all
+    pass on it (timestamps unbroken, OHLC internally consistent: high IS
+    the max, low IS the min) since it only looks wrong relative to its
+    NEIGHBORS, which none of those per-candle checks can see → added an
+    isolated-spike range-outlier detector: flags a candle only when its
+    range is >8x the trailing-10-candle median baseline AND the very next
+    candle reverts back near that baseline (the actual signature of one bad
+    print, vs a real multi-candle volatility burst which stays elevated for
+    several bars and correctly does NOT trip this). Gated to intraday
+    resolutions, and skipped across calendar-day boundaries (real overnight
+    gaps are already caught by the existing GAP check). New issue type
+    RANGE_OUTLIER feeds into the same onRepair/repairDay wiring added in
+    the previous entry — no separate plumbing needed.
+  • First attempt used a symmetric local-median window (candles on both
+    sides) — false-positived on legitimate elevated-volatility bursts
+    (tested against a simulated 6-candle move) because each bar in the
+    burst still saw mostly-calm neighbors on its far side. Replaced with
+    the isolated-spike (before-calm + after-reverts) version above before
+    shipping.
