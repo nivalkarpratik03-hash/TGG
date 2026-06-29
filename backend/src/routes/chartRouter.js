@@ -276,8 +276,8 @@ function createChartRouter(deps) {
     res.json({ symbol, status: "validation_started" });
     console.log(`[DB Validate] ${symbol}: manual validation requested via UI`);
     db.validateHistorical(symbol, 1, {
-      fetchCandles: (s, r) => fetchCandles(s, r),
-      onRepair: (opts) => db.repairDay({ ...opts, fetchCandles: (s, r) => fetchCandles(s, r) }),
+      fetchCandles: (s, r, rangeOpts) => fetchCandles(s, r, undefined, undefined, rangeOpts),
+      onRepair: (opts) => db.repairDay({ ...opts, fetchCandles: (s, r, rangeOpts) => fetchCandles(s, r, undefined, undefined, rangeOpts) }),
     }).then(({ valid, issues, candlesChecked, repairedDays }) => {
       if (valid) {
         console.log(`[DB Validate] ${symbol}: ✅ COMPLETE — clean, ${candlesChecked} candles checked, no issues`);
@@ -316,6 +316,36 @@ function createChartRouter(deps) {
       res.json({ symbol, expiries });
     } catch (err) {
       console.error("[/api/options/expiries] Error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── GET /api/options/chain?symbol=NSE:NIFTY50-INDEX&timestamp=&strikeCount= ──
+  // ROOT-CAUSE FIX: previously the frontend hand-built option symbols from a
+  // guessed Fyers date-encoding (see optionsChain.js's optionSymbol()), which
+  // Fyers frequently rejected as "Invalid symbol provided" — a documented,
+  // widely-reported problem with that encoding, not unique to this project.
+  // This route returns the REAL per-strike symbol strings straight from
+  // Fyers' own option chain response — no guessing, no date math, always
+  // valid because Fyers generated the string itself.
+  // `timestamp` (optional, epoch seconds as string) selects a specific
+  // expiry's strikes; omit it for the nearest expiry's strikes.
+  router.get("/api/options/chain", async (req, res) => {
+    const symbol = req.query.symbol;
+    if (!symbol) return res.status(400).json({ error: "symbol query param required" });
+    const timestamp = req.query.timestamp || "";
+    const strikeCount = parseInt(req.query.strikeCount || "20", 10);
+    try {
+      const valid = await validateToken();
+      if (!valid) return res.status(401).json({ error: "Not authenticated" });
+      const { fetchOptionChain } = require("../fyers/client");
+      const { expiries, strikes } = await fetchOptionChain(symbol, { strikeCount, timestamp });
+      if (strikes.length === 0) {
+        return res.status(502).json({ error: `Fyers returned no option chain data for ${symbol}`, symbol, expiries, strikes: [] });
+      }
+      res.json({ symbol, expiries, strikes });
+    } catch (err) {
+      console.error("[/api/options/chain] Error:", err.message);
       res.status(500).json({ error: err.message });
     }
   });

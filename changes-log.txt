@@ -524,3 +524,81 @@ Format per entry: DATE | FILES | bug → fix
     burst still saw mostly-calm neighbors on its far side. Replaced with
     the isolated-spike (before-calm + after-reverts) version above before
     shipping.
+
+2026-06-29 (S3) | server.js, candleStore.js
+  • Scheduled historical validation only checked symbols attached to a
+    currently-connected socket — SENSEX had a corrupted candle sitting in
+    the DB but never got auto-repaired because no panel had switched to it
+    yet at the 15s-after-boot validation pass (confirmed: log showed
+    validation ran for NIFTY only, zero mention of SENSEX) → added
+    candleStore.listSymbols() (SELECT DISTINCT symbol FROM candles) and
+    wired it into runScheduledValidation so every symbol that actually HAS
+    data in the DB gets covered, not just whatever's on-screen at the
+    moment the timer fires. Falls back to the old socket-only list if
+    listSymbols() itself errors.
+
+2026-06-29 (S4) | client.js, chartRouter.js, OptionsChainModal.js, ChartsPage.js
+  • Ctrl+Q/Ctrl+D ATM shortcuts and the options chain modal both failed
+    with Fyers "Invalid symbol provided" for weekly NIFTY/SENSEX contracts
+    (e.g. NSE:NIFTY2663023950CE) → root cause: optionSymbol() hand-builds
+    the weekly date code from a guessed Fyers encoding ({YY}{monthChar}{DD}).
+    Confirmed via Fyers' own community forum that this exact encoding,
+    including the specific example this project's changelog once cited as
+    "confirmed working" (NIFTY2543024500CE), is unreliable and gets
+    rejected by Fyers for other developers too — the format has changed
+    over time and isn't safely reverse-engineerable.
+  • Fix: stop guessing entirely. Fyers' own getOptionChain response already
+    returns the literal, always-valid `symbol` string per strike in
+    data.optionsChain[] (confirmed against Fyers community examples showing
+    response.data.optionsChain[].symbol). Added fetchOptionChain() in
+    client.js (wraps fyers.getOptionChain with strikecount + optional
+    timestamp to select a specific expiry) and a new GET /api/options/chain
+    route exposing it.
+  • OptionsChainModal.js: replaced per-cell optionSymbol() calls with a
+    lookup into a live strikeSymbols map fetched per expiry tab from the
+    new endpoint; cells whose strike isn't in the real chain are now
+    disabled instead of producing an invalid symbol on click.
+  • ChartsPage.js openOptionsAtm (Ctrl+Q/D): now async — fetches the real
+    nearest-expiry chain and picks whichever real strike is closest to
+    last close, instead of computing a strike locally and hand-building
+    the symbol.
+  • ChartsPage.js Auto-ATM watcher: switching strikes used the same broken
+    builder. Can't refetch per-tick (watcher runs on every price update),
+    so added a strike→symbol cache fetched once per option contract
+    (same underlying+expiry) and reused across ticks; if the suggested
+    strike isn't in the cache yet, the switch is skipped rather than
+    sending a guessed symbol. NOTE: cache fetch omits the expiry timestamp
+    (parseOptionSymbol only recovers the expiry CODE from the symbol
+    string, not a raw Fyers timestamp) — defaults to nearest-expiry
+    strikes, correct for the common case of trading near-dated contracts.
+  • Removed now-unused optionSymbol/nextMonthlyExpiries imports from
+    ChartsPage.js.
+
+2026-06-29 (S5) | client.js, recoveryEngine.js, server.js, chartRouter.js
+  • repairDay() always fetched a 30-day window from Fyers regardless of
+    which single day actually needed repair — fetchCandles()'s lookback is
+    anchored to TODAY (totalFrom = now - lookbackDays*86400), so a 2-month-
+    old bad day still pulled the full default-lookback range just to use
+    one day's worth (~375 1m candles) of it. With dozens of symbols each
+    needing several day-repairs in one validation pass (confirmed: full
+    log showed minutes of back-to-back 30-day pulls across ~30+ NSE
+    equities), this made scheduled validation extremely slow and far more
+    Fyers-REST-heavy than necessary.
+  • Fix: added an explicit {from, to} date-range option to fetchCandles()
+    (5th param, opts.from/opts.to) — when given, bypasses lookback-from-now
+    math entirely for the intraday path and fetches only that window
+    (padded ±1 day for timezone-boundary safety), clamped so `to` never
+    exceeds today. repairDay() now computes this window from `tradingDay`
+    and passes it through; a repair from 2 months ago now fetches ~4 days
+    instead of 30.
+  • Every caller that supplies repairDay() with a fetchCandles closure
+    (server.js's scheduled-validation onRepair, chartRouter.js's manual
+    VALIDATE onRepair, and periodicSync's fallback-to-repairDay path) now
+    wraps it as (s, r, rangeOpts) => fetchCandles(s, r, undefined,
+    undefined, rangeOpts) so the 3rd positional arg lands in opts, not in
+    count (client.js's 3rd param) — periodicSync used to receive the RAW
+    4/5-arg client.js function directly, which would have silently
+    misrouted repairDay's rangeOpts into the count slot instead.
+  • fullRefetch()'s fetchCandles closures are unchanged (still 2-arg,
+    (s,r)=>fetchCandles(s,r)) — a full refetch correctly wants the entire
+    default lookback, not a targeted window.

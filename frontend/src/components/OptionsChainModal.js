@@ -1,10 +1,19 @@
 // OptionsChainModal.js
 // ─────────────────────────────────────────────────────────────────────────
 // TradingView-style options chain: expiry-month tabs + Calls/Strike/Puts
-// ladder. 100% offline — no Fyers API calls. Strike ladder is centered on
-// the spot price the caller passes in (the underlying's last known close,
-// already available from chart data — never fetched separately here).
-// Supports: NSE equities, NSE/BSE indices, MCX commodities.
+// ladder. Strike ladder is centered on the spot price the caller passes in
+// (the underlying's last known close, already available from chart data).
+//
+// ROOT-CAUSE NOTE: this used to build each cell's option symbol locally via
+// optionSymbol() (guessed Fyers date-encoding). That guess regularly
+// produced symbols Fyers rejected as "Invalid symbol provided" — a
+// widely-reported problem with that encoding scheme, not unique to this
+// project. Symbols are now fetched live from Fyers' own option chain
+// response (/api/options/chain), which returns the literal, always-valid
+// `symbol` string per strike — no guessing. The local strike ladder
+// (buildStrikeLadder) is still used to decide WHICH strikes to show/center
+// around spot, but the actual symbol string for each cell comes from the
+// live chain lookup, not from optionSymbol().
 // ─────────────────────────────────────────────────────────────────────────
 
 import React, { useMemo, useState, useEffect, useCallback } from "react";
@@ -13,7 +22,6 @@ import {
   nextMonthlyExpiries,
   buildStrikeLadder,
   getOptionRoot,
-  optionSymbol,
   MCX_COMMODITIES,
   WEEKLY_EXPIRY_COMMODITIES,
   INDEX_WEEKLY_EXPIRY_DAY,
@@ -45,7 +53,8 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
 
   // ── Expiry list: fetch live from Fyers via backend, fall back to local calc ──
   // Local calc (nextMonthlyExpiries) uses hardcoded calendar math and can be
-  // wrong around expiry day. Fyers always knows the exact dates.
+  // wrong around expiry day. Fyers always knows the exact dates AND gives us
+  // the `expiry` timestamp value each tab needs to fetch ITS real strikes.
   const localExpiries = useMemo(
     () => nextMonthlyExpiries(
       isWeeklyExpiry ? 6 : 3,
@@ -59,30 +68,33 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
 
   const fetchLiveExpiries = useCallback(async () => {
     if (!underlying?.symbol) return;
-    // Derive the underlying symbol for option chains
-    // (e.g. option symbol → its index, equity → itself)
     const underlyingSym = underlying.symbol;
     try {
-      const res = await fetch(`${BACKEND}/api/options/expiries?symbol=${encodeURIComponent(underlyingSym)}`);
+      const res = await fetch(`${BACKEND}/api/options/chain?symbol=${encodeURIComponent(underlyingSym)}&strikeCount=1`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (data.expiries && data.expiries.length > 0) {
-        // Convert "DD-MM-YYYY" strings to the { label, code, approx } shape
-        // that the rest of the modal expects from nextMonthlyExpiries.
-        // code = the Fyers monthly expiry code used in option symbols (e.g. "26JUL")
+        // Keep both the display date AND the raw `expiry` timestamp — the
+        // timestamp is what /api/options/chain needs to fetch THIS expiry's
+        // real strikes (omitting it always returns the nearest expiry only).
         const MONTH_SHORT = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
-        const shaped = data.expiries.map((dateStr) => {
-          const [dd, mm, yyyy] = dateStr.split("-");
-          const yy = yyyy.slice(2);
-          const monIdx = parseInt(mm, 10) - 1;
-          const code = `${yy}${MONTH_SHORT[monIdx]}`;
-          return { label: dateStr, code, approx: false };
+        const shaped = data.expiries.map((e) => {
+          const dateStr = e.date;
+          let label = dateStr;
+          try {
+            const [dd, mm, yyyy] = dateStr.split("-");
+            label = `${dd} ${MONTH_SHORT[parseInt(mm, 10) - 1]}`;
+          } catch { /* keep raw date string if parsing fails */ }
+          return { label, timestamp: e.expiry, approx: false };
         });
         setExpiries(shaped);
         setExpiriesSource("fyers");
       }
     } catch (err) {
-      // Silently fall back to local — no error shown to user
+      // Silently fall back to local — no error shown to user. NOTE: local
+      // fallback expiries have no `timestamp`, so the chain fetch below
+      // will request the nearest expiry's strikes regardless of which
+      // local tab is selected — see the "approx" warning shown in that case.
       setExpiries(localExpiries);
       setExpiriesSource("local");
     }
@@ -94,6 +106,40 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
     setExpiriesSource("local");
     fetchLiveExpiries();          // then upgrade to live Fyers data
   }, [isOpen, underlying?.symbol]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Real strike symbols for the SELECTED expiry tab ───────────────────────
+  // Fetched fresh whenever the expiry tab or underlying changes. Keyed by
+  // "strike:CE"/"strike:PE" → real Fyers symbol string.
+  const [strikeSymbols, setStrikeSymbols] = useState(new Map());
+  const [chainStatus, setChainStatus] = useState("idle"); // idle | loading | ok | error
+
+  useEffect(() => {
+    if (!isOpen || !underlying?.symbol) return;
+    const expiry = expiries[expiryIdx];
+    let cancelled = false;
+    setChainStatus("loading");
+    const params = new URLSearchParams({ symbol: underlying.symbol, strikeCount: "20" });
+    if (expiry?.timestamp) params.set("timestamp", expiry.timestamp);
+
+    fetch(`${BACKEND}/api/options/chain?${params.toString()}`)
+      .then((res) => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.json(); })
+      .then((data) => {
+        if (cancelled) return;
+        const map = new Map();
+        for (const s of data.strikes || []) {
+          map.set(`${s.strike_price}:${s.option_type}`, s.symbol);
+        }
+        setStrikeSymbols(map);
+        setChainStatus(map.size > 0 ? "ok" : "error");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setStrikeSymbols(new Map());
+        setChainStatus("error");
+      });
+
+    return () => { cancelled = true; };
+  }, [isOpen, underlying?.symbol, expiryIdx, expiries]);
 
   // Pass override step for commodities; for indices pass the root so INDEX_STRIKE_STEPS kicks in
   const { strikes, atm } = useMemo(
@@ -118,8 +164,17 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
     if (e.target === e.currentTarget) onClose();
   }
 
+  // Looks up the REAL Fyers symbol for a strike+kind from the live chain
+  // fetch. Returns null if not yet loaded/available — callers must guard
+  // against null rather than falling back to a hand-built guess, since
+  // that guess is exactly what was producing "Invalid symbol" errors.
+  function realSymbolFor(strike, kind) {
+    return strikeSymbols.get(`${strike}:${kind}`) || null;
+  }
+
   function pick(strike, kind) {
-    const sym = optionSymbol(exch, root, expiry.code, strike, kind);
+    const sym = realSymbolFor(strike, kind);
+    if (!sym) return; // not loaded yet / Fyers doesn't list this strike — button is disabled in this case anyway
     onSelect(sym);
     onClose();
   }
@@ -164,7 +219,7 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
           <div className="oc-expiry-tabs">
             {expiries.map((e, i) => (
               <button
-                key={e.code + i}
+                key={(e.timestamp || e.code || e.label) + i}
                 className={`oc-expiry-tab${i === expiryIdx ? " oc-expiry-tab-active" : ""}`}
                 onClick={() => setExpiryIdx(i)}
                 title={e.approx ? "Approximate — verify exact expiry date with your broker before expiry day" : "Expiry date from Fyers"}
@@ -193,6 +248,11 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
             </span>
             <span className="oc-col-puts">Puts</span>
           </div>
+          {chainStatus === "error" && (
+            <div className="oc-expiry-approx-note">
+              Couldn't load live strike symbols from Fyers for this expiry — selection is disabled until it's available. Try another expiry tab or reopen the chain.
+            </div>
+          )}
         </div>
 
         {/* Body */}
@@ -213,10 +273,15 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
             <div className="oc-empty">
               <div className="oc-empty-msg">Couldn't build a strike ladder</div>
             </div>
+          ) : chainStatus === "loading" ? (
+            <div className="oc-empty">
+              <div className="oc-empty-msg">Loading live option symbols…</div>
+              <div className="oc-empty-sub">Fetching real strike data from Fyers for this expiry.</div>
+            </div>
           ) : (
             strikes.map((strike, idx) => {
-              const callSym = optionSymbol(exch, root, expiry.code, strike, "CE");
-              const putSym = optionSymbol(exch, root, expiry.code, strike, "PE");
+              const callSym = realSymbolFor(strike, "CE");
+              const putSym = realSymbolFor(strike, "PE");
               const isAtm = strike === atm;
 
               const nextStrike = strikes[idx + 1];
@@ -229,11 +294,21 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
               return (
                 <React.Fragment key={strike}>
                   <div className={`oc-row${isAtm ? " oc-row-atm" : ""}`}>
-                    <button className="oc-cell oc-call" onClick={() => pick(strike, "CE")} title={callSym}>
+                    <button
+                      className="oc-cell oc-call"
+                      onClick={() => pick(strike, "CE")}
+                      disabled={!callSym}
+                      title={callSym || "Not available from Fyers for this expiry"}
+                    >
                       Call {strikeFmt}
                     </button>
                     <span className="oc-strike">{strikeFmt}</span>
-                    <button className="oc-cell oc-put" onClick={() => pick(strike, "PE")} title={putSym}>
+                    <button
+                      className="oc-cell oc-put"
+                      onClick={() => pick(strike, "PE")}
+                      disabled={!putSym}
+                      title={putSym || "Not available from Fyers for this expiry"}
+                    >
                       Put {strikeFmt}
                     </button>
                   </div>

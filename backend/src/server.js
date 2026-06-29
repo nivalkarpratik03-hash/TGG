@@ -874,7 +874,18 @@ server.listen(PORT, async () => {
       const symbols = [...new Set([SYMBOL, ...socketSymbols.values()])].filter(Boolean);
       for (const sym of symbols) {
         try {
-          await db.periodicSync({ symbol: sym, fetchCandles });
+          // NOTE: periodicSync's own fetchCandles(symbol, resolution) call (no
+          // 3rd arg) ignores rangeOpts entirely and behaves exactly as before —
+          // this wrapper only matters when periodicSync falls back to
+          // repairDay() internally, which calls fetchCandles(symbol, resolution,
+          // rangeOpts). Passing the raw 4/5-arg client.js function directly
+          // here would put rangeOpts in the wrong positional slot (count,
+          // not opts) — this wrapper normalizes the 3-arg shape repairDay
+          // always expects, regardless of caller.
+          await db.periodicSync({
+            symbol: sym,
+            fetchCandles: (s, r, rangeOpts) => fetchCandles(s, r, undefined, undefined, rangeOpts),
+          });
         } catch (err) {
           console.error(`[PeriodicSync] Error for ${sym}:`, err.message);
         }
@@ -902,15 +913,35 @@ server.listen(PORT, async () => {
         return;
       }
       validationInFlight = true;
-      const symbols = [...new Set([SYMBOL, ...socketSymbols.values()])].filter(Boolean);
+
+      // ROOT-CAUSE FIX: this used to only validate symbols currently attached
+      // to a connected socket — e.g. SENSEX never got checked because no
+      // panel had switched to it yet at the moment this ran, even though it
+      // already had corrupted candles sitting in the DB from an earlier
+      // session. db.listSymbols() returns every symbol that actually HAS
+      // data stored, so a symbol is covered the moment it's ever been
+      // loaded — whether or not anyone is looking at it right now. Falls
+      // back to the old socket-based list if listSymbols() itself errors
+      // (e.g. transient DB hiccup) so validation degrades gracefully
+      // instead of silently validating nothing.
+      let symbols;
+      try {
+        const dbSymbols = await db.listSymbols();
+        symbols = [...new Set([SYMBOL, ...dbSymbols, ...socketSymbols.values()])].filter(Boolean);
+      } catch (err) {
+        console.warn(`[Validator] (${trigger}) listSymbols failed, falling back to connected-socket symbols only:`, err.message);
+        symbols = [...new Set([SYMBOL, ...socketSymbols.values()])].filter(Boolean);
+      }
+      console.log(`[Validator] (${trigger}) Validating ${symbols.length} symbol(s): ${symbols.join(", ")}`);
+
       for (const sym of symbols) {
         const startedAt = Date.now();
         console.log(`[Validator] (${trigger}) Starting historical validation for ${sym}...`);
         io.emit("repair_status", { symbol: sym, resolution: 1, status: "validation_running", trigger });
         try {
           const { valid, issues, candlesChecked } = await db.validateHistorical(sym, 1, {
-            fetchCandles: (s, r) => fetchCandles(s, r),
-            onRepair: (opts) => db.repairDay({ ...opts, fetchCandles: (s, r) => fetchCandles(s, r) }),
+            fetchCandles: (s, r, rangeOpts) => fetchCandles(s, r, undefined, undefined, rangeOpts),
+            onRepair: (opts) => db.repairDay({ ...opts, fetchCandles: (s, r, rangeOpts) => fetchCandles(s, r, undefined, undefined, rangeOpts) }),
           });
           const tookMs = Date.now() - startedAt;
           if (valid) {

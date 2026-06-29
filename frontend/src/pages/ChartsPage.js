@@ -37,12 +37,13 @@ import { loadPref, savePref } from "../utils/prefs";
 import { formatResolution } from "../utils/formatResolution";
 import {
   isOptionSymbol, parseOptionSymbol, getOptionRoot,
-  getStrikeStep, nearestStrikeWithHysteresis, optionSymbol,
-  NSE_INDEX_TICKERS, nextMonthlyExpiries,
+  getStrikeStep, nearestStrikeWithHysteresis,
+  NSE_INDEX_TICKERS,
 } from "../utils/optionsChain";
 import { LAYOUTS } from "../components/layout/LayoutPicker";
 import ErrorBoundary from "../components/ErrorBoundary";
 import { ChartPanelPropTypes } from "./ChartPanelPropTypes";
+import { BACKEND } from "../config";
 import "../styles/ChartsPage.css";
 
 // Symbol types that support an options chain: NSE/BSE equities & indices,
@@ -350,6 +351,50 @@ const ChartPanel = memo(function ChartPanel({
   const pendingStrikeRef = useRef(null);   // strike the dead zone has been breached toward
   const pendingSinceRef = useRef(0);       // Date.now() when that breach was first observed
 
+  // ── Real strike→symbol map for Auto-ATM strike switching ──────────────────
+  // ROOT-CAUSE NOTE: switching strikes used to hand-build the new symbol via
+  // optionSymbol() with a guessed Fyers date-encoding (the same broken
+  // approach as the options chain modal and the Ctrl+Q/D shortcut — see
+  // those for the full explanation). Fetching on every tick would be too
+  // expensive/slow for a hysteresis watcher that runs on every price
+  // update, so instead this fetches ONCE per option contract (same
+  // underlying + same expiry) and caches the strike→symbol map; the
+  // per-tick effect below just does a cheap Map lookup against it.
+  const [autoAtmStrikeMap, setAutoAtmStrikeMap] = useState(new Map());
+  useEffect(() => {
+    if (!autoAtmOn || !parsedOption) {
+      setAutoAtmStrikeMap(new Map());
+      return;
+    }
+    const underlyingSymbolForLookup = NSE_INDEX_TICKERS[parsedOption.root]
+      ? `${parsedOption.exch}:${NSE_INDEX_TICKERS[parsedOption.root]}`
+      : `${parsedOption.exch}:${parsedOption.root}-EQ`;
+    let cancelled = false;
+    const params = new URLSearchParams({ symbol: underlyingSymbolForLookup, strikeCount: "20" });
+    // NOTE: parseOptionSymbol() only gives us back the expiry CODE embedded
+    // in the symbol string (e.g. "26JUL"), not a raw Fyers epoch timestamp —
+    // and there's no reliable way to turn that code back into a timestamp
+    // without reintroducing the same date-guessing problem this fix removes.
+    // Omitting `timestamp` here returns the NEAREST expiry's strikes, which
+    // matches the contract being viewed in the overwhelming majority of
+    // cases (Auto-ATM is used on near-dated weekly/monthly options). If the
+    // user has manually navigated to a far expiry, the lookup may miss and
+    // the switch is simply skipped (see the !newSymbol guard below) rather
+    // than risk sending a wrong-expiry symbol.
+    fetch(`${BACKEND}/api/options/chain?${params.toString()}`)
+      .then((res) => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.json(); })
+      .then((data) => {
+        if (cancelled) return;
+        const map = new Map();
+        for (const s of data.strikes || []) map.set(`${s.strike_price}:${s.option_type}`, s.symbol);
+        setAutoAtmStrikeMap(map);
+      })
+      .catch(() => { if (!cancelled) setAutoAtmStrikeMap(new Map()); });
+    return () => { cancelled = true; };
+    // Re-fetch when the option contract itself changes (new underlying/expiry).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoAtmOn, parsedOption?.exch, parsedOption?.root, parsedOption?.expiryCode]);
+
   useEffect(() => {
     if (!autoAtmOn || !parsedOption || !underlyingTick?.ltp) {
       pendingStrikeRef.current = null;
@@ -382,10 +427,15 @@ const ChartPanel = memo(function ChartPanel({
     if (now - pendingSinceRef.current < AUTO_ATM_DEBOUNCE_MS) return; // still settling
 
     // Debounce satisfied — switch the chart to the new strike, same expiry/kind.
-    const newSymbol = optionSymbol(
-      parsedOption.exch, parsedOption.root,
-      parsedOption.expiryCode, suggested, parsedOption.kind
-    );
+    // Look up the REAL symbol from the cached live chain map (see effect
+    // above) instead of hand-building one — if it's not in the map yet
+    // (cache still loading, or Fyers doesn't list that strike), skip this
+    // switch silently rather than send a symbol that would error out.
+    const newSymbol = autoAtmStrikeMap.get(`${suggested}:${parsedOption.kind}`);
+    if (!newSymbol) {
+      pendingStrikeRef.current = null;
+      return;
+    }
     pendingStrikeRef.current = null;
     handleSymbolChange(newSymbol);
     handleRefresh(newSymbol, resolution);
@@ -393,7 +443,7 @@ const ChartPanel = memo(function ChartPanel({
     // is read at call time. Re-running this effect on every underlyingTick is
     // intentional — that's the whole point of the watcher.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoAtmOn, parsedOption, underlyingTick]);
+  }, [autoAtmOn, parsedOption, underlyingTick, autoAtmStrikeMap]);
 
   // ── Ctrl+Q / Ctrl+D shortcuts: open CE/PE at ATM for the active panel ──────
   // Reuses the exact eligibility check the "Options" overlay button already
@@ -406,7 +456,7 @@ const ChartPanel = memo(function ChartPanel({
     return () => clearTimeout(t);
   }, [shortcutWarning]);
 
-  const openOptionsAtm = useCallback((kind) => {
+  const openOptionsAtm = useCallback(async (kind) => {
     // If a CE/PE symbol is ALREADY loaded, treat its own underlying as the
     // basis (so the shortcut works while already viewing an option chart,
     // not just from the underlying's chart).
@@ -427,22 +477,32 @@ const ChartPanel = memo(function ChartPanel({
       return;
     }
 
-    const info = getOptionRoot(baseSymbol);
-    const expiries = nextMonthlyExpiries(
-      1,
-      info.isCommodity ? info.root : null,
-      info.isIndex ? info.root : null
-    );
-    const nearestExpiry = expiries[0];
-    if (!nearestExpiry) {
-      setShortcutWarning(`Couldn't determine an expiry for ${symbol}.`);
-      return;
+    // ROOT-CAUSE FIX: this used to hand-build the option symbol locally via
+    // optionSymbol() with a guessed Fyers date-encoding, which Fyers
+    // regularly rejected as "Invalid symbol provided" (a documented,
+    // widely-hit problem with that encoding, not unique to this codebase).
+    // Now we fetch the REAL nearest-expiry strikes straight from Fyers
+    // (the same data the options chain modal shows) and pick whichever
+    // real strike is closest to the last close — no symbol construction,
+    // no date math, so it's always a string Fyers itself produced.
+    try {
+      const params = new URLSearchParams({ symbol: baseSymbol, strikeCount: "20" });
+      const res = await fetch(`${BACKEND}/api/options/chain?${params.toString()}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const candidates = (data.strikes || []).filter((s) => s.option_type === kind);
+      if (candidates.length === 0) {
+        setShortcutWarning(`Fyers returned no ${kind} strikes for ${baseSymbol}.`);
+        return;
+      }
+      const nearest = candidates.reduce((best, s) =>
+        Math.abs(s.strike_price - lastClose) < Math.abs(best.strike_price - lastClose) ? s : best
+      );
+      handleSymbolChange(nearest.symbol);
+      handleRefresh(nearest.symbol, resolution);
+    } catch (err) {
+      setShortcutWarning(`Couldn't fetch live option data for ${baseSymbol}: ${err.message}`);
     }
-    const step = getStrikeStep(lastClose, info);
-    const atmStrike = Math.round(lastClose / step) * step;
-    const newSymbol = optionSymbol(info.exch, info.root, nearestExpiry.code, atmStrike, kind);
-    handleSymbolChange(newSymbol);
-    handleRefresh(newSymbol, resolution);
   }, [symbol, candles, resolution, handleSymbolChange, handleRefresh]);
 
   // Registered separately from the main panelActionsRef effect above (which

@@ -81,11 +81,23 @@ function emit(event, data) {
  *       repair always operates on DB_RESOLUTION (1m). Higher TFs are derived
  *       in-memory from the repaired 1m data by the caller (server.js).
  *
+ * ROOT-CAUSE NOTE: this used to call fetchCandles(symbol, resolution) with no
+ * date range, which always fell back to a 30-day-from-TODAY window — so
+ * repairing one bad day from two months ago still pulled the full default
+ * lookback from Fyers every time, for every affected symbol, even though
+ * only ~375 candles (one trading day) were ever going to be used. With
+ * dozens of symbols each needing several day-repairs, a single validation
+ * pass could take minutes and hammer the broker far more than necessary.
+ * Now `fetchCandles` is called with an explicit {from, to} window padded by
+ * one day on each side of `tradingDay`, fetching only what's actually needed.
+ *
  * @param {object} opts
  * @param {string} opts.symbol
  * @param {number} [opts.resolution]  ignored — always repairs 1m in DB
  * @param {Date|string} opts.tradingDay   any moment within the affected day
- * @param {Function} opts.fetchCandles    (symbol, resolution) => Promise<candle[]>  (Fyers REST)
+ * @param {Function} opts.fetchCandles    (symbol, resolution, rangeOpts?) => Promise<candle[]>
+ *                                         rangeOpts = {from, to} — caller (server.js) must
+ *                                         forward this through to client.js's fetchCandles
  * @param {string}  [opts.trigger]        'corruption'|'startup'|'periodic'|'manual'
  */
 async function repairDay(opts) {
@@ -93,6 +105,14 @@ async function repairDay(opts) {
   // Always repair 1m — ignore any resolution passed in (higher TFs are in-memory only)
   const resolution = DB_RESOLUTION;
   const key = `${symbol}:${resolution}`;
+
+  // Tight fetch window: one day on either side of the target day, so
+  // timezone/session-boundary rounding never clips the actual trading day
+  // this repair cares about, while still avoiding a 30-day pull.
+  const ONE_DAY_MS = 86400 * 1000;
+  const targetMs = new Date(tradingDay).getTime();
+  const fetchFrom = new Date(targetMs - ONE_DAY_MS);
+  const fetchTo = new Date(targetMs + ONE_DAY_MS);
 
   if (activeRepairs.has(key)) {
     console.log(`[Recovery] Repair already active for ${key} — skipping duplicate`);
@@ -117,8 +137,9 @@ async function repairDay(opts) {
       // replacement, which is exactly how 1m data went missing mid-day in
       // production. Fetching first means a failed/partial refetch never
       // touches existing DB rows.
-      console.log(`[Recovery] Refetching 1m candles from broker for ${symbol}...`);
-      const fresh = await fetchCandles(symbol, resolution);
+      console.log(`[Recovery] Refetching 1m candles from broker for ${symbol} ` +
+        `(targeted: ${fetchFrom.toISOString().slice(0,10)} → ${fetchTo.toISOString().slice(0,10)})...`);
+      const fresh = await fetchCandles(symbol, resolution, { from: fetchFrom, to: fetchTo });
       emit("repair_status", { symbol, resolution, status: "fetched", count: fresh.length });
 
       if (!fresh || fresh.length === 0) {

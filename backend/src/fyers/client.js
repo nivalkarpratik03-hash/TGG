@@ -248,12 +248,34 @@ function aggregateDailyToWeekly(dailyCandles) {
 }
 
 // ── Fetch historical candles ──────────────────────────────────────────────────
-async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverride = null) {
+/**
+ * @param {string} symbol
+ * @param {number|string} resolution
+ * @param {number} [count=10000]  currently unused (kept for API compat — see note above)
+ * @param {number|null} [lookbackDaysOverride]  days back FROM TODAY — ignored if opts.from/to given
+ * @param {object} [opts]
+ * @param {Date|string|number} [opts.from]  explicit range start (intraday only).
+ *        ROOT-CAUSE NOTE: lookbackDaysOverride is always anchored to "now," so
+ *        it cannot target an OLD day precisely — repairing a single day from
+ *        2 months ago using lookbackDaysOverride would either miss it (window
+ *        too short) or pull the whole 30/60/90-day default just to reach it
+ *        (wasteful — this is exactly why a single-day repair was fetching a
+ *        full 30-day window from Fyers for every affected symbol). Passing
+ *        opts.from/opts.to bypasses lookback math entirely and fetches only
+ *        the requested window, however old it is.
+ * @param {Date|string|number} [opts.to]  explicit range end (intraday only)
+ */
+async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverride = null, opts = {}) {
   const fyers = getFyersClient();
   const now = Math.floor(Date.now() / 1000);
   const isWeekly = resolution === 10080 || String(resolution).toUpperCase() === "W";
   const isDaily = resolution === 1440 || String(resolution).toUpperCase() === "D";
   const lookbackDays = lookbackDaysOverride != null ? lookbackDaysOverride : calcLookbackDays(resolution);
+
+  // ── Explicit date-range path (intraday only) ────────────────────────────
+  // Used by repairDay() for a single-day repair — fetches ONLY the requested
+  // window instead of the usual 30-day-from-today default.
+  const explicitRange = !isWeekly && !isDaily && opts && (opts.from != null || opts.to != null);
 
   // ── WEEKLY ────────────────────────────────────────────────────────────────
   if (isWeekly) {
@@ -286,8 +308,21 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
   const CHUNK_DAYS = 90;
   const TIMEOUT_MS = 15_000;
   const chunkSizeS = CHUNK_DAYS * 86400;
-  const todayEnd = endOfTodayIST(now);
-  const totalFrom = now - lookbackDays * 86400;
+
+  let todayEnd, totalFrom;
+  if (explicitRange) {
+    // Pad the requested window by ±1 day so timezone/boundary rounding never
+    // clips the actual target day — repairDay() deletes/upserts only the
+    // exact day it cares about anyway, so a little extra fetched data on
+    // either side is harmless (just gets upserted, not deleted).
+    const fromSec = opts.from != null ? Math.floor(new Date(opts.from).getTime() / 1000) : now - 86400;
+    const toSec = opts.to != null ? Math.floor(new Date(opts.to).getTime() / 1000) : now;
+    totalFrom = fromSec - 86400;
+    todayEnd = Math.min(endOfTodayIST(now), toSec + 86400);
+  } else {
+    todayEnd = endOfTodayIST(now);
+    totalFrom = now - lookbackDays * 86400;
+  }
 
   function parseIntraday(res) {
     if (!res || res.s !== "ok") return null;
@@ -337,7 +372,13 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
     .filter((c) => { if (seen.has(c.time)) return false; seen.add(c.time); return true; })
     .sort((a, b) => a.time - b.time);
 
-  console.log(`[Fyers] ${symbol} ${fyersResolution}: ${deduped.length} candles over ${lookbackDays}d (${chunks.length} chunk${chunks.length > 1 ? "s" : ""})`);
+  if (explicitRange) {
+    console.log(`[Fyers] ${symbol} ${fyersResolution}: ${deduped.length} candles for targeted range ` +
+      `${new Date(totalFrom * 1000).toISOString().slice(0,10)} → ${new Date(todayEnd * 1000).toISOString().slice(0,10)} ` +
+      `(${chunks.length} chunk${chunks.length > 1 ? "s" : ""}, single-day repair — not the usual ${calcLookbackDays(resolution)}d default)`);
+  } else {
+    console.log(`[Fyers] ${symbol} ${fyersResolution}: ${deduped.length} candles over ${lookbackDays}d (${chunks.length} chunk${chunks.length > 1 ? "s" : ""})`);
+  }
   return deduped;
 }
 
@@ -380,4 +421,66 @@ async function fetchOptionExpiries(underlyingSymbol) {
   }
 }
 
-module.exports = { loadToken, saveToken, getAuthURL, generateToken, validateToken, fetchCandles, fetchOptionExpiries };
+/**
+ * fetchOptionChain — returns the REAL, broker-confirmed option symbols for
+ * an underlying's option chain, for a specific expiry (or the nearest one
+ * if no timestamp given).
+ *
+ * ROOT-CAUSE NOTE: this project used to hand-build option symbols locally
+ * (see optionsChain.js's `optionSymbol()` on the frontend) by guessing at
+ * Fyers' date-encoding scheme — e.g. {YY}{monthChar}{DD} for weekly
+ * contracts. That guess produced strings like "NIFTY2663023950CE" that
+ * Fyers rejected with "Invalid symbol provided". This is a documented,
+ * widely-hit problem — other Fyers API users report the exact same error
+ * with the exact same hand-built format (including the format this
+ * project's own changelog once cited as "confirmed working"), because
+ * Fyers' weekly symbol encoding isn't reliably reverse-engineerable and
+ * has changed over time. There is no need to guess: Fyers' own
+ * `getOptionChain` response already includes the literal, always-valid
+ * `symbol` string for every strike in `data.optionsChain[].symbol` — this
+ * function returns that directly instead of constructing anything.
+ *
+ * @param {string} underlyingSymbol  e.g. "NSE:NIFTY50-INDEX", "BSE:SENSEX-INDEX"
+ * @param {object} [opts]
+ * @param {number} [opts.strikeCount=20]  strikes each side of ATM to request
+ * @param {string} [opts.timestamp]       Fyers expiry timestamp (epoch seconds,
+ *                                        as a string) to select a specific
+ *                                        expiry — omit for the nearest one.
+ * @returns {Promise<{expiries: Array<{date,expiry}>, strikes: Array<{symbol,strike_price,option_type,ltp,oi}>}>}
+ *          Returns { expiries: [], strikes: [] } if unavailable.
+ */
+async function fetchOptionChain(underlyingSymbol, opts = {}) {
+  const { strikeCount = 20, timestamp = "" } = opts;
+  try {
+    const fyers = getFyersClient();
+    const res = await Promise.race([
+      fyers.getOptionChain({ symbol: underlyingSymbol, strikecount: strikeCount, timestamp }),
+      rejectAfter(10_000, "fetchOptionChain"),
+    ]);
+    if (!res || res.s !== "ok" || !res.data) {
+      console.warn(`[Fyers] fetchOptionChain: no data for ${underlyingSymbol} — s=${res?.s} msg="${res?.message || res?.errmsg || "?"}"`);
+      return { expiries: [], strikes: [] };
+    }
+    const expiries = (res.data.expiryData || [])
+      .map((e) => ({ date: e.date || e.expiry, expiry: e.expiry || e.date }))
+      .filter((e) => e.date);
+    // optionsChain entries carry the real tradable symbol per strike — this
+    // is the whole point of calling this function instead of building one.
+    const strikes = (res.data.optionsChain || [])
+      .filter((s) => s && s.symbol)
+      .map((s) => ({
+        symbol: s.symbol,
+        strike_price: Number(s.strike_price),
+        option_type: s.option_type, // "CE" | "PE"
+        ltp: Number(s.ltp) || 0,
+        oi: Number(s.oi) || 0,
+      }));
+    console.log(`[Fyers] fetchOptionChain ${underlyingSymbol}: ${expiries.length} expiries, ${strikes.length} real strike symbols`);
+    return { expiries, strikes };
+  } catch (err) {
+    console.warn(`[Fyers] fetchOptionChain error for ${underlyingSymbol}:`, err.message);
+    return { expiries: [], strikes: [] };
+  }
+}
+
+module.exports = { loadToken, saveToken, getAuthURL, generateToken, validateToken, fetchCandles, fetchOptionExpiries, fetchOptionChain };

@@ -245,6 +245,24 @@ async function pruneOldCandles(symbol = null, resolution = 1, retentionDays = 90
   return rows.length;
 }
 
+/**
+ * List every distinct symbol currently stored in the candles table.
+ *
+ * ROOT-CAUSE NOTE: scheduled historical validation (server.js) used to only
+ * check symbols currently attached to a connected socket — a symbol with
+ * data sitting in the DB from an earlier session (e.g. you switched a panel
+ * away from it, or it loaded before any socket connected at boot) would
+ * never get re-validated again, even though its data could still be
+ * corrupted. This lets the scheduler cover every symbol that actually HAS
+ * data, regardless of whether anyone is currently looking at it.
+ *
+ * @returns {Promise<string[]>}
+ */
+async function listSymbols() {
+  const rows = await query("SELECT DISTINCT symbol FROM candles ORDER BY symbol ASC");
+  return rows.map((r) => r.symbol);
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function isValidCandle(c) {
@@ -271,5 +289,6 @@ module.exports = {
   loadCandles,
   getLatestCandle,
   countCandles,
+  listSymbols,
   isValidCandle,
 };
