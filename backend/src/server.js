@@ -6,7 +6,7 @@ const { Server } = require("socket.io");
 
 const { runSignalEngine } = require("./services/signalEngine");
 const { getAuthURL, generateToken, fetchCandles, validateToken, loadToken } = require("./fyers/client");
-const { CandleBuilder, deriveTimeframe } = require("./services/candleBuilder");
+const { CandleBuilder, deriveTimeframe, istDateKey } = require("./services/candleBuilder");
 const { TickStream, isMarketOpen, isLiveMarket, isAnyMarketLive, isMCXSymbol, isTradingDay } = require("./fyers/tickStream");
 const symbolsRouter = require("./routes/symbolsRouter");
 const scannerRouter = require("./routes/scannerRouter");
@@ -108,6 +108,26 @@ function setCache(symbol, resolution, candles, result) {
 
 // ─── Candle Builder ───────────────────────────────────────────────────────────
 const candleBuilders = new Map();
+
+// ── In-memory / DB reconciliation guard ─────────────────────────────────────
+// Tracks `${symbol}:${todayISTDateKey}` pairs that have already been checked
+// for the "builder under-seeded" condition below, so the extra DB read only
+// ever runs once per symbol per trading day instead of on every /api/chart
+// call for that symbol.
+const reconciledToday = new Set();
+
+/**
+ * Today's (IST) market-open timestamp in ms for a symbol.
+ * NSE/BSE open at 09:15 IST; MCX opens at 09:00 IST.
+ */
+function marketOpenAnchorMs(symbol) {
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const nowMs = Date.now();
+  const istMs = nowMs + IST_OFFSET_MS;
+  const istDayStartMs = istMs - (istMs % 86400000);
+  const openMinIST = isMCXSymbol(symbol) ? (9 * 60) : (9 * 60 + 15);
+  return (istDayStartMs + openMinIST * 60000) - IST_OFFSET_MS;
+}
 
 // ── Gap backfill (REST) ────────────────────────────────────────────────────
 // Fired by CandleBuilder.onGapDetected whenever a silent WebSocket gap left
@@ -478,9 +498,88 @@ async function fetchAndProcess(symbol = SYMBOL, resolution = RESOLUTION) {
 
   if (builderAlreadySeeded) {
     raw1m = candleBuilders.get(symbol).getOneMinHistory();
+
+    // ── Defensive reconciliation (ROOT-CAUSE FIX) ─────────────────────────────
+    // "Builder already has history" used to be treated as proof the builder is
+    // complete for today. That's only true if the builder was seeded cold from
+    // DB/REST at boot. If instead the builder was created fresh by the FIRST
+    // live tick arriving mid-session — e.g. this symbol wasn't part of the
+    // active tick-stream subscription until a panel opened it later, or ticks
+    // resumed after a WebSocket outage that started before this builder object
+    // even existed — its in-memory history silently starts late in the day.
+    // Every /api/chart call then served (and every socket broadcast built
+    // from) that truncated array, even though the missing earlier candles
+    // were sitting untouched in the DB the whole time — exactly the "candles
+    // present in DB but not shown on chart" symptom.
+    //
+    // Fix: once per symbol per trading day, check whether today's earliest
+    // in-memory candle actually starts at/near market open. If it starts
+    // suspiciously late, pull today's candles from DB and merge in any time
+    // slots the builder is missing (never overwrites what the builder already
+    // has — DB only fills gaps), then re-seed the builder with the merged,
+    // deduped result so this reconciliation happens once, not every call.
+    if (dbEnabled) {
+      const todayKey = istDateKey(Date.now());
+      const reconKey = `${symbol}:${todayKey}`;
+      if (!reconciledToday.has(reconKey) && isTradingDay(symbol)) {
+        reconciledToday.add(reconKey);
+        try {
+          const todays = raw1m.filter((c) => istDateKey(c.time) === todayKey);
+          const earliestToday = todays.length ? todays[0].time : null;
+          const openAnchor = marketOpenAnchorMs(symbol);
+          const UNDER_SEEDED_THRESHOLD_MS = 3 * 60 * 1000; // starting >3min after open is suspicious
+          if (earliestToday != null && earliestToday - openAnchor > UNDER_SEEDED_THRESHOLD_MS) {
+            const dbCandles = await db.loadCandles(symbol, 1, { from: new Date(openAnchor), limit: 100000 });
+            if (dbCandles.length > 0) {
+              const byTime = new Map(raw1m.map((c) => [c.time, c]));
+              let mergedIn = 0;
+              for (const c of dbCandles) {
+                if (!byTime.has(c.time)) { byTime.set(c.time, c); mergedIn++; }
+              }
+              if (mergedIn > 0) {
+                raw1m = [...byTime.values()].sort((a, b) => a.time - b.time);
+                candleBuilders.get(symbol).seedHistory(raw1m);
+                raw1m = candleBuilders.get(symbol).getOneMinHistory();
+                console.warn(
+                  `[Server] Reconciled ${symbol}: builder's in-memory history started ` +
+                  `${Math.round((earliestToday - openAnchor) / 60000)}min after market open — ` +
+                  `merged ${mergedIn} earlier candle(s) from DB that the builder was missing.`
+                );
+              }
+            }
+          }
+        } catch (err) {
+          console.warn(`[Server] Reconciliation check failed for ${symbol}:`, err.message);
+        }
+      }
+    }
   } else {
     // Builder is cold — load from DB first, fall back to Fyers REST if empty.
     if (dbEnabled) {
+      // ── ROOT-CAUSE FIX: verify DB isn't stale before trusting it ──────────
+      // A symbol nobody has actively watched recently (no socket had it open,
+      // wasn't part of the periodic-sync symbol list) can go days without a
+      // single DB write. The code below used to treat "DB returned some
+      // rows" as "DB is complete for this symbol" — so searching a symbol
+      // for the first time in days seeded the builder with whatever was
+      // last written days ago, then only live ticks from *this* moment
+      // onward ever got added — exactly why a freshly-searched symbol can
+      // render just one lonely "today" candle even though the broker has
+      // the full day. periodicSync's own 2-minute timer would eventually
+      // patch the DB rows, but it never touches an already-created
+      // builder's in-memory history, so the chart stayed wrong regardless.
+      // Fix: run the same broker-vs-DB drift check periodicSync uses, right
+      // here, synchronously, the first time this symbol's builder is cold —
+      // so DB is already caught up by the time we read it below.
+      try {
+        await db.periodicSync({
+          symbol,
+          fetchCandles: (s, r, rangeOpts) => fetchCandles(s, r, undefined, undefined, rangeOpts),
+        });
+      } catch (err) {
+        console.warn(`[Server] Pre-seed sync check failed for ${symbol} — continuing with existing DB data:`, err.message);
+      }
+
       try {
         const from = new Date(Date.now() - 30 * 86400 * 1000);
         const dbCandles = await db.loadCandles(symbol, 1, { from, limit: 100000 });
