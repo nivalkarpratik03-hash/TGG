@@ -29,6 +29,7 @@ import ConsolidationZoneTable from "../components/ConsolidationZoneTable";
 import ConsolidationStatsPanel from "../components/ConsolidationStatsPanel";
 import EmaFloatPanel from "../components/EmaFloatPanel";
 import TradingToolbar from "../components/TradingToolbar";
+import AtmWorkspace from "../components/AtmWorkspace";
 import { DrawingProvider, usePanelLink, setAllLinked } from "../components/DrawingContext";
 import { useSocket } from "../hooks/useSocket";
 import { buildDefaultIndicators } from "../indicators/indicatorRegistry";
@@ -295,7 +296,7 @@ const ChartPanel = memo(function ChartPanel({
 
   // Type-to-search: opens this panel's SymbolSearch pre-seeded with the
   // character that was typed. Registered on panelActionsRef like
-  // openOptionsAtm, so the page-level keydown listener can call it on
+  // getAtmBaseSymbol, so the page-level keydown listener can call it on
   // whichever panel is active without that listener needing to know about
   // panel internals.
   //
@@ -445,10 +446,23 @@ const ChartPanel = memo(function ChartPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoAtmOn, parsedOption, underlyingTick, autoAtmStrikeMap]);
 
-  // ── Ctrl+Q / Ctrl+D shortcuts: open CE/PE at ATM for the active panel ──────
+  // ── Ctrl+Q / Ctrl+D shortcuts: resolve the ATM base symbol for the ────────
+  // shared 3-pane ATM Workspace (rendered once at ChartsPage level).
   // Reuses the exact eligibility check the "Options" overlay button already
   // uses, so the shortcut and the button always agree on which symbols
   // support an options chain (equities, NSE/BSE indices, MCX dated futures).
+  //
+  // ROOT-CAUSE FIX: this used to be `openOptionsAtm(kind)`, which mutated
+  // THIS panel's own symbol in place, picking the nearest strike by
+  // comparing candles[last].close against the fetched chain — i.e. whatever
+  // price happened to be on screen. That's correct when the panel is showing
+  // the underlying, but wrong once it's already showing an option: pressing
+  // Ctrl+Q then Ctrl+D compared the fetched PE strikes against the CE
+  // contract's own premium (e.g. ~₹410) instead of the underlying's spot
+  // (e.g. ~78,000), landing on a essentially random low strike. Now this
+  // panel only resolves WHICH underlying the shortcut applies to — the
+  // workspace itself fetches the underlying's real spot and both strike
+  // ladders fresh, so it never trusts an option's own price as a spot proxy.
   const [shortcutWarning, setShortcutWarning] = useState(null);
   useEffect(() => {
     if (!shortcutWarning) return;
@@ -456,7 +470,7 @@ const ChartPanel = memo(function ChartPanel({
     return () => clearTimeout(t);
   }, [shortcutWarning]);
 
-  const openOptionsAtm = useCallback(async (kind) => {
+  const getAtmBaseSymbol = useCallback(() => {
     // If a CE/PE symbol is ALREADY loaded, treat its own underlying as the
     // basis (so the shortcut works while already viewing an option chart,
     // not just from the underlying's chart).
@@ -469,50 +483,19 @@ const ChartPanel = memo(function ChartPanel({
 
     if (!baseSymbol || !OPTIONS_ELIGIBLE_RE.test(baseSymbol)) {
       setShortcutWarning(`Options aren't available for ${symbol || "this symbol"}.`);
-      return;
+      return null;
     }
-    const lastClose = candles.length ? candles[candles.length - 1].close : null;
-    if (!lastClose || lastClose <= 0) {
-      setShortcutWarning("No price loaded yet — open the chart first.");
-      return;
-    }
-
-    // ROOT-CAUSE FIX: this used to hand-build the option symbol locally via
-    // optionSymbol() with a guessed Fyers date-encoding, which Fyers
-    // regularly rejected as "Invalid symbol provided" (a documented,
-    // widely-hit problem with that encoding, not unique to this codebase).
-    // Now we fetch the REAL nearest-expiry strikes straight from Fyers
-    // (the same data the options chain modal shows) and pick whichever
-    // real strike is closest to the last close — no symbol construction,
-    // no date math, so it's always a string Fyers itself produced.
-    try {
-      const params = new URLSearchParams({ symbol: baseSymbol, strikeCount: "20" });
-      const res = await fetch(`${BACKEND}/api/options/chain?${params.toString()}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const candidates = (data.strikes || []).filter((s) => s.option_type === kind);
-      if (candidates.length === 0) {
-        setShortcutWarning(`Fyers returned no ${kind} strikes for ${baseSymbol}.`);
-        return;
-      }
-      const nearest = candidates.reduce((best, s) =>
-        Math.abs(s.strike_price - lastClose) < Math.abs(best.strike_price - lastClose) ? s : best
-      );
-      handleSymbolChange(nearest.symbol);
-      handleRefresh(nearest.symbol, resolution);
-    } catch (err) {
-      setShortcutWarning(`Couldn't fetch live option data for ${baseSymbol}: ${err.message}`);
-    }
-  }, [symbol, candles, resolution, handleSymbolChange, handleRefresh]);
+    return { baseSymbol, resolution };
+  }, [symbol, resolution]);
 
   // Registered separately from the main panelActionsRef effect above (which
-  // runs earlier in this component, before openOptionsAtm exists yet) —
+  // runs earlier in this component, before getAtmBaseSymbol exists yet) —
   // spreads onto whatever's already in the ref so neither effect clobbers
   // the other's keys, regardless of mount/update order.
   useEffect(() => {
     if (!isActivePanel || !panelActionsRef) return;
-    panelActionsRef.current = { ...panelActionsRef.current, openOptionsAtm };
-  }, [isActivePanel, openOptionsAtm, panelActionsRef]);
+    panelActionsRef.current = { ...panelActionsRef.current, getAtmBaseSymbol };
+  }, [isActivePanel, getAtmBaseSymbol, panelActionsRef]);
 
   // ── Crosshair ──────────────────────────────────────────────────────────────
   const [crosshairBar, setCrosshairBar] = useState(null);
@@ -1127,10 +1110,15 @@ export default function ChartsPage() {
 
   const panelActionsRef = useRef({
     toggleHide: null, trashAll: null, drawingsHidden: false,
-    openOptionsAtm: null,      // (kind: "CE"|"PE") => void — Ctrl+Q / Ctrl+D
+    getAtmBaseSymbol: null,    // () => {baseSymbol, resolution}|null — Ctrl+Q / Ctrl+D
     openSearchWithQuery: null, // (firstChar: string) => void — type-to-search
   });
   const [activePanelHidden, setActivePanelHidden] = useState(false);
+
+  // ── ATM Workspace: 3-pane CE | Underlying | PE view opened by Ctrl+Q/D ────
+  // { baseSymbol, resolution, focus: "ce"|"pe" } while open, else null. Fully
+  // replaces the normal panel layout while open (see renderLayout() below).
+  const [atmWorkspace, setAtmWorkspace] = useState(null);
 
   const panelLinkRef = useRef({ linked: false, setLinked: null });
   const [toolbarLinked, setToolbarLinked] = useState(false);
@@ -1147,18 +1135,28 @@ export default function ChartsPage() {
     setSyncedCrosshairSymbol(price != null ? symbol : null);
   }, []);
 
-  // Esc key globally → cursor
+  // Esc key globally → cursor (and closes the ATM Workspace if one is open)
   useEffect(() => {
-    function onKey(e) { if (e.key === "Escape") setSelectedTool("cursor"); }
+    function onKey(e) {
+      if (e.key !== "Escape") return;
+      setSelectedTool("cursor");
+      setAtmWorkspace(null);
+    }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Ctrl+Q / Ctrl+D globally → open ATM CE / PE option chart on the active panel.
-  // Ctrl+Q is always CE, Ctrl+D is always PE — neither toggles. Acts on
-  // whichever panel was last clicked (panelActionsRef is re-registered by
-  // that panel's own effect whenever it becomes active or its dependencies
-  // change — see openOptionsAtm in ChartPanel).
+  // Ctrl+Q / Ctrl+D globally → open (or refocus) the 3-pane ATM Workspace
+  // (CE | Underlying | PE) anchored on the active panel's underlying symbol.
+  // Ctrl+Q focuses the CE column, Ctrl+D focuses the PE column — both open
+  // the SAME workspace instance rather than mutating the active panel's own
+  // chart. That in-place mutation is what let the two shortcuts step on each
+  // other before (see getAtmBaseSymbol in ChartPanel for the full story):
+  // pressing Ctrl+Q then Ctrl+D compared the fetched PE strikes against
+  // whatever price the panel happened to be showing, which was the CE
+  // option's own premium, not the underlying's spot. Acts on whichever panel
+  // was last clicked (panelActionsRef is re-registered by that panel's own
+  // effect whenever it becomes active or its dependencies change).
   useEffect(() => {
     function onKey(e) {
       if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
@@ -1166,7 +1164,14 @@ export default function ChartsPage() {
       if (key !== "q" && key !== "d") return;
       if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
       e.preventDefault();
-      panelActionsRef.current?.openOptionsAtm?.(key === "q" ? "CE" : "PE");
+      const info = panelActionsRef.current?.getAtmBaseSymbol?.();
+      if (!info) return; // active panel already surfaced its own warning
+      const focus = key === "q" ? "ce" : "pe";
+      setAtmWorkspace((prev) =>
+        (prev && prev.baseSymbol === info.baseSymbol)
+          ? { ...prev, focus } // same underlying already open — just refocus
+          : { baseSymbol: info.baseSymbol, resolution: info.resolution, focus }
+      );
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -1276,7 +1281,15 @@ export default function ChartsPage() {
             setAllLinked(val);
           }}
         />
-        {renderLayout()}
+        {atmWorkspace ? (
+          <AtmWorkspace
+            key={atmWorkspace.baseSymbol}
+            baseSymbol={atmWorkspace.baseSymbol}
+            resolution={atmWorkspace.resolution}
+            focus={atmWorkspace.focus}
+            onClose={() => setAtmWorkspace(null)}
+          />
+        ) : renderLayout()}
       </div>
     </DrawingProvider>
   );

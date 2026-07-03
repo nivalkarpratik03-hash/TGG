@@ -127,6 +127,25 @@ async function deleteDayCandles(symbol, resolution, tradingDay) {
  * statement — and the FULL Postgres error (code/detail/hint), not just
  * `.message`, is attached to the thrown error so callers can log the real
  * diagnostic instead of the truncated "out of memory" string.
+ *
+ * ROOT-CAUSE FIX (batching was silently non-functional on this table):
+ * this used to batch via `WHERE ctid IN (SELECT ctid FROM candles ... LIMIT n)`.
+ * `candles` is a TimescaleDB hypertable — physically a parent table backed by
+ * many per-time-range CHUNK tables, each with its OWN independent ctid
+ * numbering. A ctid collected from the subquery is only meaningful within the
+ * single chunk it came from, but the outer DELETE has no chunk information to
+ * pair back up with it, so Postgres has to build a much larger plan across
+ * every chunk to even attempt the match — which is exactly the "out of
+ * memory... ExecutorState" failure this was hitting on a 45k-row future
+ * contract, and why rows for MCX:CRUDEOIL26JUNFUT were still present in the
+ * DB after "cleanup" supposedly ran: every batch attempt failed the same way
+ * (batch size can shrink all it wants, the ctid/chunk mismatch doesn't care
+ * about batch size) until deleteWithRetry() in retentionCleanup.js exhausted
+ * its attempts and gave up, leaving the rows untouched.
+ * Fix: batch on the table's own composite primary key (symbol, resolution,
+ * time) instead of the physical row id — those columns are ordinary indexed
+ * data, transparent to the hypertable's chunk routing, so this works exactly
+ * like deleteDayCandles()'s time-range delete just above.
  */
 async function deleteAllCandles(symbol, resolution = null) {
   let batchSize = 5000;
@@ -150,14 +169,18 @@ async function deleteAllCandles(symbol, resolution = null) {
     try {
       const rows = resolution !== null
         ? await query(
-            `DELETE FROM candles WHERE ctid IN (
-               SELECT ctid FROM candles WHERE symbol=$1 AND resolution=$2 LIMIT $3
+            `DELETE FROM candles WHERE (symbol, resolution, time) IN (
+               SELECT symbol, resolution, time FROM candles
+               WHERE symbol=$1 AND resolution=$2
+               LIMIT $3
              ) RETURNING 1`,
             [symbol, resolution, batchSize]
           )
         : await query(
-            `DELETE FROM candles WHERE ctid IN (
-               SELECT ctid FROM candles WHERE symbol=$1 LIMIT $2
+            `DELETE FROM candles WHERE (symbol, resolution, time) IN (
+               SELECT symbol, resolution, time FROM candles
+               WHERE symbol=$1
+               LIMIT $2
              ) RETURNING 1`,
             [symbol, batchSize]
           );
