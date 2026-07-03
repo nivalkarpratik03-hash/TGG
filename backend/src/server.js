@@ -5,7 +5,7 @@ const path = require("path");
 const { Server } = require("socket.io");
 
 const { runSignalEngine } = require("./services/signalEngine");
-const { getAuthURL, generateToken, fetchCandles, validateToken, loadToken } = require("./fyers/client");
+const { getAuthURL, generateToken, fetchCandles, validateToken, loadToken, sleep: fyersSleep } = require("./fyers/client");
 const { CandleBuilder, deriveTimeframe, istDateKey } = require("./services/candleBuilder");
 const { TickStream, isMarketOpen, isLiveMarket, isAnyMarketLive, isMCXSymbol, isTradingDay } = require("./fyers/tickStream");
 const symbolsRouter = require("./routes/symbolsRouter");
@@ -999,7 +999,15 @@ server.listen(PORT, async () => {
     setInterval(async () => {
       if (!isTradingDay() || !isAnyMarketLive(getActiveTickSymbols())) return;
       const symbols = [...new Set([SYMBOL, ...socketSymbols.values()])].filter(Boolean);
-      for (const sym of symbols) {
+      // Pace between symbols — each periodicSync() call can trigger a
+      // multi-week Fyers fetch (and potentially a repairDay fallback on top
+      // of that). Firing these back-to-back for every watched symbol is
+      // exactly the burst pattern that exhausts Fyers' per-second rate
+      // limit and cascades into failures for concurrent cold-symbol
+      // searches happening at the same time.
+      const PERIODIC_SYNC_SYMBOL_DELAY_MS = 400;
+      for (let i = 0; i < symbols.length; i++) {
+        const sym = symbols[i];
         try {
           // NOTE: periodicSync's own fetchCandles(symbol, resolution) call (no
           // 3rd arg) ignores rangeOpts entirely and behaves exactly as before —
@@ -1016,6 +1024,7 @@ server.listen(PORT, async () => {
         } catch (err) {
           console.error(`[PeriodicSync] Error for ${sym}:`, err.message);
         }
+        if (i < symbols.length - 1) await fyersSleep(PERIODIC_SYNC_SYMBOL_DELAY_MS);
       }
     }, PERIODIC_SYNC_MS);
     console.log("[DB] Periodic sync started (every 2 min, live market only)");
@@ -1061,12 +1070,19 @@ server.listen(PORT, async () => {
       }
       console.log(`[Validator] (${trigger}) Validating ${symbols.length} symbol(s): ${symbols.join(", ")}`);
 
-      for (const sym of symbols) {
+      // Pace between symbols — a symbol with several affected days already
+      // paces its own repairDay() calls (validationEngine.js), but with
+      // zero delay BETWEEN symbols, dozens of symbols each firing 1+ Fyers
+      // calls back-to-back still bursts past the rate limit in aggregate.
+      const VALIDATION_SYMBOL_DELAY_MS = 500;
+      for (let i = 0; i < symbols.length; i++) {
+        const sym = symbols[i];
         const startedAt = Date.now();
         console.log(`[Validator] (${trigger}) Starting historical validation for ${sym}...`);
         io.emit("repair_status", { symbol: sym, resolution: 1, status: "validation_running", trigger });
         try {
           const { valid, issues, candlesChecked } = await db.validateHistorical(sym, 1, {
+            trigger,
             fetchCandles: (s, r, rangeOpts) => fetchCandles(s, r, undefined, undefined, rangeOpts),
             onRepair: (opts) => db.repairDay({ ...opts, fetchCandles: (s, r, rangeOpts) => fetchCandles(s, r, undefined, undefined, rangeOpts) }),
           });
@@ -1083,6 +1099,7 @@ server.listen(PORT, async () => {
           console.error(`[Validator] (${trigger}) ${sym}: error —`, err.message);
           io.emit("repair_status", { symbol: sym, resolution: 1, status: "validation_error", error: err.message, trigger });
         }
+        if (i < symbols.length - 1) await fyersSleep(VALIDATION_SYMBOL_DELAY_MS);
       }
       validationInFlight = false;
     }

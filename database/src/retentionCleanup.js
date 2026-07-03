@@ -40,6 +40,33 @@
 
 const { listSymbols, deleteAllCandles, deleteSymbolAccess, getSymbolAccessMap } = require("./candleStore");
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Delete a symbol's candles with a couple of retries on transient DB errors
+ * (e.g. a momentary "out of memory" under concurrent load right after boot).
+ * Without this, a single failed attempt left the contract's data sitting in
+ * the DB — untouched — until the next restart, since retention only runs
+ * once at startup.
+ */
+async function deleteWithRetry(sym, attempts = 3) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await deleteAllCandles(sym);
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) {
+        console.warn(`[Retention] delete ${sym} failed (attempt ${i + 1}/${attempts}): ${err.message} — retrying...`);
+        await sleep(1000 * (i + 1));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 // ── IST offset ────────────────────────────────────────────────────────────────
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+5:30
 
@@ -192,7 +219,7 @@ async function runRetentionCleanup() {
       if (isFutureExpired(sym)) {
         console.log(`[Retention] 🗑  Future expired — deleting candles: ${sym}`);
         try {
-          const deleted = await deleteAllCandles(sym);
+          const deleted = await deleteWithRetry(sym);
           await deleteSymbolAccess(sym).catch(() => {}); // best-effort
           console.log(`[Retention] ✅  ${sym}: ${deleted} candles removed`);
           deletedFutures.push(sym);
@@ -207,7 +234,7 @@ async function runRetentionCleanup() {
       if (isOptionStale(sym, accessMap)) {
         console.log(`[Retention] 🗑  Option stale (≥2 trading days since last view) — deleting candles: ${sym}`);
         try {
-          const deleted = await deleteAllCandles(sym);
+          const deleted = await deleteWithRetry(sym);
           await deleteSymbolAccess(sym).catch(() => {}); // best-effort
           console.log(`[Retention] ✅  ${sym}: ${deleted} candles removed`);
           deletedOptions.push(sym);

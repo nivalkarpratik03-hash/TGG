@@ -17,6 +17,66 @@ function rejectAfter(ms, label) {
   );
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ── Rate-limit retry helpers ────────────────────────────────────────────────
+// ROOT-CAUSE NOTE: the validator/periodicSync/cold-seed paths can all fire
+// Fyers getHistory calls back-to-back with zero pacing (dozens of symbols,
+// each needing 1+ chunk). Fyers enforces a per-second request cap, so any
+// burst quickly starts failing with "request limit reached" — and the Fyers
+// SDK sometimes surfaces that as an error with an EMPTY/undefined message
+// instead of the string "request limit", which is why logs show
+// "Intraday chunk failed (undefined)". Both were previously treated as a
+// plain failure and the chunk was just skipped — for a single-chunk fetch
+// (which is what every day-repair and most periodicSync calls are) that
+// meant the ENTIRE fetch came back empty, and (for periodicSync's own
+// paths) sometimes only-just-empty-enough to look like a legitimate
+// "no data" response rather than a transient rate limit. Retrying with
+// backoff on exactly these errors — instead of silently skipping — turns
+// most of these into successful (if slightly delayed) fetches.
+function isRateLimitError(err) {
+  if (!err) return false;
+  const msg = String(err.message ?? "").trim().toLowerCase();
+  return (
+    msg === "" ||
+    msg === "undefined" ||
+    msg.includes("request limit") ||
+    msg.includes("rate limit") ||
+    msg.includes("too many requests")
+  );
+}
+
+const RETRY_BACKOFF_MS = [500, 1500, 4000]; // 3 retries, increasing delay
+const INTER_CHUNK_DELAY_MS = 350;           // pacing between chunks of the SAME multi-chunk fetch
+
+/**
+ * Wraps a single fyers.getHistory() call with a timeout race AND
+ * retry-with-backoff specifically for rate-limit-shaped errors. Non-rate-limit
+ * errors (bad symbol, auth failure, etc.) are NOT retried — they fail fast,
+ * same as before.
+ */
+async function getHistoryWithRetry(fyers, params, timeoutMs, label) {
+  let lastErr;
+  for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
+    try {
+      return await Promise.race([
+        fyers.getHistory(params),
+        rejectAfter(timeoutMs, label),
+      ]);
+    } catch (err) {
+      lastErr = err;
+      if (!isRateLimitError(err) || attempt === RETRY_BACKOFF_MS.length) throw err;
+      const delay = RETRY_BACKOFF_MS[attempt];
+      console.warn(`[Fyers] ${label} rate-limited (${err.message || "undefined"}) — ` +
+        `retry ${attempt + 1}/${RETRY_BACKOFF_MS.length} in ${delay}ms`);
+      await sleep(delay);
+    }
+  }
+  throw lastErr;
+}
+
 function loadToken() {
   if (!fs.existsSync(TOKEN_FILE)) return null;
   return fs.readFileSync(TOKEN_FILE, "utf8").trim();
@@ -179,22 +239,27 @@ async function fetchDailyCandles(symbol, lookbackDays) {
   let failChunks = 0;
 
   // Fetch newest-first so recent data is always present even if old chunks fail
-  for (const chunk of chunksNewestFirst) {
+  for (let i = 0; i < chunksNewestFirst.length; i++) {
+    const chunk = chunksNewestFirst[i];
     const label = `${new Date(chunk.from * 1000).toISOString().slice(0, 10)}→${new Date(chunk.to * 1000).toISOString().slice(0, 10)}`;
     let res;
     try {
-      res = await Promise.race([
-        fyers.getHistory({
-          symbol, resolution: "D", date_format: "0",
-          range_from: String(chunk.from), range_to: String(chunk.to), cont_flag: "1",
-        }),
-        rejectAfter(TIMEOUT_MS, `fetchDailyCandles ${label}`),
-      ]);
+      res = await getHistoryWithRetry(fyers, {
+        symbol, resolution: "D", date_format: "0",
+        range_from: String(chunk.from), range_to: String(chunk.to), cont_flag: "1",
+      }, TIMEOUT_MS, `fetchDailyCandles ${label}`);
     } catch (err) {
       failChunks++;
       console.warn(`[Fyers] Daily chunk FAILED ${label}: ${err.message}`);
+      // Pace even after a failure — a burst of failures back-to-back is
+      // exactly what keeps the rate limit exceeded for subsequent chunks.
+      if (i < chunksNewestFirst.length - 1) await sleep(INTER_CHUNK_DELAY_MS);
       continue;
     }
+
+    // Inter-chunk pacing — only matters when there's more than one chunk
+    // (long daily/weekly lookbacks); single-chunk fetches skip this entirely.
+    if (i < chunksNewestFirst.length - 1) await sleep(INTER_CHUNK_DELAY_MS);
 
     const parsed = parseRaw(res);
     if (parsed && parsed.length > 0) {
@@ -346,23 +411,30 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
   }
 
   const allCandles = [];
-  for (const chunk of chunks) {
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    const label = `fetchCandles intraday ${new Date(chunk.from * 1000).toISOString().slice(0, 10)}→${new Date(chunk.to * 1000).toISOString().slice(0, 10)}`;
     let res;
     try {
-      res = await Promise.race([
-        fyers.getHistory({
-          symbol, resolution: fyersResolution, date_format: "0",
-          range_from: String(chunk.from), range_to: String(chunk.to), cont_flag: "1",
-        }),
-        rejectAfter(TIMEOUT_MS, `fetchCandles intraday`),
-      ]);
+      res = await getHistoryWithRetry(fyers, {
+        symbol, resolution: fyersResolution, date_format: "0",
+        range_from: String(chunk.from), range_to: String(chunk.to), cont_flag: "1",
+      }, TIMEOUT_MS, label);
     } catch (err) {
-      console.warn(`[Fyers] Intraday chunk failed (${err.message}) — skipping`);
+      console.warn(`[Fyers] Intraday chunk failed (${err.message || "undefined"}) — skipping`);
+      // Pace even after a failure — a burst of failures back-to-back is
+      // exactly what keeps the rate limit exceeded for subsequent chunks/symbols.
+      if (i < chunks.length - 1) await sleep(INTER_CHUNK_DELAY_MS);
       continue;
     }
     const parsed = parseIntraday(res);
     if (parsed && parsed.length > 0) allCandles.push(...parsed);
     else console.warn(`[Fyers] Intraday chunk empty: ${res?.message || res?.errmsg || "unknown"}`);
+
+    // Inter-chunk pacing — only matters when there's more than one chunk;
+    // single-chunk fetches (the common case: single-day repairs, 30d default
+    // lookback) skip this entirely since CHUNK_DAYS=90 covers them in one call.
+    if (i < chunks.length - 1) await sleep(INTER_CHUNK_DELAY_MS);
   }
 
   if (allCandles.length === 0) throw new Error(`Fyers getHistory returned no candles for ${symbol} res=${fyersResolution}`);
@@ -483,4 +555,4 @@ async function fetchOptionChain(underlyingSymbol, opts = {}) {
   }
 }
 
-module.exports = { loadToken, saveToken, getAuthURL, generateToken, validateToken, fetchCandles, fetchOptionExpiries, fetchOptionChain };
+module.exports = { loadToken, saveToken, getAuthURL, generateToken, validateToken, fetchCandles, fetchOptionExpiries, fetchOptionChain, sleep };

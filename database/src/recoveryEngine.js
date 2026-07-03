@@ -29,7 +29,7 @@
 
 const { upsertCandles, deleteDayCandles, deleteAllCandles } = require("./candleStore");
 const { validateCandleArray, checkPeriodicSync } = require("./validationEngine");
-const { logRepairStart, logRepairFinish } = require("./repairLog");
+const { logRepairStart, logRepairFinish, getRecentFailureCount } = require("./repairLog");
 
 // ─── DB resolution constant ───────────────────────────────────────────────────
 // Only 1m candles are stored in and read from the DB.
@@ -119,11 +119,33 @@ async function repairDay(opts) {
     return { skipped: true };
   }
 
+  // ROOT-CAUSE FIX: without this, a day that genuinely can't be fixed by
+  // re-fetching (a persistent RANGE_OUTLIER false-positive on a real price
+  // move, or a day that's simply unreachable while Fyers is rate-limiting)
+  // got re-attempted every single validator cycle — every 10 minutes,
+  // forever — hammering Fyers for a fetch that has no realistic chance of
+  // changing the outcome. Back off once a day has failed repeatedly in a
+  // short window: skip attempting it again until the backoff period
+  // elapses, but keep logging clearly so it isn't silently ignored forever.
+  const MAX_RECENT_FAILURES = 3;
+  const BACKOFF_WINDOW_HOURS = 3;
+  if (trigger !== "manual" && trigger !== "manual_full_refetch") {
+    const recentFailures = await getRecentFailureCount(symbol, tradingDay, BACKOFF_WINDOW_HOURS);
+    if (recentFailures >= MAX_RECENT_FAILURES) {
+      const dayKey = new Date(tradingDay).toISOString().slice(0, 10);
+      console.warn(`[Recovery] ${symbol} day=${dayKey}: skipping — already failed ${recentFailures} time(s) ` +
+        `in the last ${BACKOFF_WINDOW_HOURS}h. Backing off instead of retrying every cycle. ` +
+        `Use the manual VALIDATE/REPAIR button to force another attempt.`);
+      emit("repair_status", { symbol, resolution, status: "skipped_backoff", tradingDay: dayKey, recentFailures });
+      return { skipped: true, reason: "backoff", recentFailures };
+    }
+  }
+
   return enqueueRepair(symbol, async () => {
     activeRepairs.add(key);
     emit("repair_status", { symbol, resolution, status: "starting", trigger });
 
-    const logId = await logRepairStart({ symbol, resolution, trigger }).catch(() => null);
+    const logId = await logRepairStart({ symbol, resolution, trigger, tradingDay }).catch(() => null);
 
     try {
       // Step 1 (REORDERED — was: delete first, fetch second):
@@ -359,17 +381,43 @@ async function periodicSync(opts) {
     const from = latestDb ? latestDb.time : THREE_MONTHS_AGO;
     const missing = recentBroker.filter(c => c.time > from);
 
+    // ROOT-CAUSE FIX: this used to treat validateCandleArray as a hard
+    // all-or-nothing gate — if the freshly fetched batch (often 20-30
+    // trading days = 7,000-11,000 candles for a cold symbol) had even ONE
+    // GAP (e.g. a holiday) or RANGE_OUTLIER flagged ANYWHERE in it, the
+    // ENTIRE batch was discarded without storing a single row, and this
+    // fell through to repairDay() for only the single most-recent trading
+    // day. That is exactly why a freshly-searched symbol so often showed
+    // just one day (or less) of candles: weeks of perfectly good,
+    // already-fetched data were thrown away over one flagged candle, and
+    // the single-day fallback repair then had its own chance to fail
+    // (rate limiting) with nothing to fall back on.
+    //
+    // repairDay() and fullRefetch() already treat validation as
+    // informational-only for this exact reason — upsertCandles() filters
+    // out structurally corrupt rows itself, so a stray GAP/RANGE_OUTLIER
+    // flag must never block storing the rest of a valid batch. periodicSync
+    // was the one path that never got that fix. Bring it in line: always
+    // store whatever came back, and only fall back to a single-day repair
+    // when NOTHING useful was fetched at all.
     if (missing.length > 0) {
-      const { valid } = validateCandleArray(missing, resolution);
-      if (valid) {
-        const inserted = await upsertCandles(symbol, resolution, missing);
-        console.log(`[PeriodicSync] ${symbol} res=1: inserted ${inserted} missing 1m candles`);
-        emit("repair_status", { symbol, resolution, status: "periodic_sync_ok", inserted });
-        return { inSync: true, recovered: inserted };
+      const { valid, issues } = validateCandleArray(missing, resolution);
+      if (!valid) {
+        console.warn(`[PeriodicSync] ${symbol} res=1: refetch has ${issues.length} validation issue(s) ` +
+          `(${issues.slice(0, 3).map(i => i.type).join(", ")}) — storing valid rows anyway; ` +
+          `corrupt rows are filtered out by upsertCandles()`);
+        emit("repair_status", { symbol, resolution, status: "periodic_sync_validation_warning", issues: issues.length });
       }
+      const inserted = await upsertCandles(symbol, resolution, missing);
+      console.log(`[PeriodicSync] ${symbol} res=1: inserted ${inserted} missing 1m candles`);
+      emit("repair_status", { symbol, resolution, status: "periodic_sync_ok", inserted });
+      if (inserted > 0) return { inSync: true, recovered: inserted };
+      // Fetched candles but every single row failed basic OHLC sanity —
+      // fall through to single-day repair as a last resort.
     }
 
-    // Can't auto-recover with missing candles — trigger full day repair (1m only)
+    // Nothing usable came back from the batch fetch — trigger full day
+    // repair (1m only) for the latest trading day as a last resort.
     const tradingDay = latestBroker ? new Date(latestBroker.time) : new Date();
     await repairDay({ symbol, resolution, tradingDay, fetchCandles, trigger: "periodic" });
     return { inSync: false, repaired: true };

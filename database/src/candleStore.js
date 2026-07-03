@@ -119,21 +119,43 @@ async function deleteDayCandles(symbol, resolution, tradingDay) {
 }
 
 /**
- * Delete ALL candles for a symbol (full refetch / nuke).
+ * Delete ALL candles for a symbol (full refetch / nuke / retention cleanup).
+ *
+ * ROOT-CAUSE NOTE: this used to run as a single
+ * `DELETE FROM candles WHERE symbol=$1 RETURNING 1` statement. For a symbol
+ * that has quietly accumulated an unusually large number of rows (long MCX
+ * sessions × months of retention, or leftover rows from before the
+ * 1m-only architecture was enforced), that one statement has to build the
+ * entire RETURNING result set and delete plan in memory in a single shot —
+ * exactly the shape of query that can trip Postgres's "out of memory"
+ * error (SQLSTATE 53200), especially when it runs concurrently with the
+ * validator/periodicSync's own DB load right after boot. Deleting in
+ * bounded batches keeps the memory footprint of any single statement small
+ * and predictable regardless of how many rows a symbol has piled up.
  */
 async function deleteAllCandles(symbol, resolution = null) {
-  if (resolution !== null) {
-    const rows = await query(
-      "DELETE FROM candles WHERE symbol=$1 AND resolution=$2 RETURNING 1",
-      [symbol, resolution]
-    );
-    return rows.length;
+  const BATCH_SIZE = 5000;
+  let totalDeleted = 0;
+
+  while (true) {
+    const rows = resolution !== null
+      ? await query(
+          `DELETE FROM candles WHERE ctid IN (
+             SELECT ctid FROM candles WHERE symbol=$1 AND resolution=$2 LIMIT $3
+           ) RETURNING 1`,
+          [symbol, resolution, BATCH_SIZE]
+        )
+      : await query(
+          `DELETE FROM candles WHERE ctid IN (
+             SELECT ctid FROM candles WHERE symbol=$1 LIMIT $2
+           ) RETURNING 1`,
+          [symbol, BATCH_SIZE]
+        );
+    totalDeleted += rows.length;
+    if (rows.length < BATCH_SIZE) break; // fewer than a full batch = done
   }
-  const rows = await query(
-    "DELETE FROM candles WHERE symbol=$1 RETURNING 1",
-    [symbol]
-  );
-  return rows.length;
+
+  return totalDeleted;
 }
 
 // ─── Read ───────────────────────────────────────────────────────────────────
@@ -308,6 +330,58 @@ async function deleteSymbolAccess(symbol) {
   await query("DELETE FROM symbol_access_log WHERE symbol=$1", [symbol]);
 }
 
+// ─── Validation state (persistent skip-cache) ────────────────────────────────
+// The `validation_state` table already existed in the schema but was never
+// read or written anywhere — every historical validation pass re-scanned
+// the FULL 90-day window from scratch, every 10 minutes, for every symbol,
+// even for symbols that were already confirmed clean minutes earlier.
+// These helpers let validationEngine.js persist "last checked / last known
+// good" per symbol so periodic runs can validate only what's actually new
+// since the last check instead of repeating the same historical sweep
+// forever.
+
+/**
+ * Fetch the persisted validation state for a symbol+resolution.
+ * @returns {Promise<{lastChecked: Date, lastOk: Date|null, status: string, issue: string|null} | null>}
+ */
+async function getValidationState(symbol, resolution = 1) {
+  const rows = await query(
+    `SELECT last_checked, last_ok, status, issue
+     FROM validation_state
+     WHERE symbol=$1 AND resolution=$2`,
+    [symbol, resolution]
+  );
+  if (!rows.length) return null;
+  const r = rows[0];
+  return {
+    lastChecked: new Date(r.last_checked),
+    lastOk: r.last_ok ? new Date(r.last_ok) : null,
+    status: r.status,
+    issue: r.issue,
+  };
+}
+
+/**
+ * Upsert the validation state for a symbol+resolution after a check.
+ * @param {string} symbol
+ * @param {number} resolution
+ * @param {object} state
+ * @param {boolean} state.ok
+ * @param {string} [state.issueSummary]  short human-readable summary of issues found (if any)
+ */
+async function setValidationState(symbol, resolution, { ok, issueSummary = null } = {}) {
+  await query(
+    `INSERT INTO validation_state (symbol, resolution, last_checked, last_ok, status, issue)
+     VALUES ($1, $2, NOW(), CASE WHEN $3 THEN NOW() ELSE NULL END, $4, $5)
+     ON CONFLICT (symbol, resolution) DO UPDATE SET
+       last_checked = NOW(),
+       last_ok      = CASE WHEN $3 THEN NOW() ELSE validation_state.last_ok END,
+       status       = $4,
+       issue        = $5`,
+    [symbol, resolution, ok, ok ? "ok" : "issues", issueSummary]
+  );
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function isValidCandle(c) {
@@ -339,4 +413,6 @@ module.exports = {
   touchSymbolAccess,
   getSymbolAccessMap,
   deleteSymbolAccess,
+  getValidationState,
+  setValidationState,
 };

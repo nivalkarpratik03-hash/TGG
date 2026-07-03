@@ -13,7 +13,7 @@
  *  • Periodic synchronization (compare latest DB vs broker)
  */
 
-const { loadCandles, getLatestCandle, countCandles } = require("./candleStore");
+const { loadCandles, getLatestCandle, countCandles, getValidationState, setValidationState } = require("./candleStore");
 
 // ─── IST helpers ─────────────────────────────────────────────────────────────
 
@@ -26,6 +26,18 @@ const MARKET_CLOSE_M = 30;
 function toIST(utcMs) {
   return new Date(utcMs + IST_OFFSET_MS);
 }
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Pacing between per-day repairDay() calls within a single symbol's
+// validation pass. Each repairDay() triggers its own Fyers getHistory call
+// (client.js already retries/paces WITHIN a call), but back-to-back calls
+// here with zero delay — e.g. a symbol needing 15 day-repairs — was exactly
+// the burst pattern that exhausted Fyers' per-second rate limit and cascaded
+// into failures for other symbols' concurrent fetches too.
+const INTER_DAY_REPAIR_DELAY_MS = 700;
 
 /** Expected number of candles per trading day for a given resolution (minutes). */
 function expectedCandlesPerDay(resolution) {
@@ -297,7 +309,38 @@ async function validateHistorical(symbol, resolution, opts = {}) {
   const DB_RESOLUTION = 1;
   const RETENTION_DAYS = 90;
   const defaultFrom = new Date(Date.now() - RETENTION_DAYS * 86400 * 1000).toISOString();
-  const from = opts.from || defaultFrom;
+  const trigger = opts.trigger || "manual";
+
+  // ── Persistent skip-cache (validation_state) ────────────────────────────
+  // ROOT-CAUSE FIX: every periodic run used to re-scan the FULL 90-day
+  // window from scratch — even for a symbol confirmed completely clean
+  // minutes earlier — because nothing persisted "this history was already
+  // checked." On a 10-minute cycle across dozens of symbols, that's tens
+  // of thousands of already-validated candles getting re-loaded and
+  // re-checked forever, and it's why the same "fixed" symbols kept
+  // appearing in every validator pass. Once a symbol has been fully swept
+  // and found clean, subsequent PERIODIC runs only validate what's NEW
+  // since that check (with a small overlap so nothing at the boundary is
+  // missed). A full re-sweep still always runs on startup/manual triggers,
+  // or automatically falls back to full if the last check is stale
+  // (>24h) or the symbol wasn't clean last time — so this narrows repeat
+  // work without ever giving up on eventually re-checking everything.
+  const FULL_RESCAN_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h safety-net full sweep
+  const OVERLAP_MS = 2 * 60 * 60 * 1000;                // 2h overlap so boundary candles are never skipped
+
+  let from = opts.from;
+  let incremental = false;
+  if (!from) {
+    if (trigger === "periodic") {
+      const state = await getValidationState(symbol, DB_RESOLUTION).catch(() => null);
+      const staleness = state ? Date.now() - state.lastChecked.getTime() : Infinity;
+      if (state && state.status === "ok" && staleness < FULL_RESCAN_INTERVAL_MS) {
+        from = new Date(state.lastChecked.getTime() - OVERLAP_MS).toISOString();
+        incremental = true;
+      }
+    }
+    if (!from) from = defaultFrom;
+  }
 
   // Exclude the currently-forming minute from validation.
   // The live write path (onFinalize) writes a closed candle immediately after the
@@ -315,9 +358,24 @@ async function validateHistorical(symbol, resolution, opts = {}) {
   const safeTo = new Date(currentIstMinuteStartMs - 60000 - IST_OFFSET_MS).toISOString();
 
   const candles = await loadCandles(symbol, DB_RESOLUTION, { limit: 100000, from, to: opts.to || safeTo });
+
+  // An incremental (narrowed) window with zero new candles just means
+  // nothing has been written since the last check (e.g. market closed) —
+  // NOT corruption. validateCandleArray([]) returns invalid/EMPTY by
+  // design for the full-sweep case (an actually-empty symbol IS a real
+  // problem), so that must not be reused here or every quiet periodic tick
+  // would look like a fresh outage and re-trigger a same-day "repair".
+  if (incremental && candles.length === 0) {
+    console.log(`[Validator] Historical ${symbol} res=1 (1m only, incremental): 0 new candles since last check — nothing to validate`);
+    await setValidationState(symbol, DB_RESOLUTION, { ok: true }).catch((err) => {
+      console.warn(`[Validator] setValidationState failed for ${symbol}:`, err.message);
+    });
+    return { valid: true, issues: [], candlesChecked: 0, repairedDays: 0 };
+  }
+
   const { valid, issues } = validateCandleArray(candles, DB_RESOLUTION);
 
-  console.log(`[Validator] Historical ${symbol} res=1 (1m only): ${candles.length} candles, ${issues.length} issues`);
+  console.log(`[Validator] Historical ${symbol} res=1 (1m only${incremental ? ", incremental" : ""}): ${candles.length} candles, ${issues.length} issues`);
 
   let repairedDays = 0;
   if (!valid && typeof opts.onRepair === "function" && issues.length > 0) {
@@ -335,7 +393,9 @@ async function validateHistorical(symbol, resolution, opts = {}) {
       console.warn(`[Validator] Historical ${symbol}: ${issues.length} issue(s) found but none carry a usable timestamp — skipping auto-repair`);
     } else {
       console.log(`[Validator] Historical ${symbol}: triggering repair for ${affectedDays.size} affected trading day(s)`);
-      for (const [dayKey, repTime] of affectedDays) {
+      const dayEntries = [...affectedDays];
+      for (let i = 0; i < dayEntries.length; i++) {
+        const [dayKey, repTime] = dayEntries[i];
         try {
           console.log(`[Validator] Historical ${symbol}: repairing day ${dayKey}...`);
           await opts.onRepair({
@@ -348,9 +408,22 @@ async function validateHistorical(symbol, resolution, opts = {}) {
         } catch (err) {
           console.error(`[Validator] Historical ${symbol}: repair for ${dayKey} failed —`, err.message);
         }
+        // Pace between day-repairs so a symbol needing many repairs doesn't
+        // fire them back-to-back and exhaust the Fyers rate limit.
+        if (i < dayEntries.length - 1) await sleep(INTER_DAY_REPAIR_DELAY_MS);
       }
     }
   }
+
+  // Persist validation state — this is what lets the NEXT periodic run
+  // skip straight to an incremental window instead of another full sweep.
+  // Best-effort: never let a logging failure affect the validation result.
+  await setValidationState(symbol, DB_RESOLUTION, {
+    ok: valid,
+    issueSummary: valid ? null : issues.slice(0, 5).map((i) => i.type).join(", "),
+  }).catch((err) => {
+    console.warn(`[Validator] setValidationState failed for ${symbol}:`, err.message);
+  });
 
   return { valid, issues, candlesChecked: candles.length, repairedDays };
 }
