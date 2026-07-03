@@ -59,7 +59,8 @@ async function deleteWithRetry(sym, attempts = 3) {
     } catch (err) {
       lastErr = err;
       if (i < attempts - 1) {
-        console.warn(`[Retention] delete ${sym} failed (attempt ${i + 1}/${attempts}): ${err.message} — retrying...`);
+        console.warn(`[Retention] delete ${sym} failed (attempt ${i + 1}/${attempts}): ${err.message} ` +
+          `[code=${err.code} detail=${err.detail || "(none)"}] — retrying...`);
         await sleep(1000 * (i + 1));
       }
     }

@@ -121,38 +121,63 @@ async function deleteDayCandles(symbol, resolution, tradingDay) {
 /**
  * Delete ALL candles for a symbol (full refetch / nuke / retention cleanup).
  *
- * ROOT-CAUSE NOTE: this used to run as a single
- * `DELETE FROM candles WHERE symbol=$1 RETURNING 1` statement. For a symbol
- * that has quietly accumulated an unusually large number of rows (long MCX
- * sessions × months of retention, or leftover rows from before the
- * 1m-only architecture was enforced), that one statement has to build the
- * entire RETURNING result set and delete plan in memory in a single shot —
- * exactly the shape of query that can trip Postgres's "out of memory"
- * error (SQLSTATE 53200), especially when it runs concurrently with the
- * validator/periodicSync's own DB load right after boot. Deleting in
- * bounded batches keeps the memory footprint of any single statement small
- * and predictable regardless of how many rows a symbol has piled up.
+ * Deletes in batches to keep any single statement's footprint small and
+ * predictable. If a batch still fails (e.g. OOM), the batch size is
+ * shrunk and retried rather than repeating the exact same failing
+ * statement — and the FULL Postgres error (code/detail/hint), not just
+ * `.message`, is attached to the thrown error so callers can log the real
+ * diagnostic instead of the truncated "out of memory" string.
  */
 async function deleteAllCandles(symbol, resolution = null) {
-  const BATCH_SIZE = 5000;
+  let batchSize = 5000;
+  const MIN_BATCH_SIZE = 100;
   let totalDeleted = 0;
 
+  // Diagnostic: know the actual row count going in, so if this fails again
+  // the logs show whether these symbols genuinely have an outsized number
+  // of rows or not — that's the difference between "batching needs to be
+  // smaller" and "something else is wrong."
+  try {
+    const countRows = resolution !== null
+      ? await query("SELECT COUNT(*) AS n FROM candles WHERE symbol=$1 AND resolution=$2", [symbol, resolution])
+      : await query("SELECT COUNT(*) AS n FROM candles WHERE symbol=$1", [symbol]);
+    console.log(`[CandleStore] deleteAllCandles(${symbol}): ${countRows[0]?.n ?? "?"} row(s) to delete`);
+  } catch (err) {
+    console.warn(`[CandleStore] deleteAllCandles(${symbol}): row-count check failed: ${err.message}`);
+  }
+
   while (true) {
-    const rows = resolution !== null
-      ? await query(
-          `DELETE FROM candles WHERE ctid IN (
-             SELECT ctid FROM candles WHERE symbol=$1 AND resolution=$2 LIMIT $3
-           ) RETURNING 1`,
-          [symbol, resolution, BATCH_SIZE]
-        )
-      : await query(
-          `DELETE FROM candles WHERE ctid IN (
-             SELECT ctid FROM candles WHERE symbol=$1 LIMIT $2
-           ) RETURNING 1`,
-          [symbol, BATCH_SIZE]
-        );
-    totalDeleted += rows.length;
-    if (rows.length < BATCH_SIZE) break; // fewer than a full batch = done
+    try {
+      const rows = resolution !== null
+        ? await query(
+            `DELETE FROM candles WHERE ctid IN (
+               SELECT ctid FROM candles WHERE symbol=$1 AND resolution=$2 LIMIT $3
+             ) RETURNING 1`,
+            [symbol, resolution, batchSize]
+          )
+        : await query(
+            `DELETE FROM candles WHERE ctid IN (
+               SELECT ctid FROM candles WHERE symbol=$1 LIMIT $2
+             ) RETURNING 1`,
+            [symbol, batchSize]
+          );
+      totalDeleted += rows.length;
+      if (rows.length < batchSize) break; // fewer than a full batch = done
+    } catch (err) {
+      // Surface the FULL Postgres error, not just err.message — `code`,
+      // `detail`, and `hint` are set by the pg driver from the server's
+      // actual ErrorResponse and normally get discarded by callers that
+      // only log err.message.
+      console.error(
+        `[CandleStore] deleteAllCandles(${symbol}): batch of ${batchSize} failed — ` +
+        `code=${err.code} detail=${err.detail || "(none)"} hint=${err.hint || "(none)"} ` +
+        `where=${err.where || "(none)"}`
+      );
+      if (batchSize <= MIN_BATCH_SIZE) throw err;
+      // Shrink and retry rather than repeating the identical failing statement.
+      batchSize = Math.max(MIN_BATCH_SIZE, Math.floor(batchSize / 10));
+      console.warn(`[CandleStore] deleteAllCandles(${symbol}): shrinking batch size to ${batchSize} and retrying`);
+    }
   }
 
   return totalDeleted;
