@@ -3,6 +3,15 @@
  *
  * Audit trail for all repair / refetch operations.
  * Non-critical — errors here are swallowed so they never block a repair.
+ *
+ * CHANGED: logRepairStart now accepts an optional `tradingDay` and stores
+ * it in the new repair_log.trading_day column (migration 002). This adds
+ * a new helper, wasDayAlreadyRepaired(), used by the startup gap scan to
+ * stop re-repairing the exact same symbol+day on every single restart —
+ * fixes the NSE:NIFTY50-INDEX-style infinite repeat-repair loop.
+ *
+ * Backward compatible: tradingDay is optional everywhere. Existing callers
+ * that don't pass it keep working exactly as before (column stores NULL).
  */
 
 const { query } = require("./pool");
@@ -13,15 +22,16 @@ const { query } = require("./pool");
  * @param {string} opts.symbol
  * @param {number} [opts.resolution]
  * @param {string} opts.trigger
- * @param {Date|string|number} [opts.tradingDay]  which IST trading day this repair targets (omit for symbol-wide ops)
+ * @param {Date|string} [opts.tradingDay]  the trading day being repaired (optional)
  */
 async function logRepairStart({ symbol, resolution, trigger, tradingDay = null }) {
   try {
+    const dayStr = tradingDay ? new Date(tradingDay).toISOString().slice(0, 10) : null;
     const rows = await query(
       `INSERT INTO repair_log (symbol, resolution, trigger, status, trading_day)
        VALUES ($1, $2, $3, 'running', $4)
        RETURNING id`,
-      [symbol, resolution ?? null, trigger, tradingDay ? new Date(tradingDay).toISOString() : null]
+      [symbol, resolution ?? null, trigger, dayStr]
     );
     return rows[0]?.id ?? null;
   } catch (err) {
@@ -52,38 +62,6 @@ async function logRepairFinish(id, { status, detail, deleted = 0, inserted = 0 }
 }
 
 /**
- * Count failed repair attempts for a specific symbol + trading day within
- * the last `withinHours`. Used by repairDay() to back off from a day that
- * keeps failing (or keeps "succeeding" but re-flagging as an outlier every
- * cycle — refetching the same real broker data can never fix a genuine
- * price move that just happens to look like an isolated spike) instead of
- * re-attempting it every single validator pass, every 10 minutes, forever.
- *
- * @param {string} symbol
- * @param {Date|string|number} tradingDay
- * @param {number} [withinHours=3]
- * @returns {Promise<number>}
- */
-async function getRecentFailureCount(symbol, tradingDay, withinHours = 3) {
-  try {
-    const dayIso = new Date(tradingDay).toISOString().slice(0, 10);
-    const rows = await query(
-      `SELECT COUNT(*) AS cnt FROM repair_log
-       WHERE symbol = $1
-         AND trading_day IS NOT NULL
-         AND trading_day::date = $2::date
-         AND started_at >= NOW() - ($3 || ' hours')::interval
-         AND status = 'error'`,
-      [symbol, dayIso, withinHours]
-    );
-    return parseInt(rows[0]?.cnt || "0", 10);
-  } catch (err) {
-    console.warn("[RepairLog] getRecentFailureCount error:", err.message);
-    return 0; // fail open — never let a logging error block a legitimate repair
-  }
-}
-
-/**
  * Fetch the most recent repair entries for a symbol.
  */
 async function getRepairHistory(symbol, limit = 20) {
@@ -101,4 +79,42 @@ async function getRepairHistory(symbol, limit = 20) {
   }
 }
 
-module.exports = { logRepairStart, logRepairFinish, getRepairHistory, getRecentFailureCount };
+/**
+ * wasDayAlreadyRepaired — circuit breaker for the repeat-repair loop.
+ *
+ * Returns true if this exact symbol+trading_day already had a SUCCESSFUL
+ * ("ok") repair logged within the last `withinDays` days. If so, the caller
+ * should skip re-repairing it — a day that keeps getting flagged again
+ * right after a successful repair almost always means the underlying
+ * broker data for that day is genuinely short/incomplete (e.g. thin
+ * end-of-session volume), not a bug that another refetch will fix.
+ *
+ * Deliberately time-boxed (not "forever") so that if the broker backfills
+ * better data later, or this really was a transient issue, the symbol
+ * becomes eligible for repair again after the window passes.
+ *
+ * @param {string} symbol
+ * @param {Date|string} tradingDay
+ * @param {number} [withinDays=3]
+ * @returns {Promise<boolean>}
+ */
+async function wasDayAlreadyRepaired(symbol, tradingDay, withinDays = 3) {
+  try {
+    const dayStr = new Date(tradingDay).toISOString().slice(0, 10);
+    const rows = await query(
+      `SELECT id FROM repair_log
+       WHERE symbol = $1
+         AND trading_day = $2
+         AND status = 'ok'
+         AND started_at > NOW() - ($3 || ' days')::interval
+       LIMIT 1`,
+      [symbol, dayStr, withinDays]
+    );
+    return rows.length > 0;
+  } catch (err) {
+    console.warn("[RepairLog] wasDayAlreadyRepaired error:", err.message);
+    return false; // fail open — never block a real repair just because this check errored
+  }
+}
+
+module.exports = { logRepairStart, logRepairFinish, getRepairHistory, wasDayAlreadyRepaired };

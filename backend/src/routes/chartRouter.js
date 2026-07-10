@@ -7,6 +7,11 @@
  * Pattern: factory function receives shared server-state dependencies so the
  * router can reference io, caches, etc. without circular requires.
  *
+ * NO DB CODE LIVES HERE. DB-first reads (and Fyers fallback) happen entirely
+ * inside fetchAndProcess() in server.js — every route below just calls
+ * fetchAndProcess() and doesn't know or care whether the data came from
+ * Postgres or Fyers.
+ *
  * Routes owned here:
  *   GET  /health
  *   GET  /api/auth/status
@@ -32,7 +37,7 @@ const express = require("express");
  * @param {number} deps.TICK_WATCHDOG_MS
  * @param {Function} deps.getCache
  * @param {Function} deps.buildPayload
- * @param {Function} deps.fetchAndProcess
+ * @param {Function} deps.fetchAndProcess     - single source of truth; handles DB-first + Fyers fallback internally
  * @param {Function} deps.isLiveMarket
  * @param {Function} deps.isTradingDay
  * @param {object}   deps.tickStream          - { isConnected() }
@@ -45,6 +50,7 @@ const express = require("express");
  * @param {Function} deps.generateToken
  * @param {Function} deps.validateToken
  * @param {Function} deps.detectMotherWaveForAPI
+ * @param {Function} deps.markBroadcastSymbol  - marks a symbol "recently requested" even without a socketId, so it's still picked up by the tick-stream subscription (fixes broadcast-mode refreshes never attaching live ticks)
  */
 function createChartRouter(deps) {
   const {
@@ -54,9 +60,13 @@ function createChartRouter(deps) {
     isLiveMarket, isTradingDay,
     tickStream, ticksFlowing, isAnyMarketLive, getActiveTickSymbols,
     updateTickSubscription,
-    getAuthURL, generateToken, validateToken,
+    getAuthURL, generateToken, validateToken, bustTokenCache,
     detectMotherWaveForAPI,
-    db, dbEnabled, fetchCandles,
+    markBroadcastSymbol,
+    // FIX 5 (re-auth hook): re-run the curated-symbol gap-fill/staleness
+    // sweep whenever a token goes from invalid to valid again, instead of
+    // requiring a full server restart or manually opening every chart.
+    runCuratedSymbolCatchUp,
   } = deps;
 
   const router = express.Router();
@@ -94,7 +104,23 @@ function createChartRouter(deps) {
     if (!code) return res.status(400).json({ error: "auth_code required" });
     try {
       await generateToken(code);
+      if (bustTokenCache) bustTokenCache();  // clear 60s cache so next validateToken is live
       await deps.maybeStartTickStream();
+
+      // FIX 5 (re-auth hook): this used to be the end of the route — the
+      // "Will repair after re-auth" log line elsewhere in the app described
+      // something that was never actually wired up. Now that a fresh token
+      // is confirmed saved, re-run the same curated-symbol gap-fill +
+      // staleness sweep that normally only runs at boot. Fire-and-forget
+      // (not awaited) so this HTTP response doesn't block for the minute or
+      // two the full sweep can take — the sweep has its own in-flight guard
+      // so it can never overlap with the boot-time run or another re-auth.
+      if (runCuratedSymbolCatchUp) {
+        runCuratedSymbolCatchUp("reauth").catch((err) => {
+          console.warn("[Recovery] Re-auth catch-up sweep failed:", err.message);
+        });
+      }
+
       res.json({ success: true, message: "Token saved successfully" });
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
@@ -103,24 +129,26 @@ function createChartRouter(deps) {
   /**
    * GET /api/chart?symbol=X&resolution=Y
    *
-   * Single endpoint for all chart data. Backend decides whether to serve from
-   * cache or re-fetch from Fyers based on symbol-aware TTL:
-   *   Live market  : 60s
-   *   Weekday/off  : 5min
-   *   Weekend/off  : 24hr (MCX Sat treated as weekday for MCX symbols)
+   * 1. In-process cache (TTL-based) — avoids hitting DB/Fyers on every request.
+   * 2. Cache miss → fetchAndProcess(symbol, resolution). DB-first internally,
+   *    Fyers fallback if DB has no data yet for this symbol. See server.js.
+   * 3. Fetch failure → serve stale cache if we have one, else 500.
    */
   router.get("/api/chart", async (req, res) => {
     const symbol = req.query.symbol || SYMBOL;
     const resolution = parseInt(req.query.resolution || RESOLUTION);
+    if (markBroadcastSymbol) markBroadcastSymbol(symbol);
     const cache = getCache(symbol, resolution);
 
     const live = isLiveMarket(symbol);
     const tradingDay = isTradingDay(symbol);
     const cacheTTL = live ? 60_000 : tradingDay ? 5 * 60_000 : 24 * 60 * 60_000;
 
+    // ── In-process cache ──────────────────────────────────────────────────
     if (cache.result && cache.candles.length > 0 && Date.now() - cache.lastFetch < cacheTTL) {
       return res.json(buildPayload(cache.candles, cache.result, symbol, resolution));
     }
+
     try {
       const { candles, result } = await fetchAndProcess(symbol, resolution);
       if (live) setImmediate(() => updateTickSubscription().catch(console.error));
@@ -138,11 +166,16 @@ function createChartRouter(deps) {
   /**
    * POST /api/chart/refresh?symbol=X&resolution=Y
    *
+   * Always calls fetchAndProcess(symbol, resolution) — DB-first internally,
+   * Fyers fallback if DB has no data yet for this symbol. See server.js.
+   *
    * DUAL-PANEL FIX: emits chart_update only to the requesting socket (via
    * socketId in body) so the other panel's chart is never overwritten.
    *
-   * TICK-STREAM FIX: after a successful fetch for any symbol, calls
-   * updateTickSubscription() to add that symbol to the Fyers WebSocket.
+   * TICK-STREAM FIX: after every fetch, calls updateTickSubscription() so
+   * the symbol gets added to the Fyers WebSocket if it's live and not
+   * already subscribed — regardless of whether the candles came from DB
+   * or Fyers.
    */
   router.post("/api/chart/refresh", async (req, res) => {
     const symbol = req.query.symbol || SYMBOL;
@@ -152,6 +185,10 @@ function createChartRouter(deps) {
     console.log(`[REFRESH] symbol=${symbol} res=${resolution}m socket=${requestingSocketId || "broadcast"} liveMarket=${isLiveMarket(symbol)}`);
 
     if (requestingSocketId) socketSymbols.set(requestingSocketId, symbol);
+    // Always mark the symbol as "wanted" for tick-stream purposes, even in
+    // broadcast mode (no socketId) — see markBroadcastSymbol definition in
+    // server.js for the full root-cause explanation.
+    if (markBroadcastSymbol) markBroadcastSymbol(symbol);
 
     try {
       const { candles, result } = await fetchAndProcess(symbol, resolution);
@@ -244,89 +281,13 @@ function createChartRouter(deps) {
     }
   });
 
-  // ── DB Management Routes ──────────────────────────────────────────────────
-  // Implements the architecture /api/db/* surface: validate, refetch, stats, repair-history.
-  // All mutating ops are fire-and-forget (async) — status arrives via repair_status socket events.
-
-  router.get("/api/db/stats", async (req, res) => {
-    const symbol = req.query.symbol || SYMBOL;
-    if (!dbEnabled) return res.json({ dbEnabled: false, symbol });
-    try {
-      const latest = await db.getLatestCandle(symbol, 1);
-      const from = new Date(Date.now() - 30 * 86400 * 1000);
-      const count = await db.countCandles(symbol, 1, from, new Date());
-      res.json({ dbEnabled: true, symbol, latestCandle: latest, candlesLast30d: count });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-  });
-
-  router.get("/api/db/repair-history", async (req, res) => {
-    const symbol = req.query.symbol || null;
-    if (!dbEnabled) return res.json({ dbEnabled: false, history: [] });
-    try {
-      const history = await db.getRepairHistory(symbol, 20);
-      res.json({ history });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-  });
-
-  router.post("/api/db/validate", async (req, res) => {
-    const symbol = req.query.symbol || SYMBOL;
-    if (!dbEnabled) return res.status(503).json({ error: "DB not enabled" });
-    const valid = await validateToken().catch(() => false);
-    if (!valid) return res.status(401).json({ error: "Not authenticated" });
-    res.json({ symbol, status: "validation_started" });
-    console.log(`[DB Validate] ${symbol}: manual validation requested via UI`);
-    db.validateHistorical(symbol, 1, {
-      fetchCandles: (s, r, rangeOpts) => fetchCandles(s, r, undefined, undefined, rangeOpts),
-      onRepair: (opts) => db.repairDay({ ...opts, fetchCandles: (s, r, rangeOpts) => fetchCandles(s, r, undefined, undefined, rangeOpts) }),
-    }).then(({ valid, issues, candlesChecked, repairedDays }) => {
-      if (valid) {
-        console.log(`[DB Validate] ${symbol}: ✅ COMPLETE — clean, ${candlesChecked} candles checked, no issues`);
-      } else {
-        console.log(`[DB Validate] ${symbol}: ✅ COMPLETE — ${issues.length} issue(s) found, ${repairedDays} day(s) repaired`);
-      }
-    }).catch((err) => console.error(`[DB Validate] ${symbol}: FAILED —`, err.message));
-  });
-
-  router.post("/api/db/refetch", async (req, res) => {
-    const symbol = req.query.symbol || SYMBOL;
-    if (!dbEnabled) return res.status(503).json({ error: "DB not enabled" });
-    const valid = await validateToken().catch(() => false);
-    if (!valid) return res.status(401).json({ error: "Not authenticated" });
-    res.json({ symbol, status: "refetch_started" });
-    console.log(`[DB Refetch] ${symbol}: manual full refetch requested via UI`);
-    db.fullRefetch({ symbol, fetchCandles: (s, r) => fetchCandles(s, r) })
-      .then((result) => {
-        fetchAndProcess(symbol, 1);  // reload into memory from fresh DB data
-        console.log(`[DB Refetch] ${symbol}: ✅ COMPLETE — deleted ${result.totalDeleted}, inserted ${result.totalInserted}`);
-      })
-      .catch((err) => console.error(`[DB Refetch] ${symbol}: FAILED —`, err.message));
-  });
-
-  // ── GET /api/options/expiries?symbol=NSE:NIFTY50-INDEX ────────────────────
-  // Returns live expiry dates from Fyers — no hardcoding, no calendar math.
-  // Frontend calls this whenever it opens the options chain modal.
-  router.get("/api/options/expiries", async (req, res) => {
-    const symbol = req.query.symbol;
-    if (!symbol) return res.status(400).json({ error: "symbol query param required" });
-    try {
-      const valid = await validateToken();
-      if (!valid) return res.status(401).json({ error: "Not authenticated" });
-      const { fetchOptionExpiries } = require("../fyers/client");
-      const expiries = await fetchOptionExpiries(symbol);
-      res.json({ symbol, expiries });
-    } catch (err) {
-      console.error("[/api/options/expiries] Error:", err.message);
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // ── GET /api/options/chain?symbol=NSE:NIFTY50-INDEX&timestamp=&strikeCount= ──
+  // == GET /api/options/chain?symbol=NSE:NIFTY50-INDEX&timestamp=&strikeCount= ==
   // ROOT-CAUSE FIX: previously the frontend hand-built option symbols from a
   // guessed Fyers date-encoding (see optionsChain.js's optionSymbol()), which
-  // Fyers frequently rejected as "Invalid symbol provided" — a documented,
+  // Fyers frequently rejected as "Invalid symbol provided" -- a documented,
   // widely-reported problem with that encoding, not unique to this project.
   // This route returns the REAL per-strike symbol strings straight from
-  // Fyers' own option chain response — no guessing, no date math, always
+  // Fyers' own option chain response -- no guessing, no date math, always
   // valid because Fyers generated the string itself.
   // `timestamp` (optional, epoch seconds as string) selects a specific
   // expiry's strikes; omit it for the nearest expiry's strikes.

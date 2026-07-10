@@ -9,6 +9,7 @@ import ScannerPage from "./pages/ScannerPage";
 import StrategiesPage from "./pages/StrategiesPage";
 import BacktestPage from "./pages/BacktestPage";
 import ErrorBoundary from "./components/ErrorBoundary";
+import { loadPref, savePref } from "./utils/prefs";
 import "./styles/App.css";
 
 // ─── Theme context shared across all pages ────────────────────────
@@ -16,13 +17,17 @@ export const ThemeContext = createContext({ theme: "dark", toggleTheme: () => { 
 export function useTheme() { return useContext(ThemeContext); }
 
 export default function App() {
-  const [theme, setTheme] = useState(() => {
-    try { return localStorage.getItem("tgg_theme") || "dark"; } catch { return "dark"; }
-  });
+  // P4 #27 — this used to call localStorage directly instead of going
+  // through prefs.js like every other saved setting in the app. Same
+  // storage key ("tgg_theme"), so no migration step needed — an existing
+  // raw (non-JSON) value just won't parse on the very first load after
+  // this change and falls back to "dark" once, then saves normally as
+  // JSON from then on.
+  const [theme, setTheme] = useState(() => loadPref("theme", "dark"));
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
-    try { localStorage.setItem("tgg_theme", theme); } catch { }
+    savePref("theme", theme);
   }, [theme]);
 
   function toggleTheme() {

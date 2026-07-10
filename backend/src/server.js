@@ -5,8 +5,22 @@ const path = require("path");
 const { Server } = require("socket.io");
 
 const { runSignalEngine } = require("./services/signalEngine");
-const { getAuthURL, generateToken, fetchCandles, validateToken, loadToken, sleep: fyersSleep } = require("./fyers/client");
-const { CandleBuilder, deriveTimeframe, istDateKey } = require("./services/candleBuilder");
+const { getAuthURL, generateToken, fetchCandles, validateToken: _validateToken, loadToken } = require("./fyers/client");
+
+// ── Throttled validateToken — caches result for 60s to prevent log spam ──────
+// Raw validateToken() is called repeatedly by updateTickSubscription, startAutoRefresh,
+// and maybeStartTickStream every few seconds. When token is expired every call logs
+// "validateToken failed" — this wrapper silences the churn.
+let _tokenCache = { valid: null, at: 0 };
+async function validateToken() {
+  if (Date.now() - _tokenCache.at < 60_000) return _tokenCache.valid;
+  const valid = await _validateToken().catch(() => false);
+  _tokenCache = { valid, at: Date.now() };
+  return valid;
+}
+// Bust the cache immediately after a new token is saved so the next call is live
+function bustTokenCache() { _tokenCache = { valid: null, at: 0 }; }
+const { CandleBuilder, deriveTimeframe } = require("./services/candleBuilder");
 const { TickStream, isMarketOpen, isLiveMarket, isAnyMarketLive, isMCXSymbol, isTradingDay } = require("./fyers/tickStream");
 const symbolsRouter = require("./routes/symbolsRouter");
 const scannerRouter = require("./routes/scannerRouter");
@@ -23,8 +37,10 @@ const rateLimiter = require("./middleware/rateLimiter");
 // and behaves exactly as before (Fyers-only mode).
 let db = null;
 let dbEnabled = false;
+let recoveryEngine = null;
 try {
   db = require("../../database/src/index");
+  recoveryEngine = require("../../database/src/recoveryEngine");
   dbEnabled = true;
   console.log("[DB] Database module loaded — PostgreSQL integration active");
 } catch (err) {
@@ -47,7 +63,9 @@ app.use(express.json()); // parse JSON body — needed for req.body.socketId in 
 app.use(rateLimiter);
 
 // ─── Config ───────────────────────────────────────────────────────────────────
-const SYMBOL = process.env.SYMBOL || "NSE:NIFTY50-INDEX";
+// SYMBOL: optional — if set in .env, that symbol is pre-warmed at boot.
+// If not set, the chart loads whatever the first connected client requests.
+const SYMBOL = process.env.SYMBOL || null;
 const RESOLUTION = parseInt(process.env.CANDLE_RESOLUTION || "3");
 // CANDLES_TO_FETCH: passed to fetchCandles() as the `count` parameter but
 // fetchCandles() currently ignores it — Fyers data is fetched by date-range
@@ -55,6 +73,14 @@ const RESOLUTION = parseInt(process.env.CANDLE_RESOLUTION || "3");
 // if a count-based slice is added. The actual depth is controlled by
 // calcLookbackDays() in fyers/client.js (30d for 3m, 60d for 15m, 150d for 1h).
 const CANDLES_TO_FETCH = parseInt(process.env.CANDLES_TO_FETCH || "10000");
+// CHART_DB_WINDOW_DAYS: how many days of 1m history fetchAndProcess() pulls
+// from Postgres for intraday resolutions (1/3/5/15/60). DB itself still
+// stores a full year — this only controls what the chart loads/displays.
+// Kept at 90 days (full chart history) — the indicator-toggle unsmoothness
+// is a frontend rendering concern, to be fixed there, not by shrinking data.
+// Daily/Weekly (1440/10080) always derive from full DB history regardless
+// of this value, since they need long lookback for correct bar boundaries.
+const CHART_DB_WINDOW_DAYS = parseInt(process.env.CHART_DB_WINDOW_DAYS || "90");
 const REFRESH_MS = parseInt(process.env.SCHEDULE_INTERVAL_MS || "5000");
 const TICK_WATCHDOG_MS = parseInt(process.env.TICK_WATCHDOG_MS || "10000");
 const WATCHDOG_GRACE_MS = parseInt(process.env.WATCHDOG_GRACE_MS || "30000");
@@ -65,10 +91,51 @@ let autoRefreshTimer = null;
 const socketResolutions = new Map(); // socket.id → resolution
 const socketSymbols = new Map();     // socket.id → symbol (dual-panel per-socket filtering)
 const socketUnderlyings = new Map(); // socket.id → underlying index/equity symbol, only set
-                                      // while that panel is showing an OPTION symbol and has
-                                      // "Auto ATM" switched on. Used purely as a side-channel
-                                      // LTP feed for the auto strike-switch feature — it never
-                                      // touches candleBuilders/symbolCacheMap.
+// while that panel is showing an OPTION symbol and has
+// "Auto ATM" switched on. Used purely as a side-channel
+// LTP feed for the auto strike-switch feature — it never
+// touches candleBuilders/symbolCacheMap.
+
+// broadcastSymbols: symbol → lastRequestedAt (ms).
+//
+// ROOT-CAUSE FIX for "chart loads candles but WebSocket never attaches /
+// frontend stays Offline / symbol gets re-seeded from DB every few seconds
+// with no client connected":
+//
+// /api/chart and POST /api/chart/refresh can both be called WITHOUT a
+// socketId (e.g. before the frontend's socket.io connection is ready, or
+// any other broadcast-style refresh). Previously, getActiveTickSymbols()
+// only ever looked at socketSymbols + socketUnderlyings — both of which are
+// ONLY populated when a socketId is present. So a symbol requested in
+// "broadcast" mode was fully invisible to updateTickSubscription(), which
+// computed an empty symbol list forever ("[TickStream] No symbols provided
+// — not starting." / "Started with symbols → []"), even while that exact
+// symbol kept getting fetched/derived from the DB on every refresh cycle.
+//
+// This map closes that gap: ANY chart request, with or without a socketId,
+// marks its symbol "recently wanted" here. getActiveTickSymbols() includes
+// these too. Entries expire (see BROADCAST_SYMBOL_TTL_MS below) so a symbol
+// nobody has actually requested in a while naturally falls out of the tick
+// subscription instead of staying subscribed forever.
+const broadcastSymbols = new Map();
+const BROADCAST_SYMBOL_TTL_MS = 2 * 60 * 1000; // 2 minutes
+
+/** Mark a symbol as recently requested via a broadcast-mode (no socketId) chart call. */
+function markBroadcastSymbol(symbol) {
+  if (!symbol) return;
+  broadcastSymbols.set(symbol, Date.now());
+}
+
+/** Returns currently-live broadcast symbols, pruning any that have expired. */
+function getLiveBroadcastSymbols() {
+  const cutoff = Date.now() - BROADCAST_SYMBOL_TTL_MS;
+  const live = [];
+  for (const [sym, ts] of broadcastSymbols) {
+    if (ts < cutoff) { broadcastSymbols.delete(sym); continue; }
+    live.push(sym);
+  }
+  return live;
+}
 let lastTickAt = 0;
 let lastConnectAt = 0;
 const lastTickBySymbol = new Map(); // symbol → Date.now() of last tick received
@@ -109,110 +176,10 @@ function setCache(symbol, resolution, candles, result) {
 // ─── Candle Builder ───────────────────────────────────────────────────────────
 const candleBuilders = new Map();
 
-// ── In-memory / DB reconciliation guard ─────────────────────────────────────
-// Tracks `${symbol}:${todayISTDateKey}` pairs that have already been checked
-// for the "builder under-seeded" condition below, so the extra DB read only
-// ever runs once per symbol per trading day instead of on every /api/chart
-// call for that symbol.
-const reconciledToday = new Set();
-
-/**
- * Today's (IST) market-open timestamp in ms for a symbol.
- * NSE/BSE open at 09:15 IST; MCX opens at 09:00 IST.
- */
-function marketOpenAnchorMs(symbol) {
-  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-  const nowMs = Date.now();
-  const istMs = nowMs + IST_OFFSET_MS;
-  const istDayStartMs = istMs - (istMs % 86400000);
-  const openMinIST = isMCXSymbol(symbol) ? (9 * 60) : (9 * 60 + 15);
-  return (istDayStartMs + openMinIST * 60000) - IST_OFFSET_MS;
-}
-
-// ── Gap backfill (REST) ────────────────────────────────────────────────────
-// Fired by CandleBuilder.onGapDetected whenever a silent WebSocket gap left
-// synthetic placeholder candles in the in-memory history. Pulls the real 1m
-// candles for just that window from Fyers REST and splices them in, then
-// re-derives caches and persists the corrected candles to DB so the repaired
-// data survives a restart and doesn't get re-corrupted by the next periodic
-// sync comparing against a stale DB row.
-//
-// Concurrency note: per-symbol, only one backfill runs at a time — a second
-// gap on the same symbol while one is already in flight is queued behind it
-// via gapBackfillQueues so two REST fetches never race to patch overlapping
-// windows.
-const gapBackfillQueues = new Map(); // symbol → Promise chain
-
-async function handleTickGapDetected(symbol, fromTimeMs, toTimeMs) {
-  const prevPromise = gapBackfillQueues.get(symbol) || Promise.resolve();
-  const next = prevPromise.then(() => doBackfillGap(symbol, fromTimeMs, toTimeMs));
-  gapBackfillQueues.set(symbol, next.catch(() => {})); // never block the queue on error
-  return next;
-}
-
-async function doBackfillGap(symbol, fromTimeMs, toTimeMs) {
-  const gapMinutes = Math.round((toTimeMs - fromTimeMs) / 60000);
-  console.log(`[GapBackfill:${symbol}] Fetching ${gapMinutes}min of real 1m candles from Fyers REST for ` +
-    `${new Date(fromTimeMs).toISOString()} → ${new Date(toTimeMs).toISOString()}...`);
-  io.emit("repair_status", { symbol, resolution: 1, status: "gap_backfill_start", fromTimeMs, toTimeMs, gapMinutes });
-
-  try {
-    // Small lookbackDaysOverride — this is a few-minute hole, not a historical
-    // refetch. 1 day of lookback comfortably covers any same-day gap.
-    const fresh = await fetchCandles(symbol, 1, 10000, 1);
-    const inWindow = fresh.filter((c) => c.time >= fromTimeMs && c.time < toTimeMs);
-
-    if (inWindow.length === 0) {
-      console.warn(`[GapBackfill:${symbol}] Broker returned no candles inside the gap window — ` +
-        `placeholders left in place, periodic sync / VALIDATE can retry later.`);
-      io.emit("repair_status", { symbol, resolution: 1, status: "gap_backfill_empty", fromTimeMs, toTimeMs });
-      return;
-    }
-
-    const builder = candleBuilders.get(symbol);
-    const patched = builder ? builder.patchGapCandles(inWindow) : 0;
-    console.log(`[GapBackfill:${symbol}] Patched ${patched}/${gapMinutes} placeholder candle(s) with real broker data`);
-
-    if (dbEnabled && patched > 0) {
-      db.upsertCandles(symbol, 1, inWindow).then((n) => {
-        console.log(`[DB] GapBackfill: persisted ${n} corrected 1m candle(s) for ${symbol}`);
-      }).catch((err) => {
-        console.error(`[DB] GapBackfill upsert failed for ${symbol}:`, err.message);
-      });
-    }
-
-    // Re-derive every cached resolution from the corrected 1m history so the
-    // chart updates immediately instead of waiting for the next tick/close.
-    if (builder && patched > 0) {
-      for (const res of [1, 3, 5, 15, 60]) {
-        try {
-          const candles = builder.getCandlesForResolution(res);
-          if (candles.length === 0) continue;
-          const result = runSignalEngine(candles);
-          setCache(symbol, res, candles, result);
-        } catch (err) {
-          console.error(`[GapBackfill:${symbol}] Re-derive res=${res} failed:`, err.message);
-        }
-      }
-      fetchAndBroadcast(symbol, RESOLUTION, true).catch(() => {});
-    }
-
-    io.emit("repair_status", { symbol, resolution: 1, status: "gap_backfill_ok", patched, gapMinutes });
-  } catch (err) {
-    console.error(`[GapBackfill:${symbol}] REST fetch failed:`, err.message);
-    io.emit("repair_status", { symbol, resolution: 1, status: "gap_backfill_error", error: err.message, fromTimeMs, toTimeMs });
-  }
-}
-
 function getOrCreateBuilder(symbol) {
   if (!candleBuilders.has(symbol)) {
     const builder = new CandleBuilder({
       symbol,
-      onGapDetected: (sym, fromTimeMs, toTimeMs) => {
-        handleTickGapDetected(sym, fromTimeMs, toTimeMs).catch((err) => {
-          console.error(`[GapBackfill:${sym}] Unhandled error:`, err.message);
-        });
-      },
       onTick: (formingCandles) => { emitCandleUpdate(symbol, formingCandles); },
       onFinalize: (finalizedCandle, formingCandles) => {
         console.log(`[Builder:${symbol}] Candle finalized @ ${new Date(finalizedCandle.time).toISOString()} close=${finalizedCandle.close}`);
@@ -264,7 +231,7 @@ function getOrCreateBuilder(symbol) {
             for (const sid of roomSockets) {
               const sock = io.sockets.sockets.get(sid);
               if (!sock) continue;
-              if ((socketSymbols.get(sid) || SYMBOL) === symbol) sock.emit("chart_update", payload);
+              if ((socketSymbols.get(sid) || SYMBOL || symbol) === symbol) sock.emit("chart_update", payload);
             }
           }
         }, 250);
@@ -286,7 +253,7 @@ function emitCandleUpdate(symbol, formingCandles) {
     for (const sid of roomSockets) {
       const sock = io.sockets.sockets.get(sid);
       if (!sock) continue;
-      if ((socketSymbols.get(sid) || SYMBOL) === symbol) {
+      if ((socketSymbols.get(sid) || SYMBOL || symbol) === symbol) {
         sock.emit("tick_update", payload);
         sock.emit("candle_update", payload);
       }
@@ -302,7 +269,7 @@ function emitFinalCandle(symbol, finalizedCandle) {
     for (const sid of roomSockets) {
       const sock = io.sockets.sockets.get(sid);
       if (!sock) continue;
-      if ((socketSymbols.get(sid) || SYMBOL) === symbol) {
+      if ((socketSymbols.get(sid) || SYMBOL || symbol) === symbol) {
         sock.emit("new_candle", { symbol, resolution: res, candle: finalizedCandle, timestamp: Date.now() });
       }
     }
@@ -323,9 +290,8 @@ tickStream.on("tick", (tick) => {
   if (!wasFlowing) io.emit("market_status", { ticksFlowing: true });
 
   // ── Auto-ATM side-channel: forward this tick's LTP to any socket that has
-  // registered this exact symbol as its underlying via set_underlying. This
-  // is a pure passthrough — no candle building, no cache writes — it only
-  // exists to drive the frontend's strike auto-switch decision.
+  // registered this exact symbol as its underlying via set_underlying.
+  // Pure passthrough — no candle building, no cache writes.
   for (const [sid, underlyingSym] of socketUnderlyings) {
     if (underlyingSym !== tick.symbol) continue;
     const sock = io.sockets.sockets.get(sid);
@@ -339,32 +305,43 @@ tickStream.on("error", (err) => { console.error("[TickStream] Error:", err?.mess
 
 /**
  * deriveUnderlyingSymbol — given an OPTION contract symbol, return its
- * underlying index/equity symbol so the tick stream can be subscribed to it
- * too. Mirrors frontend/src/utils/optionsChain.js getOptionRoot() — MUST be
- * kept in sync with that file's NSE_INDEX_ROOTS table.
+ * underlying index/equity symbol so the tick stream can be subscribed to it.
+ * Mirrors frontend/src/utils/optionsChain.js getOptionRoot() — kept in sync
+ * (browser code can't require() this module, so that copy stays separate,
+ * same pattern as holidays.js/holidayCalendar.js).
+ *   "NSE:NIFTY2570724000PE"   → "NSE:NIFTY50-INDEX"
+ *   "NSE:RELIANCE26JUL3200CE" → "NSE:RELIANCE-EQ"
+ *   "MCX:CRUDEOIL26JUL5000CE" → null  (commodity options — not supported)
  *
- *   "BSE:SENSEX2570077000CE"     → "BSE:SENSEX-INDEX"
- *   "NSE:NIFTY2570724000PE"      → "NSE:NIFTY50-INDEX"
- *   "NSE:RELIANCE26JUL3200CE"    → "NSE:RELIANCE-EQ"
- *   "MCX:CRUDEOIL26JUL5000CE"    → null (commodity options not supported here
- *                                   — futures contract is the underlying, not
- *                                   an index/equity LTP; Auto-ATM is index/equity-only)
- *
- * Returns null if `sym` is not an option symbol or has no known underlying.
+ * P3 #13 — this used to have its own regex (OPTION_SUFFIX_RE) duplicating
+ * database/src/symbolParser.js's parsing logic. Now delegates to that
+ * module's parseDerivativeSymbol() as the primary path. OPTION_SUFFIX_RE is
+ * kept ONLY as a fallback for the (rare, Fyers-only-mode) case where the
+ * database/ package isn't present at all — matching the "DB is optional"
+ * pattern already used for db/recoveryEngine above.
  */
-// Matches BOTH Fyers expiry encodings — see frontend/src/utils/optionsChain.js
-// OPTION_SYMBOL_RE for the full rationale (kept in sync with that regex):
-//   Monthly: YY + 3-letter month                  e.g. "26JUL"
-//   Weekly:  YY + 1-char month (1-9/O/N/D) + DD    e.g. "26702" (02 Jul 2026)
 const OPTION_SUFFIX_RE = /^(.*?)(\d{2}(?:[A-Z]{3}|[1-9OND]\d{2}))(\d+(?:\.\d+)?)(CE|PE)$/;
 const INDEX_ROOT_TO_SYMBOL = {
-  NIFTY:      "NSE:NIFTY50-INDEX",
-  BANKNIFTY:  "NSE:NIFTYBANK-INDEX",
-  FINNIFTY:   "NSE:CNXFINANCE-INDEX",
-  NIFTYIT:    "NSE:CNXIT-INDEX",
+  NIFTY: "NSE:NIFTY50-INDEX",
+  BANKNIFTY: "NSE:NIFTYBANK-INDEX",
+  FINNIFTY: "NSE:CNXFINANCE-INDEX",
+  NIFTYIT: "NSE:CNXIT-INDEX",
   MIDCPNIFTY: "NSE:MIDCPNIFTY-INDEX",
-  SENSEX:     "BSE:SENSEX-INDEX",
+  SENSEX: "BSE:SENSEX-INDEX",
 };
+let parseDerivativeSymbol = null;
+try {
+  ({ parseDerivativeSymbol } = require("../../database/src/symbolParser"));
+} catch (err) {
+  console.warn("[SymbolParser] Module not found — deriveUnderlyingSymbol falls back to inline regex:", err.message);
+}
+function deriveUnderlyingSymbolFallback(sym, exch, ticker) {
+  const m = OPTION_SUFFIX_RE.exec(ticker);
+  if (!m) return null;
+  const root = m[1];
+  if (INDEX_ROOT_TO_SYMBOL[root]) return INDEX_ROOT_TO_SYMBOL[root];
+  return `NSE:${root}-EQ`;
+}
 function deriveUnderlyingSymbol(sym) {
   if (!sym) return null;
   const colonIdx = sym.indexOf(":");
@@ -372,14 +349,27 @@ function deriveUnderlyingSymbol(sym) {
   const exch = sym.slice(0, colonIdx);
   const ticker = sym.slice(colonIdx + 1);
   if (exch === "MCX") return null; // commodity options — not supported by Auto-ATM
-
-  const m = OPTION_SUFFIX_RE.exec(ticker);
-  if (!m) return null; // not an option symbol
-  const root = m[1];
-
+  if (!parseDerivativeSymbol) return deriveUnderlyingSymbolFallback(sym, exch, ticker);
+  const parsed = parseDerivativeSymbol(sym);
+  if (!parsed || parsed.instrument_type !== "option") return null;
+  const root = parsed.underlying;
   if (INDEX_ROOT_TO_SYMBOL[root]) return INDEX_ROOT_TO_SYMBOL[root];
-  // Equity option → underlying is the cash-market equity
   return `NSE:${root}-EQ`;
+}
+
+/**
+ * isOptionSymbol — true if `sym` is a dated NSE/MCX option contract.
+ * P3 #13 — also now delegates to parseDerivativeSymbol() instead of its
+ * own OPTION_SUFFIX_RE.test() call, with the same inline-regex fallback.
+ */
+function isOptionSymbol(sym) {
+  if (!parseDerivativeSymbol) {
+    const colonIdx = sym.indexOf(":");
+    const ticker = colonIdx >= 0 ? sym.slice(colonIdx + 1) : sym;
+    return OPTION_SUFFIX_RE.test(ticker);
+  }
+  const parsed = parseDerivativeSymbol(sym);
+  return !!parsed && parsed.instrument_type === "option";
 }
 
 /**
@@ -389,9 +379,11 @@ function deriveUnderlyingSymbol(sym) {
  * subscribes to.
  */
 function getActiveTickSymbols() {
-  const set = new Set([SYMBOL]);
+  const set = new Set();
+  if (SYMBOL) set.add(SYMBOL);
   for (const sym of socketSymbols.values()) { if (sym) set.add(sym); }
   for (const sym of socketUnderlyings.values()) { if (sym) set.add(sym); }
+  for (const sym of getLiveBroadcastSymbols()) { set.add(sym); }
   return [...set];
 }
 
@@ -445,196 +437,424 @@ function buildPayload(candles, result, symbol, resolution, isAutoRefresh = false
     symbol, resolution: Number(resolution), candles: clean,
     emaHighs: result.emaHighs, emaLows: result.emaLows, signals: result.signals,
     currentState: result.currentState, bestPrice: result.bestPrice, bestBar: result.bestBar,
-    lastUpdate: new Date().toISOString(), balance: parseFloat(process.env.CURRENT_BALANCE || 0), isAutoRefresh,
+    lastUpdate: new Date().toISOString(), isAutoRefresh,
   };
 }
 
 // ─── Core fetch & process ─────────────────────────────────────────────────────
-// ─── Cache TTL constants ─────────────────────────────────────────────────────
-// During live market: always re-derive from builder (ticks keep it live).
-// After close / holiday / weekend: cache is final — never re-fetch.
-// A fresh cache = populated within the last CACHE_STALE_MS.
-const CACHE_STALE_MS = 5 * 60 * 1000; // 5 minutes (only matters during live market)
+// SINGLE SOURCE OF TRUTH for "get me candles for symbol+resolution".
+// Every caller — GET /api/chart, POST /api/chart/refresh, /api/motherwave,
+// and initialRestFetch() — goes through this one function. No DB code lives
+// anywhere else in the codebase.
+//
+// Order of operations:
+//   1. DB-first  — if DB is enabled and has 1m rows for `symbol`, derive the
+//      requested resolution from Postgres. No Fyers call needed. This is the
+//      common case once a symbol has been backfilled at least once.
+//   2. Fyers fallback — only when DB is disabled, DB has zero rows for this
+//      symbol (fresh symbol, never backfilled), or the DB read throws. Fetches
+//      from Fyers REST and write-throughs 1m candles to DB so the *next* call
+//      for this symbol takes the DB-first path.
+//
+// Daily/Weekly (1440/10080) always derive from the FULL 1m history stored in
+// DB (not the CHART_DB_WINDOW_DAYS slice) — they need long lookback to form
+// correct calendar-day/week boundaries. Everything else (1/3/5/15/60) uses
+// the last CHART_DB_WINDOW_DAYS days only, which is what keeps the chart
+// smooth.
+// ─── Lightweight per-symbol staleness check (boot / reactive) ────────────────
+//
+// PROBLEM THIS SOLVES: previously, once a symbol had ANY 1m rows in DB,
+// loadFromDB() trusted them unconditionally — it never asked "is this
+// actually CURRENT, or did the server just sit down for a while and DB's
+// last candle is hours old?" If the backend was restarted mid-session
+// (e.g. down 09:45→12:00 while the market stayed live), every
+// already-seeded symbol silently kept a hole from 09:45 to 12:00 forever —
+// nothing ever went back to fill it in, because the deep 90-day validator
+// explicitly skips "today" (it's supposed to — today is still in progress)
+// and the live tick stream only produces NEW candles from the moment it
+// reconnects onward.
+//
+// FIX: every time loadFromDB() is about to serve DB data for a symbol, check
+// DB's latest 1m candle against the clock. If it's stale beyond a small
+// tolerance, fetch just the missing delta range from Fyers (cheap — a
+// couple of days lookback at most, not a full year), upsert it, and merge
+// it into the data being returned/seeded so the chart and the candle
+// builder both start from a fully caught-up base instead of carrying a
+// silent hole forward indefinitely.
+//
+// Throttled per symbol (STALENESS_CHECK_COOLDOWN_MS) so this can't turn
+// into a Fyers-hammering loop under the 5s auto-refresh poll — at most one
+// delta-fetch attempt per symbol per cooldown window, regardless of how
+// many chart requests come in during that window.
+//
+// GATING (2026-07-07, confirmed): no day-type check at all here anymore —
+// not weekend, not holiday, not "is today a trading day." The Fyers REST
+// call is cheap and harmless any day (it just returns nothing new on a
+// closed day), and gating on day-type risked silently missing a new
+// contract's first candles landing right after a holiday. The ONLY gate
+// left is "is the Fyers token valid?"
+const STALENESS_TOLERANCE_MS = 3 * 60 * 1000;       // DB allowed to lag "now" by up to 3 minutes before it's considered stale
+const STALENESS_CHECK_COOLDOWN_MS = 60 * 1000;       // don't re-check/re-fetch the same symbol more than once per minute
+const lastStalenessCheckAt = new Map();              // symbol → ms timestamp of last check/attempt
 
-function isCacheFresh(symbol, resolution) {
-  const c = getCache(symbol, resolution);
-  return c.candles.length > 0 && c.result != null && (Date.now() - c.lastFetch) < CACHE_STALE_MS;
+/**
+ * If `oneMinCandles` (already loaded from DB, ascending by time) looks stale
+ * relative to "now", fetch just the missing delta from Fyers, upsert it, and
+ * return a merged, de-duplicated, sorted array. Otherwise returns the
+ * original array unchanged.
+ *
+ * The only gate is token validity — runs any day (weekend/holiday/trading
+ * day), since the API call is cheap and harmless when there's nothing new.
+ *
+ * Never throws — any failure here just means we fall back to serving the
+ * (possibly stale) DB data exactly as before this fix existed, so this can
+ * never make things worse than the pre-fix behavior.
+ */
+async function ensureFreshOneMinData(symbol, oneMinCandles) {
+  try {
+    if (!oneMinCandles || oneMinCandles.length === 0) return oneMinCandles;
+
+    const lastCandle = oneMinCandles[oneMinCandles.length - 1];
+    const nowMs = Date.now();
+    const lagMs = nowMs - lastCandle.time;
+    if (lagMs <= STALENESS_TOLERANCE_MS) return oneMinCandles; // already current — nothing to do
+
+    const lastCheck = lastStalenessCheckAt.get(symbol) || 0;
+    if (nowMs - lastCheck < STALENESS_CHECK_COOLDOWN_MS) return oneMinCandles; // throttled — already tried recently
+    lastStalenessCheckAt.set(symbol, nowMs);
+
+    // Only gate: do we have a working Fyers login right now? No day-type
+    // check (weekend/holiday/trading day) — those no longer matter here.
+    const tokenOk = await validateToken().catch(() => false);
+    if (!tokenOk) return oneMinCandles;
+
+    console.log(`[Staleness] ${symbol}: DB latest is ${(lagMs / 60000).toFixed(1)}min behind — fetching delta from Fyers`);
+
+    // Small bounded lookback (2 days) is always enough to cover the gap —
+    // even a multi-hour outage never spans more than the current + previous
+    // trading day. This keeps the delta-fetch cheap and fast, unlike a full
+    // historical refetch.
+    const fresh1m = await fetchCandles(symbol, 1, CANDLES_TO_FETCH, 2);
+    if (!fresh1m || fresh1m.length === 0) return oneMinCandles;
+
+    // Only keep candles strictly newer than what we already have — avoids
+    // re-validating/re-sorting the whole existing range unnecessarily.
+    const newOnes = fresh1m.filter((c) => c.time > lastCandle.time);
+    if (newOnes.length === 0) return oneMinCandles;
+
+    if (dbEnabled && db) {
+      try {
+        const inserted = await db.upsertCandles(symbol, 1, newOnes);
+        console.log(`[Staleness] ${symbol}: backfilled ${inserted} missing 1m candle(s)`);
+        // FRONTEND-SYNC FIX: if a chart for this symbol was already open in a
+        // browser tab BEFORE this backfill ran, the page's first render would
+        // have shipped with the (then-stale) DB data — and since the live tick
+        // stream only appends NEW candles going forward, that earlier render
+        // would carry a visual gap forward indefinitely with nothing telling
+        // it to re-fetch. Broadcasting this event lets any open chart for this
+        // symbol silently re-pull fresh history the moment the backfill lands,
+        // instead of requiring a manual page reload to see corrected data.
+        io.emit("history_updated", { symbol, reason: "staleness_backfill", count: inserted });
+      } catch (err) {
+        console.warn(`[Staleness] ${symbol}: upsert of delta candles failed (${err.message}) — still using them in-memory for this response`);
+      }
+    }
+
+    const merged = [...oneMinCandles, ...newOnes]
+      .sort((a, b) => a.time - b.time)
+      .filter((c, i, arr) => i === 0 || c.time !== arr[i - 1].time);
+    return merged;
+  } catch (err) {
+    console.warn(`[Staleness] ${symbol}: check failed (${err.message}) — serving DB data as-is`);
+    return oneMinCandles;
+  }
 }
 
-async function fetchAndProcess(symbol = SYMBOL, resolution = RESOLUTION) {
-  // ── Fast path: serve from in-memory cache ───────────────────────────────────
-  // When market is closed (after hours, weekend, holiday) the data is final.
-  // Never re-read DB or call Fyers — just return what's already in memory.
-  // During live market we skip this only if the cache is genuinely stale.
-  if (!isLiveMarket(symbol) && isCacheFresh(symbol, resolution)) {
-    const c = getCache(symbol, resolution);
-    return { candles: c.candles, result: c.result };
-  }
+// ─── Curated-symbol gap scan + staleness sweep (fixes 4 & 5) ──────────────────
+// Validates every curated (no-expiry) symbol against the broker, repairs any
+// gap, then proactively runs the same staleness/delta-fetch check
+// ensureFreshOneMinData() does — but for EVERY curated symbol, not just
+// whichever one a client happens to have open.
+//
+// Callable from two places:
+//   1. Once at boot, right after initialRestFetch (trigger="startup").
+//   2. From the /api/auth/token route, right after a token is successfully
+//      (re)generated (trigger="reauth") — this is the actual re-auth hook
+//      that used to be missing. Previously the boot-time log said "Will
+//      repair after re-auth" but nothing was ever wired up to make that
+//      true; submitting a new token only busted the validateToken cache and
+//      restarted the tick stream, it never re-ran recovery or staleness.
+//
+// An in-flight guard prevents the two triggers from ever running the sweep
+// concurrently (e.g. someone re-auths a few seconds after boot, while the
+// startup sweep is still in progress).
+let _catchUpInFlight = false;
 
-  // ── Option/future access tracking (retention cleanup) ──────────────────────
-  // Touch the access log whenever an option (CE/PE) or future (FUT) symbol is
-  // loaded — this is the "last viewed" timestamp used by retentionCleanup.js
-  // to decide when to delete stale contract data. Underlying equity/index
-  // symbols are skipped. Non-critical: fire-and-forget (never blocks the fetch).
-  if (dbEnabled) {
-    const symUpper = symbol.toUpperCase();
-    const isContract =
-      /\d{2}(?:[A-Z]{3}|[0-9][A-Z0-9]\d{2})\d+(CE|PE)$/.test(symUpper) || // option
-      /\d{2}[A-Z]{3}FUT$/.test(symUpper);                                    // future
-    if (isContract) {
-      db.touchSymbolAccess(symbol).catch((err) =>
-        console.warn(`[Retention] touchSymbolAccess failed for ${symbol}:`, err.message)
-      );
+async function runCuratedSymbolCatchUp(trigger = "startup") {
+  if (!recoveryEngine || !dbEnabled || !db) return;
+
+  if (_catchUpInFlight) {
+    console.log(`[Recovery] Catch-up already running — skipping duplicate ${trigger} trigger`);
+    return;
+  }
+  _catchUpInFlight = true;
+
+  try {
+    const fs = require("fs");
+    const path = require("path");
+    const NO_EXPIRY_SYMBOLS_JSON = path.resolve(__dirname, "./data/noExpirySymbols.json");
+    let curatedSymbols = [];
+    try {
+      const all = JSON.parse(fs.readFileSync(NO_EXPIRY_SYMBOLS_JSON, "utf8"));
+      curatedSymbols = all.map((s) => s.symbol).filter(Boolean);
+    } catch (e) {
+      console.warn("[Recovery] Could not load noExpirySymbols.json for catch-up scan:", e.message);
+      return;
     }
-  }
 
-  // ── Load 1m base data ────────────────────────────────────────────────────────
-  // If the builder for this symbol already has 1m history (seeded earlier this
-  // boot), skip the DB read — the builder is the in-memory source of truth.
-  // Only read DB when the builder is cold (first time this symbol is seen).
-  let raw1m = [];
-  const builderAlreadySeeded = candleBuilders.has(symbol) &&
-    candleBuilders.get(symbol).getOneMinHistory().length > 0;
+    if (trigger === "startup") {
+      // Wait for initialRestFetch to finish (it runs right before the boot call)
+      await new Promise((r) => setTimeout(r, 5000));
+    }
 
-  if (builderAlreadySeeded) {
-    raw1m = candleBuilders.get(symbol).getOneMinHistory();
+    // Skip if token is invalid — repairs need Fyers, pointless without auth.
+    // On the "reauth" trigger this should basically always pass, since the
+    // caller only invokes this after a token was just successfully saved —
+    // but re-check anyway rather than assume, in case it expired again
+    // between save and this call.
+    const tokenOk = await validateToken().catch(() => false);
+    if (!tokenOk) {
+      console.log(`[Recovery] Catch-up (${trigger}) skipped — token invalid. Will repair after re-auth.`);
+      return;
+    }
 
-    // ── Defensive reconciliation (ROOT-CAUSE FIX) ─────────────────────────────
-    // "Builder already has history" used to be treated as proof the builder is
-    // complete for today. That's only true if the builder was seeded cold from
-    // DB/REST at boot. If instead the builder was created fresh by the FIRST
-    // live tick arriving mid-session — e.g. this symbol wasn't part of the
-    // active tick-stream subscription until a panel opened it later, or ticks
-    // resumed after a WebSocket outage that started before this builder object
-    // even existed — its in-memory history silently starts late in the day.
-    // Every /api/chart call then served (and every socket broadcast built
-    // from) that truncated array, even though the missing earlier candles
-    // were sitting untouched in the DB the whole time — exactly the "candles
-    // present in DB but not shown on chart" symptom.
-    //
-    // Fix: once per symbol per trading day, check whether today's earliest
-    // in-memory candle actually starts at/near market open. If it starts
-    // suspiciously late, pull today's candles from DB and merge in any time
-    // slots the builder is missing (never overwrites what the builder already
-    // has — DB only fills gaps), then re-seed the builder with the merged,
-    // deduped result so this reconciliation happens once, not every call.
-    if (dbEnabled) {
-      const todayKey = istDateKey(Date.now());
-      const reconKey = `${symbol}:${todayKey}`;
-      if (!reconciledToday.has(reconKey) && isTradingDay(symbol)) {
-        reconciledToday.add(reconKey);
+    console.log(`[Recovery] Catch-up (${trigger}): checking ${curatedSymbols.length} curated symbols...`);
+    let repaired = 0;
+    let clean = 0;
+    let skippedKnown = 0;
+    const CONCURRENCY = 3;
+    const BATCH_DELAY_MS = 1000;
+
+    for (let i = 0; i < curatedSymbols.length; i += CONCURRENCY) {
+      const batch = curatedSymbols.slice(i, i + CONCURRENCY);
+      await Promise.all(batch.map(async (symbol) => {
         try {
-          const todays = raw1m.filter((c) => istDateKey(c.time) === todayKey);
-          const earliestToday = todays.length ? todays[0].time : null;
-          const openAnchor = marketOpenAnchorMs(symbol);
-          const UNDER_SEEDED_THRESHOLD_MS = 3 * 60 * 1000; // starting >3min after open is suspicious
-          if (earliestToday != null && earliestToday - openAnchor > UNDER_SEEDED_THRESHOLD_MS) {
-            const dbCandles = await db.loadCandles(symbol, 1, { from: new Date(openAnchor), limit: 100000 });
-            if (dbCandles.length > 0) {
-              const byTime = new Map(raw1m.map((c) => [c.time, c]));
-              let mergedIn = 0;
-              for (const c of dbCandles) {
-                if (!byTime.has(c.time)) { byTime.set(c.time, c); mergedIn++; }
+          const { valid, issues } = await db.validateHistorical(symbol, 1);
+          if (!valid && issues.length > 0) {
+            // Find the earliest gap and repair that day
+            const gapIssue = issues.find((iss) => iss.type === "GAP" || iss.type === "CORRUPT_OHLC");
+            if (gapIssue) {
+              const tradingDay = new Date(gapIssue.time || Date.now());
+              // Skip today — an in-progress trading day always looks incomplete
+              const todayStr = new Date().toISOString().slice(0, 10);
+              if (tradingDay.toISOString().slice(0, 10) >= todayStr) {
+                console.log(`[Recovery] ${symbol}: skipping today's in-progress candles (not a real gap)`);
+                clean++;
+                return;
               }
-              if (mergedIn > 0) {
-                raw1m = [...byTime.values()].sort((a, b) => a.time - b.time);
-                candleBuilders.get(symbol).seedHistory(raw1m);
-                raw1m = candleBuilders.get(symbol).getOneMinHistory();
-                console.warn(
-                  `[Server] Reconciled ${symbol}: builder's in-memory history started ` +
-                  `${Math.round((earliestToday - openAnchor) / 60000)}min after market open — ` +
-                  `merged ${mergedIn} earlier candle(s) from DB that the builder was missing.`
-                );
+
+              // CIRCUIT BREAKER — fixes the infinite repeat-repair loop
+              // (e.g. NSE:NIFTY50-INDEX getting "repaired" for the same
+              // day on every single restart, forever). If this exact
+              // symbol+day already had a successful repair logged
+              // recently and the validator is STILL flagging it, the
+              // broker's own data for that day is almost certainly
+              // just genuinely short (thin closing volume, etc.) — not
+              // something another refetch will fix. Skip it, log once,
+              // and let it become eligible again after the cooldown
+              // window in case the broker backfills better data later.
+              const alreadyRepaired = await db.wasDayAlreadyRepaired(symbol, tradingDay, 3).catch(() => false);
+              if (alreadyRepaired) {
+                console.log(`[Recovery] ${symbol}: ${tradingDay.toISOString().slice(0, 10)} already repaired recently and still flagged — likely a genuine short broker day, skipping re-repair`);
+                skippedKnown++;
+                return;
               }
+
+              console.log(`[Recovery] ${symbol}: ${issues.length} issue(s) — repairing gap at ${tradingDay.toISOString().slice(0, 10)}`);
+              await recoveryEngine.repairDay({
+                symbol,
+                tradingDay,
+                fetchCandles: (sym, res) => fetchCandles(sym, res),
+                trigger,
+              });
+              repaired++;
             }
+          } else {
+            clean++;
+            // Silent for clean symbols — only log summary at end
           }
-        } catch (err) {
-          console.warn(`[Server] Reconciliation check failed for ${symbol}:`, err.message);
+        } catch (e) {
+          console.warn(`[Recovery] ${symbol} scan error:`, e.message);
         }
+      }));
+      if (i + CONCURRENCY < curatedSymbols.length) {
+        await new Promise((r) => setTimeout(r, BATCH_DELAY_MS));
       }
     }
-  } else {
-    // Builder is cold — load from DB first, fall back to Fyers REST if empty.
-    if (dbEnabled) {
-      // ── ROOT-CAUSE FIX: verify DB isn't stale before trusting it ──────────
-      // A symbol nobody has actively watched recently (no socket had it open,
-      // wasn't part of the periodic-sync symbol list) can go days without a
-      // single DB write. The code below used to treat "DB returned some
-      // rows" as "DB is complete for this symbol" — so searching a symbol
-      // for the first time in days seeded the builder with whatever was
-      // last written days ago, then only live ticks from *this* moment
-      // onward ever got added — exactly why a freshly-searched symbol can
-      // render just one lonely "today" candle even though the broker has
-      // the full day. periodicSync's own 2-minute timer would eventually
-      // patch the DB rows, but it never touches an already-created
-      // builder's in-memory history, so the chart stayed wrong regardless.
-      // Fix: run the same broker-vs-DB drift check periodicSync uses, right
-      // here, synchronously, the first time this symbol's builder is cold —
-      // so DB is already caught up by the time we read it below.
-      try {
-        await db.periodicSync({
-          symbol,
-          fetchCandles: (s, r, rangeOpts) => fetchCandles(s, r, undefined, undefined, rangeOpts),
-        });
-      } catch (err) {
-        console.warn(`[Server] Pre-seed sync check failed for ${symbol} — continuing with existing DB data:`, err.message);
-      }
+    console.log(`[Recovery] Catch-up (${trigger}) gap scan complete — ${clean} clean, ${repaired} repaired, ${skippedKnown} skipped (known short day) out of ${curatedSymbols.length} symbols`);
 
-      try {
-        const from = new Date(Date.now() - 30 * 86400 * 1000);
-        const dbCandles = await db.loadCandles(symbol, 1, { from, limit: 100000 });
-        if (dbCandles.length > 0) {
-          raw1m = dbCandles;
-          console.log(`[DB] Loaded ${raw1m.length} 1m candles for ${symbol} from DB`);
+    // ── Proactive staleness sweep ──────────────────────────────────────
+    // PROBLEM: ensureFreshOneMinData() only fires REACTIVELY — the moment
+    // a client actually requests that exact symbol's chart. Nothing swept
+    // the curated symbol list proactively, so a symbol nobody happened to
+    // open yet could sit with a silent gap until someone finally loaded
+    // its chart.
+    // FIX 4: reuse the exact same ensureFreshOneMinData() logic (same
+    // throttle map, same 3-min tolerance, same cheap 2-day delta fetch)
+    // but drive it here for every curated symbol.
+    //
+    // GATING (2026-07-07, confirmed): removed the `if (!isTradingDay(symbol))
+    // return;` early-out that used to sit here. Fetching history from Fyers
+    // works the same whether today happens to be a trading day for this
+    // symbol or not, so this sweep is no longer skipped on weekends/
+    // holidays. The only gate left is the token-valid check that already
+    // lives inside ensureFreshOneMinData() itself.
+    console.log(`[Staleness] Catch-up (${trigger}) sweep: checking ${curatedSymbols.length} curated symbols for staleness...`);
+    let staleFound = 0;
+    // Concurrency=3 / 1200ms between batches to stay comfortably under
+    // Fyers' rate limit across the whole sweep (a faster 5/500ms setting
+    // was seen failing near the tail end of a 205-symbol list in
+    // production with "request limit reached" errors).
+    const SWEEP_CONCURRENCY = 3;
+    for (let i = 0; i < curatedSymbols.length; i += SWEEP_CONCURRENCY) {
+      const batch = curatedSymbols.slice(i, i + SWEEP_CONCURRENCY);
+      await Promise.all(batch.map(async (symbol) => {
+        try {
+          const latest = await db.getLatestCandle(symbol, 1);
+          if (!latest) return; // symbol has no 1m data yet — nothing to check staleness against
+          const before = latest.time;
+          await ensureFreshOneMinData(symbol, [latest]);
+          // ensureFreshOneMinData logs its own [Staleness] line when it
+          // actually backfills something; we just tally here for the summary.
+          const after = await db.getLatestCandle(symbol, 1).catch(() => null);
+          if (after && after.time > before) staleFound++;
+        } catch (e) {
+          console.warn(`[Staleness] Catch-up sweep error for ${symbol}:`, e.message);
         }
-      } catch (err) {
-        console.warn(`[DB] loadCandles failed for ${symbol} — falling back to Fyers REST:`, err.message);
+      }));
+      if (i + SWEEP_CONCURRENCY < curatedSymbols.length) {
+        await new Promise((r) => setTimeout(r, 1200));
       }
     }
+    console.log(`[Staleness] Catch-up (${trigger}) sweep complete — ${staleFound} symbol(s) backfilled`);
+  } finally {
+    _catchUpInFlight = false;
+  }
+}
 
-    if (raw1m.length === 0) {
-      console.log(`[Server] DB empty for ${symbol} — fetching 1m from Fyers REST (initial seed)`);
-      raw1m = await fetchCandles(symbol, 1, CANDLES_TO_FETCH);
-      if (dbEnabled && raw1m.length > 0) {
-        db.upsertCandles(symbol, 1, raw1m).then((n) => {
-          console.log(`[DB] Initial seed: upserted ${n} 1m candles for ${symbol}`);
-        }).catch((err) => {
-          console.error(`[DB] Initial seed upsert failed for ${symbol}:`, err.message);
-        });
-      }
+async function loadFromDB(symbol, resolution) {
+  if (!dbEnabled || !db) return null;
+  try {
+    let oneMinCandles;
+    if (resolution === 1440 || resolution === 10080) {
+      oneMinCandles = await db.loadCandles(symbol, 1, { limit: 100000 });
+    } else {
+      const windowMs = CHART_DB_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+      oneMinCandles = await db.loadCandles(symbol, 1, {
+        from: new Date(Date.now() - windowMs),
+        to: new Date(),
+        limit: 50000,
+      });
     }
 
-    // Seed the builder once — all future calls for this symbol reuse it.
-    const builder = getOrCreateBuilder(symbol);
-    builder.seedHistory(raw1m);
+    if (!oneMinCandles || oneMinCandles.length === 0) return null;
+
+    oneMinCandles = await ensureFreshOneMinData(symbol, oneMinCandles);
+
+    const candles = resolution === 1 ? oneMinCandles : deriveTimeframe(oneMinCandles, resolution);
+    if (!candles || candles.length === 0) return null;
+
+    return { candles, oneMinCandles };
+  } catch (err) {
+    console.warn(`[DB-first] DB read failed for ${symbol} res=${resolution} (${err.message}) — falling back to Fyers`);
+    return null;
+  }
+}
+
+async function fetchAndProcess(symbol = SYMBOL || "NSE:NIFTY50-INDEX", resolution = RESOLUTION) {
+  // ── 1. DB-first ──────────────────────────────────────────────────────────
+  // CHANGED: previously this skipped the DB entirely for option contracts
+  // (CE/PE) because "the DB will always be empty for them" — true when this
+  // was written, no longer true now that options are routed into
+  // nse_options_candles/mcx_options_candles (see database/src/dataRouter.js)
+  // and backfilled from history. loadFromDB() already returns null when the
+  // DB genuinely has nothing for a symbol (brand-new contract not yet
+  // written), so it falls through to the Fyers path below exactly as
+  // before for those — this just stops UNCONDITIONALLY bypassing the DB
+  // for every option on every request.
+  const dbHit = await loadFromDB(symbol, resolution);
+  if (dbHit) {
+    const { candles, oneMinCandles } = dbHit;
+    console.log(`[DB-first] ${symbol} res=${resolution}m → ${candles.length} candles from DB`);
+
+    // Seed the candle builder so the live tick stream has 1m continuity for
+    // this symbol — same seedHistory() call the Fyers path always made.
+    // Safe to call repeatedly: seedHistory() fully replaces _oneMinHistory.
+    getOrCreateBuilder(symbol).seedHistory(oneMinCandles);
+
+    const result = runSignalEngine(candles);
+    setCache(symbol, resolution, candles, result);
+    if (resolution !== 1) {
+      try { setCache(symbol, 1, oneMinCandles, runSignalEngine(oneMinCandles)); } catch { }
+    }
+    return { candles, result };
   }
 
-  // ── Derive requested resolution from in-memory 1m ───────────────────────────
-  // 1m, 3m, 5m, 15m, 60m — all derived from builder (never a separate Fyers call).
-  // Daily (1440) and weekly (10080) are too long to derive from 30d of 1m data,
-  // so they still call Fyers REST — but only if cache is stale/missing.
-  let candles;
+  // ── 2. Fyers fallback (DB disabled, empty, or read failed) ───────────────
+  console.log(`[Fyers-fallback] ${symbol} res=${resolution}m — no DB data, fetching from Fyers`);
+  // Option contracts (CE/PE) only exist for days/weeks — using the default
+  // 30-day lookback causes Fyers to return empty chunks for dates before the
+  // contract was listed. Use a 5-day lookback instead so every chunk is valid.
+  const isOptionContract = isOptionSymbol(symbol);
+  const raw1m = await fetchCandles(symbol, 1, CANDLES_TO_FETCH, isOptionContract ? 5 : null);
+
+  if (candleBuilders.has(symbol)) {
+    const existing = candleBuilders.get(symbol).getOneMinHistory();
+    if (existing.length > 0 && raw1m.length > 0) {
+      const ratio = existing[0].close > 0 ? Math.abs(raw1m[0].close - existing[0].close) / existing[0].close : 1;
+      if (ratio > 0.5) { console.log(`[Server] Price scale mismatch for ${symbol} — resetting builder`); candleBuilders.delete(symbol); }
+    }
+  }
+
   const builder = getOrCreateBuilder(symbol);
+  builder.seedHistory(raw1m);
 
-  if (resolution === 1) {
-    candles = raw1m.length > 0 ? raw1m : builder.getOneMinHistory();
-  } else if (resolution === 1440 || resolution === 10080) {
-    const cached = getCache(symbol, resolution);
-    if (cached.candles.length > 0) {
-      // Daily/weekly: already cached — return without another Fyers call
-      return { candles: cached.candles, result: cached.result };
-    }
-    candles = await fetchCandles(symbol, resolution, CANDLES_TO_FETCH);
-  } else {
-    candles = builder.getCandlesForResolution(resolution);
+  // ── DB: bulk-save REST 1m candles on every fetch ────────────────────────
+  // This backfills the DB with historical 1m candles from Fyers REST so the
+  // *next* fetchAndProcess() call for this symbol takes the DB-first path.
+  // upsertCandles is idempotent (ON CONFLICT DO UPDATE) so re-fetching is safe.
+  // ── DB: smart upsert ─ only write candles newer than what's already stored ──
+  if (dbEnabled && raw1m.length > 0) {
+    db.getLatestCandle(symbol, 1).then((latest) => {
+      const newCandles = latest
+        ? raw1m.filter((c) => c.time > latest.time)
+        : raw1m;
+
+      if (newCandles.length === 0) {
+        console.log(`[DB] ${symbol} — no new candles to upsert (already up to date)`);
+        return;
+      }
+
+      return db.upsertCandles(symbol, 1, newCandles).then((n) => {
+        const since = latest ? new Date(latest.time).toISOString() : 'first time';
+        console.log(`[DB] Upserted ${n} new 1m candles for ${symbol} (${since})`);
+      });
+    }).catch((err) => {
+      // getLatestCandle failed — skip upsert entirely, do NOT dump all candles.
+      // recoveryEngine will detect any gap on its next cycle and re-fetch
+      // only the affected day via deleteDayCandles + upsert. repairLog will
+      // record it. No blind fallback upsert here.
+      console.warn(`[DB] getLatestCandle failed for ${symbol} (${err.message}) — skipping upsert, recoveryEngine will handle gap`);
+    });
   }
+
+  let candles;
+  if (resolution === 1) { candles = raw1m; }
+  else { candles = await fetchCandles(symbol, resolution, CANDLES_TO_FETCH); }
 
   const result = runSignalEngine(candles);
   setCache(symbol, resolution, candles, result);
-  // Keep res=1 cache populated so isCacheFresh(sym, 1) works
-  if (resolution !== 1 && raw1m.length > 0) {
-    try { setCache(symbol, 1, raw1m, runSignalEngine(raw1m)); } catch { }
-  }
+  if (resolution !== 1) { try { setCache(symbol, 1, raw1m, runSignalEngine(raw1m)); } catch { } }
   return { candles, result };
 }
 
@@ -648,7 +868,7 @@ async function fetchAndBroadcast(symbol, resolution, isAutoRefresh = true) {
     for (const sid of roomSockets) {
       const sock = io.sockets.sockets.get(sid);
       if (!sock) continue;
-      if ((socketSymbols.get(sid) || SYMBOL) === symbol) sock.emit("chart_update", payload);
+      if ((socketSymbols.get(sid) || SYMBOL || symbol) === symbol) sock.emit("chart_update", payload);
     }
   }
   console.log(`[BROADCAST] ${symbol} res=${resolution}m → ${candles.length} candles`);
@@ -663,9 +883,14 @@ app.use(createChartRouter({
   getCache, buildPayload, fetchAndProcess, fetchAndBroadcast,
   isLiveMarket, isTradingDay, isAnyMarketLive,
   tickStream, ticksFlowing, getActiveTickSymbols, updateTickSubscription, maybeStartTickStream,
-  getAuthURL, generateToken, validateToken,
+  getAuthURL, generateToken, validateToken, bustTokenCache,
   detectMotherWaveForAPI,
-  db, dbEnabled, fetchCandles,
+  markBroadcastSymbol,
+  // FIX 5 (re-auth hook): expose the same curated-symbol gap-fill/staleness
+  // sweep that runs at boot so the /api/auth/token route can re-trigger it
+  // the moment a token goes from invalid to valid again — see
+  // runCuratedSymbolCatchUp() below (hoisted function declaration).
+  runCuratedSymbolCatchUp,
 }));
 
 app.use("/api/symbols", symbolsRouter);
@@ -675,9 +900,7 @@ app.use("/api/backtest", backtestRouter);
 // ─── Tick Watchdog ────────────────────────────────────────────────────────────
 function startTickWatchdog() {
   setInterval(() => {
-    // Skip entirely if market is closed — no ticks expected, no need to reconnect
-    if (!isTradingDay() || !isAnyMarketLive(getActiveTickSymbols())) return;
-    if (!tickStream.isConnected()) return;
+    if (!isTradingDay() || !isAnyMarketLive(getActiveTickSymbols()) || !tickStream.isConnected()) return;
     const now = Date.now();
     if (lastConnectAt > 0 && now - lastConnectAt < WATCHDOG_GRACE_MS) return;
     if (lastTickAt === 0) return;
@@ -740,9 +963,11 @@ function startAutoRefresh() {
       const key = `${sym}:${res}`;
       if (!pairs.has(key)) pairs.set(key, { symbol: sym, resolution: res });
     }
-    // Always include default
-    const dk = `${SYMBOL}:${RESOLUTION}`;
-    if (!pairs.has(dk)) pairs.set(dk, { symbol: SYMBOL, resolution: RESOLUTION });
+    // Always include default (only if a default SYMBOL is configured)
+    if (SYMBOL) {
+      const dk = `${SYMBOL}:${RESOLUTION}`;
+      if (!pairs.has(dk)) pairs.set(dk, { symbol: SYMBOL, resolution: RESOLUTION });
+    }
 
     // Stagger refreshes 600ms apart — prevents Fyers rate storm (Issue #2 fix)
     const pairList = Array.from(pairs.values());
@@ -757,94 +982,35 @@ function startAutoRefresh() {
 }
 
 // ─── Initial REST fetch ───────────────────────────────────────────────────────
+// Pre-warms the in-process cache for every resolution on startup.
+// NO token check here — fetchAndProcess() handles DB-first internally.
+// If DB has data → loads instantly without any Fyers call.
+// If DB is empty AND token is invalid → Fyers fallback fails gracefully per-res.
+// Either way the site is never fully blocked by an expired token.
 async function initialRestFetch() {
-  const valid = await validateToken().catch(() => false);
-  if (!valid) { console.log("[INIT] Not authenticated — skipping initial fetch. Chart will be empty."); return; }
-
-  const dayLabel = isTradingDay()
-    ? (isAnyMarketLive(getActiveTickSymbols()) ? "live market" : "weekday (market closed)")
-    : "weekend/holiday";
-  console.log(`[INIT] Booting for ${SYMBOL} (${dayLabel})...`);
-
-  // ── Step 1: Load 1m ONCE from DB (or Fyers if DB empty) ─────────────────
-  // All intraday TFs (1/3/5/15/60m) are derived from this single load.
-  // Daily and weekly still need separate Fyers REST calls (can't derive from 30d of 1m).
-  let raw1m = [];
-
-  if (dbEnabled) {
-    try {
-      const from = new Date(Date.now() - 30 * 86400 * 1000);
-      const dbCandles = await db.loadCandles(SYMBOL, 1, { from, limit: 100000 });
-      if (dbCandles.length > 0) {
-        raw1m = dbCandles;
-        console.log(`[DB] Loaded ${raw1m.length} 1m candles for ${SYMBOL} from DB`);
-      }
-    } catch (err) {
-      console.warn(`[DB] loadCandles failed — falling back to Fyers REST:`, err.message);
-    }
-  }
-
-  if (raw1m.length === 0) {
-    console.log(`[INIT] DB empty — fetching 1m from Fyers REST (initial seed)`);
-    try {
-      raw1m = await fetchCandles(SYMBOL, 1, CANDLES_TO_FETCH);
-      if (dbEnabled && raw1m.length > 0) {
-        db.upsertCandles(SYMBOL, 1, raw1m).then((n) => {
-          console.log(`[DB] Initial seed: upserted ${n} 1m candles for ${SYMBOL}`);
-        }).catch((err) => console.error(`[DB] Initial seed failed:`, err.message));
-      }
-    } catch (err) {
-      console.error(`[INIT] Fyers 1m fetch failed: ${err.message}`);
-    }
-  }
-
-  if (raw1m.length === 0) {
-    console.error("[INIT] No 1m candle data available — chart will be empty.");
+  if (!SYMBOL) {
+    console.log("[INIT] No default SYMBOL set — skipping pre-warm. Charts load on first client request.");
     return;
   }
+  const dayLabel = isTradingDay() ? (isAnyMarketLive(getActiveTickSymbols()) ? "live market" : "weekday (market closed)") : "weekend/holiday";
+  console.log(`[INIT] Pre-warming all resolutions for ${SYMBOL} (${dayLabel})...`);
 
-  // ── Step 2: Seed builder ONCE ─────────────────────────────────────────────
-  const builder = getOrCreateBuilder(SYMBOL);
-  builder.seedHistory(raw1m);
-  console.log(`[INIT] Builder seeded with ${raw1m.length} 1m candles ✓`);
+  const ALL_RESOLUTIONS = [1, 3, 5, 15, 60, 1440, 10080];
 
-  // ── Step 3: Derive all intraday TFs in one pass (no more Fyers calls) ─────
-  for (const res of [1, 3, 5, 15, 60]) {
-    try {
-      const candles = res === 1 ? raw1m : builder.getCandlesForResolution(res);
-      const result = runSignalEngine(candles);
-      setCache(SYMBOL, res, candles, result);
-      console.log(`[INIT] res=${res} ✓ (${candles.length} candles, derived from 1m)`);
-    } catch (err) {
-      console.error(`[INIT] res=${res} derive failed: ${err.message}`);
-    }
-  }
-
-  // ── Step 4: Daily and weekly — Fyers REST (separate lookback needed) ──────
-  for (const res of [1440, 10080]) {
+  for (const res of ALL_RESOLUTIONS) {
     const MAX_RETRIES = 3;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const candles = await fetchCandles(SYMBOL, res, CANDLES_TO_FETCH);
-        const result = runSignalEngine(candles);
-        setCache(SYMBOL, res, candles, result);
-        console.log(`[INIT] res=${res} ✓ (${candles.length} candles, Fyers REST)`);
-        break;
-      } catch (err) {
+      try { await fetchAndProcess(SYMBOL, res); console.log(`[INIT] res=${res} ✓`); break; }
+      catch (err) {
         console.error(`[INIT] res=${res} attempt ${attempt}/${MAX_RETRIES} failed: ${err.message}`);
         if (attempt < MAX_RETRIES) await new Promise((r) => setTimeout(r, 2000 * attempt));
       }
     }
   }
-
-  // ── Step 5: Push initial chart_update to any already-connected sockets ────
   try {
     const cache = getCache(SYMBOL, RESOLUTION);
-    if (cache.result && cache.candles.length > 0) {
-      io.emit("chart_update", buildPayload(cache.candles, cache.result, SYMBOL, RESOLUTION, false));
-    }
+    if (cache.result && cache.candles.length > 0) io.emit("chart_update", buildPayload(cache.candles, cache.result, SYMBOL, RESOLUTION, false));
   } catch { }
-
   console.log("[INIT] All resolutions loaded ✓  Chart is ready.");
 }
 
@@ -852,15 +1018,22 @@ async function initialRestFetch() {
 io.on("connection", (socket) => {
   console.log(`[WS] Client connected: ${socket.id}`);
   let currentResolution = RESOLUTION;
-  let currentSymbol = SYMBOL;
+  let currentSymbol = SYMBOL;  // null if not set — client sends set_symbol on connect
   socketResolutions.set(socket.id, currentResolution);
-  socketSymbols.set(socket.id, currentSymbol);
+  if (currentSymbol) socketSymbols.set(socket.id, currentSymbol);
   socket.join(`res:${currentResolution}`);
 
-  const initialCache = getCache(SYMBOL, currentResolution);
-  if (initialCache.result && initialCache.candles.length > 0) {
-    socket.emit("chart_update", buildPayload(initialCache.candles, initialCache.result, SYMBOL, currentResolution, true));
-  }
+  // RACE-CONDITION FIX: previously this pushed the *default* SYMBOL's cached
+  // chart_update to every socket immediately on raw connect, before the
+  // client had a chance to say which symbol it actually wants. If that push
+  // landed before the client's own activeSymbolRef was set (a real timing
+  // race, not hypothetical — confirmed via code trace), the frontend's
+  // matchesActive() guard would accept it (nothing to compare against yet),
+  // stomping the chart with the wrong symbol's data and price/date — and
+  // could then keep rejecting the *correct* update afterward since the ref
+  // was now stuck on the wrong symbol. Fix: don't push anything until the
+  // client tells us (via set_symbol) which symbol it's actually watching —
+  // see the cache push inside the set_symbol handler below instead.
   socket.emit("market_status", { tickStreamActive: tickStream.isConnected(), liveMarket: isAnyMarketLive(getActiveTickSymbols()), tradingDay: isTradingDay(), ticksFlowing: ticksFlowing() });
 
   // TICK-STREAM + DUAL-PANEL FIX:
@@ -873,6 +1046,14 @@ io.on("connection", (socket) => {
     currentSymbol = sym;
     socketSymbols.set(socket.id, sym);
     console.log(`[WS] ${socket.id} → symbol=${sym}`);
+    // Fast-path: if we already have fresh cached data for THIS symbol (the
+    // one the client just confirmed), push it immediately instead of making
+    // the client wait for its own REST refresh() call to land. Safe because
+    // it's keyed to the symbol the client just told us it wants — no race.
+    const initialCache = getCache(currentSymbol, currentResolution);
+    if (initialCache.result && initialCache.candles.length > 0) {
+      socket.emit("chart_update", buildPayload(initialCache.candles, initialCache.result, currentSymbol, currentResolution, true));
+    }
     if (isLiveMarket(sym) && sym !== prev) {
       updateTickSubscription().catch(console.error);
     }
@@ -898,8 +1079,6 @@ io.on("connection", (socket) => {
   // itself (single source of truth for the option→underlying mapping) and
   // subscribes the tick stream to it. Calling with null/undefined stops the
   // feed (toggle off, symbol changed away from an option, panel unmounted).
-  // Does NOT affect socketSymbols/the main chart subscription — purely an
-  // additional tick-stream symbol.
   socket.on("set_underlying", (optionSym) => {
     const underlyingSym = deriveUnderlyingSymbol(optionSym);
     if (!underlyingSym) {
@@ -916,12 +1095,20 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("request_refresh", async () => {
-    const valid = await validateToken();
-    if (!valid) { socket.emit("error", { message: "Not authenticated. Please set up Fyers token." }); return; }
+  socket.on("request_refresh", () => {
+    // No token check — fetchAndProcess() is DB-first, works without Fyers token.
+    // If DB has data → instant. If DB empty + token dead → error emitted below.
+    // FIX: error now carries the symbol/resolution it actually failed for, so
+    // the frontend can filter it through the same matchesActive() check every
+    // other socket event already uses — without this, a failed background
+    // fetch for an unrelated symbol/resolution (e.g. an Auto-ATM underlying
+    // res=1 seed) was bleeding through and overwriting whatever chart was
+    // actually on screen, even though that chart's own data was fine.
+    const failedSymbol = currentSymbol;
+    const failedResolution = currentResolution;
     fetchAndProcess(currentSymbol, currentResolution)
       .then(({ candles, result }) => socket.emit("chart_update", buildPayload(candles, result, currentSymbol, currentResolution, false)))
-      .catch((e) => socket.emit("error", { message: e.message }));
+      .catch((e) => socket.emit("error", { message: e.message, symbol: failedSymbol, resolution: failedResolution }));
   });
 
   socket.on("disconnect", () => {
@@ -943,7 +1130,7 @@ app.get("*", (req, res, next) => {
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-const PORT = parseInt(process.env.PORT || "9004");
+const PORT = parseInt(process.env.PORT || "5280");
 server.listen(PORT, async () => {
   console.log(`\n✅ TGG Backend running on http://localhost:${PORT}`);
   console.log(`   Health     : http://localhost:${PORT}/health`);
@@ -955,31 +1142,93 @@ server.listen(PORT, async () => {
   startAutoRefresh();
   startTickWatchdog();
 
-  // ── DB: connect, health-check, prune old candles ────────────────────────
+  // ── DB: connect, health-check ────────────────────────────────────────────
   if (dbEnabled) {
     try {
       const ok = await db.healthCheck();
       if (ok) {
         console.log("[DB] ✅  PostgreSQL connection healthy");
 
-        // Inject Socket.IO emitter so repair_status events reach the frontend
-        db.injectStatusEmitter((event, data) => io.emit(event, data));
-        console.log("[DB] Status emitter injected → repair_status events active");
+        // ── PRUNING DISABLED (2026-07-03) ──────────────────────────────────
+        // Both pruneOldCandles() and pruneExpiredContracts() hard-DELETE rows
+        // from `candles` with no archive anywhere else — every expired
+        // option/future contract they touch is gone permanently, which
+        // breaks backtesting (confirmed: they had already deleted 3 SENSEX
+        // option contracts / 3420 candles by the time this was caught).
+        // Turned off site-wide until the separate backtest archive
+        // (derivatives_eod / underlying_eod, permanent, typed columns) is
+        // built and populated — only then is it safe to prune this live
+        // cache again, since the archive would hold the permanent copy.
+        // See database/src/candleStore.js for the (still intact, just
+        // unused) implementations of both functions.
+        //
+        // const pruned = await db.pruneOldCandles(null, 1, 365);
+        // if (pruned > 0) console.log(`[DB] Pruned ${pruned} old candles (>365 days)`);
+        //
+        // const expiredResult = await db.pruneExpiredContracts();
+        // if (expiredResult.symbolsPruned > 0) {
+        //   console.log(`[DB] Pruned ${expiredResult.symbolsPruned} expired contract(s), ${expiredResult.candlesDeleted} candles: ${expiredResult.symbols.slice(0, 10).join(", ")}${expiredResult.symbols.length > 10 ? ", ..." : ""}`);
+        // }
+        // setInterval(async () => {
+        //   try {
+        //     const r = await db.pruneExpiredContracts();
+        //     if (r.symbolsPruned > 0) {
+        //       console.log(`[DB] Periodic sweep: pruned ${r.symbolsPruned} expired contract(s), ${r.candlesDeleted} candles`);
+        //     }
+        //   } catch (e) {
+        //     console.warn("[DB] Periodic expired-contract prune failed:", e.message);
+        //   }
+        // }, 6 * 60 * 60 * 1000); // every 6 hours
 
-        // Prune candles older than 90 days on startup
-        const pruned = await db.pruneOldCandles(null, 1, 90);
-        if (pruned > 0) console.log(`[DB] Pruned ${pruned} old candles (>90 days)`);
 
-        // Retention cleanup: delete expired futures and stale options.
-        // Runs on every boot so it catches up even after a week offline.
-        try {
-          const { deletedFutures, deletedOptions } = await db.runRetentionCleanup();
-          if (deletedFutures.length + deletedOptions.length > 0) {
-            console.log(`[DB] Retention cleanup: removed ${deletedFutures.length} expired future(s), ${deletedOptions.length} stale option(s)`);
-          }
-        } catch (err) {
-          console.warn("[DB] Retention cleanup error (non-fatal):", err.message);
+        // ── Wire up recovery engine WebSocket emitter ──────────────────────
+        if (recoveryEngine) {
+          recoveryEngine.injectStatusEmitter((event, data) => io.emit(event, data));
+          console.log("[Recovery] Status emitter connected to WebSocket");
         }
+
+        // ── Periodic broker-drift sync (was dead code — never called) ──────
+        // recoveryEngine.periodicSync() was fully implemented (compares DB's
+        // latest 1m candle vs the broker's, upserts any gap, or falls back
+        // to a full day repair) but nothing anywhere ever called it — grepped
+        // the entire backend/src and found zero callers. Wiring it here,
+        // scoped to only the symbols someone actually has open right now
+        // (getLiveBroadcastSymbols(), same TTL-expiring set used for tick
+        // subscriptions) so this can't turn into a 205-symbol Fyers-hammering
+        // loop — it only ever checks charts a real client is looking at.
+        //
+        // NOTE: NOT touched by the "no day-type gating" change — this loop's
+        // own isTradingDay()/isLiveMarket() gates were not part of the
+        // confirmed scope (ensureFreshOneMinData + runCuratedSymbolCatchUp
+        // staleness sweep only). Say the word if you want the same
+        // token-only rule applied to periodicSync too.
+        if (recoveryEngine) {
+          setInterval(async () => {
+            try {
+              if (!isTradingDay()) return;
+              const activeSymbols = getLiveBroadcastSymbols();
+              if (activeSymbols.length === 0) return;
+              for (const symbol of activeSymbols) {
+                if (!isLiveMarket(symbol)) continue;
+                await recoveryEngine.periodicSync({
+                  symbol,
+                  fetchCandles: (sym, res) => fetchCandles(sym, res),
+                });
+              }
+            } catch (e) {
+              console.warn("[PeriodicSync] Sweep error:", e.message);
+            }
+          }, 5 * 60 * 1000); // every 5 minutes
+          console.log("[PeriodicSync] Wired — checking actively-viewed symbols every 5 minutes during market hours");
+        }
+
+        // ── Curated-symbol gap scan + staleness sweep ──────────────────────
+        // See runCuratedSymbolCatchUp() (hoisted function declaration,
+        // defined further down this file) for the full implementation.
+        // Fires once now at boot; the /api/auth/token route also calls it
+        // again after a successful re-auth (fix 5 — see chartRouter.js).
+        setImmediate(() => runCuratedSymbolCatchUp("startup"));
+
       } else {
         console.warn("[DB] ⚠️  PostgreSQL health check failed — DB writes disabled");
         dbEnabled = false;
@@ -988,136 +1237,6 @@ server.listen(PORT, async () => {
       console.warn("[DB] ⚠️  PostgreSQL startup error — DB writes disabled:", err.message);
       dbEnabled = false;
     }
-  }
-
-  // ── DB: periodic sync loop (every 2 min during live market) ─────────────
-  // Compares latest DB 1m candle vs latest broker candle and fills any gaps.
-  // This is the only place Fyers REST is called during live market for sync —
-  // fetchAndProcess itself reads from DB and does NOT call Fyers on repeat.
-  if (dbEnabled) {
-    const PERIODIC_SYNC_MS = 2 * 60 * 1000; // 2 minutes
-    setInterval(async () => {
-      if (!isTradingDay() || !isAnyMarketLive(getActiveTickSymbols())) return;
-      const symbols = [...new Set([SYMBOL, ...socketSymbols.values()])].filter(Boolean);
-      // Pace between symbols — each periodicSync() call can trigger a
-      // multi-week Fyers fetch (and potentially a repairDay fallback on top
-      // of that). Firing these back-to-back for every watched symbol is
-      // exactly the burst pattern that exhausts Fyers' per-second rate
-      // limit and cascades into failures for concurrent cold-symbol
-      // searches happening at the same time.
-      const PERIODIC_SYNC_SYMBOL_DELAY_MS = 400;
-      for (let i = 0; i < symbols.length; i++) {
-        const sym = symbols[i];
-        try {
-          // NOTE: periodicSync's own fetchCandles(symbol, resolution) call (no
-          // 3rd arg) ignores rangeOpts entirely and behaves exactly as before —
-          // this wrapper only matters when periodicSync falls back to
-          // repairDay() internally, which calls fetchCandles(symbol, resolution,
-          // rangeOpts). Passing the raw 4/5-arg client.js function directly
-          // here would put rangeOpts in the wrong positional slot (count,
-          // not opts) — this wrapper normalizes the 3-arg shape repairDay
-          // always expects, regardless of caller.
-          await db.periodicSync({
-            symbol: sym,
-            fetchCandles: (s, r, rangeOpts) => fetchCandles(s, r, undefined, undefined, rangeOpts),
-          });
-        } catch (err) {
-          console.error(`[PeriodicSync] Error for ${sym}:`, err.message);
-        }
-        if (i < symbols.length - 1) await fyersSleep(PERIODIC_SYNC_SYMBOL_DELAY_MS);
-      }
-    }, PERIODIC_SYNC_MS);
-    console.log("[DB] Periodic sync started (every 2 min, live market only)");
-  }
-
-  // ── DB: automatic historical validation (startup + every 10 min) ────────
-  // ROOT-CAUSE FIX: validateHistorical previously only ran when the user
-  // manually clicked the VALIDATE button — it was never scheduled, so a
-  // gap/corruption sitting in the middle of the day (not just the very
-  // latest candle, which is all periodicSync checks) could go undetected
-  // indefinitely. This runs the same check automatically: once shortly after
-  // boot (after initial data is loaded) and then on a recurring timer, and
-  // auto-triggers repairDay for whatever it finds — same as clicking the
-  // button, just without having to remember to click it.
-  if (dbEnabled) {
-    const HISTORICAL_VALIDATION_MS = 10 * 60 * 1000; // 10 minutes
-    let validationInFlight = false;
-
-    async function runScheduledValidation(trigger) {
-      if (validationInFlight) {
-        console.log(`[Validator] Skipping ${trigger} validation — previous run still in progress`);
-        return;
-      }
-      validationInFlight = true;
-
-      // ROOT-CAUSE FIX: this used to only validate symbols currently attached
-      // to a connected socket — e.g. SENSEX never got checked because no
-      // panel had switched to it yet at the moment this ran, even though it
-      // already had corrupted candles sitting in the DB from an earlier
-      // session. db.listSymbols() returns every symbol that actually HAS
-      // data stored, so a symbol is covered the moment it's ever been
-      // loaded — whether or not anyone is looking at it right now. Falls
-      // back to the old socket-based list if listSymbols() itself errors
-      // (e.g. transient DB hiccup) so validation degrades gracefully
-      // instead of silently validating nothing.
-      let symbols;
-      try {
-        const dbSymbols = await db.listSymbols();
-        symbols = [...new Set([SYMBOL, ...dbSymbols, ...socketSymbols.values()])].filter(Boolean);
-      } catch (err) {
-        console.warn(`[Validator] (${trigger}) listSymbols failed, falling back to connected-socket symbols only:`, err.message);
-        symbols = [...new Set([SYMBOL, ...socketSymbols.values()])].filter(Boolean);
-      }
-      console.log(`[Validator] (${trigger}) Validating ${symbols.length} symbol(s): ${symbols.join(", ")}`);
-
-      // Pace between symbols — a symbol with several affected days already
-      // paces its own repairDay() calls (validationEngine.js), but with
-      // zero delay BETWEEN symbols, dozens of symbols each firing 1+ Fyers
-      // calls back-to-back still bursts past the rate limit in aggregate.
-      const VALIDATION_SYMBOL_DELAY_MS = 500;
-      for (let i = 0; i < symbols.length; i++) {
-        const sym = symbols[i];
-        const startedAt = Date.now();
-        console.log(`[Validator] (${trigger}) Starting historical validation for ${sym}...`);
-        io.emit("repair_status", { symbol: sym, resolution: 1, status: "validation_running", trigger });
-        try {
-          const { valid, issues, candlesChecked } = await db.validateHistorical(sym, 1, {
-            trigger,
-            fetchCandles: (s, r, rangeOpts) => fetchCandles(s, r, undefined, undefined, rangeOpts),
-            onRepair: (opts) => db.repairDay({ ...opts, fetchCandles: (s, r, rangeOpts) => fetchCandles(s, r, undefined, undefined, rangeOpts) }),
-          });
-          const tookMs = Date.now() - startedAt;
-          if (valid) {
-            console.log(`[Validator] (${trigger}) ${sym}: ✅ clean — ${candlesChecked} candles checked, 0 issues (${tookMs}ms)`);
-            io.emit("repair_status", { symbol: sym, resolution: 1, status: "validation_clean", candlesChecked, trigger });
-          } else {
-            console.warn(`[Validator] (${trigger}) ${sym}: ⚠️  ${issues.length} issue(s) found across ${candlesChecked} candles ` +
-              `(${issues.slice(0, 5).map((i) => i.type).join(", ")}${issues.length > 5 ? ", ..." : ""}) — repair auto-triggered (${tookMs}ms)`);
-            io.emit("repair_status", { symbol: sym, resolution: 1, status: "validation_issues_found", issueCount: issues.length, candlesChecked, trigger });
-          }
-        } catch (err) {
-          console.error(`[Validator] (${trigger}) ${sym}: error —`, err.message);
-          io.emit("repair_status", { symbol: sym, resolution: 1, status: "validation_error", error: err.message, trigger });
-        }
-        if (i < symbols.length - 1) await fyersSleep(VALIDATION_SYMBOL_DELAY_MS);
-      }
-      validationInFlight = false;
-    }
-
-    // Run once shortly after boot (give initialRestFetch time to populate data first).
-    // Runs regardless of trading day — useful to catch stale issues even when
-    // checking in over a weekend/holiday.
-    setTimeout(() => runScheduledValidation("startup").catch((err) => console.error("[Validator] startup run error:", err.message)), 15_000);
-
-    // Recurring pass — gated to trading days only (same reasoning as
-    // periodicSync/tick stream: no point hammering Fyers REST every 10 min
-    // on a weekend/holiday when nothing in the DB can have changed).
-    setInterval(() => {
-      if (!isTradingDay()) return;
-      runScheduledValidation("periodic").catch((err) => console.error("[Validator] periodic run error:", err.message));
-    }, HISTORICAL_VALIDATION_MS);
-
-    console.log(`[DB] Automatic historical validation scheduled (startup +15s, then every ${HISTORICAL_VALIDATION_MS / 60000} min)`);
   }
 
   await initialRestFetch();

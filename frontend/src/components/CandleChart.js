@@ -1014,7 +1014,7 @@ export default function CandleChart({
   // yPx is the canvas Y-coordinate of the last close price so the badge
   // sits exactly on the price line and moves tick-by-tick with the market.
   const [timerInfo, setTimerInfo] = useState(null);
-  const timerRafRef = useRef(null);
+  const timerYIntervalRef = useRef(null);
 
   useEffect(() => {
     let intervalId = null;
@@ -1064,29 +1064,29 @@ export default function CandleChart({
       setTimerInfo({ price: close, secsLeft, isBull, yPx });
     }
 
-    // Recompute Y position on each animation frame so the badge tracks
-    // vertical chart pans/zooms instantly without waiting for the 1s interval.
-    function rafLoop() {
+    // Recompute Y position every 250ms so the badge tracks vertical pans/zooms.
+    // 250ms (4fps) is imperceptible for a price badge — 60fps RAF was triggering
+    // React re-renders on every animation frame, causing all indicators to re-check.
+    function yPosUpdate() {
       const candles = candlesRef.current;
       if (candles && candles.length > 0) {
         const close = candles.at(-1).close;
         const yPx = getPriceY(close);
         setTimerInfo((prev) => {
           if (!prev) return prev;
-          if (prev.yPx === yPx) return prev; // avoid re-render if nothing changed
+          if (prev.yPx === yPx) return prev; // no re-render if Y hasn't changed
           return { ...prev, yPx };
         });
       }
-      timerRafRef.current = requestAnimationFrame(rafLoop);
     }
 
     update();
     intervalId = setInterval(tick, 1000);
-    timerRafRef.current = requestAnimationFrame(rafLoop);
+    timerYIntervalRef.current = setInterval(yPosUpdate, 250);
 
     return () => {
       clearInterval(intervalId);
-      if (timerRafRef.current) cancelAnimationFrame(timerRafRef.current);
+      if (timerYIntervalRef.current) clearInterval(timerYIntervalRef.current);
     };
     // chartRef/candleRef/containerRef are stable refs — not deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps

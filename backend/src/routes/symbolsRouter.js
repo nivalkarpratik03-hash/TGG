@@ -38,6 +38,7 @@
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
+const { previousTradingDay } = require("../data/holidays");
 
 const router = express.Router();
 
@@ -102,6 +103,42 @@ const MCX_EXPIRY_DAY = {
 };
 const EXPIRY_GRACE_DAYS = 1; // roll over this many days AFTER the approx expiry (never before)
 
+// ── Restricted contract-month cycles ─────────────────────────────────────────
+// Unlike CRUDEOIL/NATURALGAS/COPPER etc (which list a new contract every
+// single calendar month), MCX's silver family does NOT trade every month —
+// it only lists contracts in a fixed cycle. Building "...26JULFUT" for these
+// roots produces a symbol that was never listed, which Fyers correctly
+// rejects with "Invalid symbol provided" — confirmed via MCX expiry
+// circulars: Feb, Apr, Jun, Aug, Nov, Dec.
+const RESTRICTED_MONTH_CYCLE = {
+  SILVER: [1, 3, 5, 7, 10, 11],     // 0-based: Feb, Apr, Jun, Aug, Nov, Dec
+  SILVERM: [1, 3, 5, 7, 10, 11],
+  SILVERMIC: [1, 3, 5, 7, 10, 11],
+};
+
+// Like nextMonthCodes, but only emits months that are valid contract months
+// for `root` (per RESTRICTED_MONTH_CYCLE). Unrestricted roots behave exactly
+// like nextMonthCodes. Walks forward month-by-month so it always lands on
+// real, listed contracts.
+function nextValidMonthCodes(root, n, from = new Date()) {
+  const cycle = RESTRICTED_MONTH_CYCLE[root];
+  if (!cycle) return nextMonthCodes(n, from);
+
+  const codes = [];
+  let y = from.getFullYear();
+  let m = from.getMonth();
+  let guard = 0;
+  while (codes.length < n && guard < 60) {
+    if (cycle.includes(m)) {
+      codes.push(`${String(y % 100).padStart(2, "0")}${MONTH_CODES[m]}`);
+    }
+    m++;
+    if (m > 11) { m = 0; y++; }
+    guard++;
+  }
+  return codes;
+}
+
 /**
  * Returns the month-offset (0 = this month, 1 = next month, ...) to use as
  * the "near month" contract for a given MCX root, based on today's date.
@@ -144,6 +181,32 @@ const INDEX_FUT_ROOTS = {
   "NIFTYBANK-INDEX": "BANKNIFTY",
 };
 
+// ── NSE F&O expiry rollover ──────────────────────────────────────────────────
+// NSE monthly F&O contracts expire on the LAST TUESDAY of the month (NSE
+// circular 111/2025, effective for contracts expiring on/after Sept 1,
+// 2025 — moved from the old last-Thursday rule). buildFutures() previously
+// just listed "today's month + next 2 months" with no awareness of expiry
+// at all, so for every day between the real Tuesday expiry and the
+// calendar flipping to the next month, it kept generating a symbol for an
+// already-dead contract (e.g. still offering "...26JUNFUT" days after it
+// expired) — Fyers rejects those as invalid, and that's what was showing
+// up as a broken/invalid result in the search box. This mirrors the same
+// offset pattern already used for MCX commodities below.
+const NSE_EXPIRY_DOW = 2; // Tuesday
+function nseNearMonthOffset(from = new Date()) {
+  // Last Tuesday of the current month, at midnight.
+  let lastTue = new Date(from.getFullYear(), from.getMonth() + 1, 0); // last calendar day of month
+  while (lastTue.getDay() !== NSE_EXPIRY_DOW) lastTue.setDate(lastTue.getDate() - 1);
+  // Holiday adjustment: if that Tuesday is an exchange holiday, real expiry
+  // shifted to the previous trading day — without this, the roll decision
+  // could stay "current month" for an extra day or two after the contract
+  // actually expired (matching the same fix applied in optionsChain.js).
+  lastTue = previousTradingDay(lastTue, "NSE");
+  const expiryClose = new Date(lastTue);
+  expiryClose.setHours(15, 30, 0, 0);
+  return from.getTime() > expiryClose.getTime() ? 1 : 0;
+}
+
 /**
  * mcx.json is treated as a list of commodity ROOTS + display names (not
  * literal tradable symbols) — its old "-I" suffixed symbols are not valid
@@ -177,7 +240,8 @@ function loadCommodityRoots(filePath) {
  * also tagged "future" so it shows under the new Futures tab.
  */
 function buildFutures(equityAndIndexSymbols, commodityRoots) {
-  const monthCodes = nextMonthCodes(FUT_MONTHS_AHEAD);
+  const nseOffset = nseNearMonthOffset();
+  const monthCodes = monthCodesFromOffset(FUT_MONTHS_AHEAD, nseOffset);
   const out = [];
 
   for (const s of equityAndIndexSymbols) {
@@ -199,7 +263,9 @@ function buildFutures(equityAndIndexSymbols, commodityRoots) {
     // for THIS specific commodity (different commodities expire on different
     // days — see MCX_EXPIRY_DAY above).
     const offset = mcxNearMonthOffset(c.root);
-    const commodityMonthCodes = monthCodesFromOffset(FUT_MONTHS_AHEAD, offset);
+    const fromMonth = new Date();
+    fromMonth.setMonth(fromMonth.getMonth() + offset);
+    const commodityMonthCodes = nextValidMonthCodes(c.root, FUT_MONTHS_AHEAD, fromMonth);
     commodityMonthCodes.forEach((mc, i) => {
       const symbol = `MCX:${c.root}${mc}FUT`;
       if (i === 0) {

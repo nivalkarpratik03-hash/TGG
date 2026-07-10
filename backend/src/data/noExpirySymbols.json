@@ -1,0 +1,822 @@
+[
+  {
+    "name": "NIFTY 50",
+    "symbol": "NSE:NIFTY50-INDEX"
+  },
+  {
+    "name": "NIFTY BANK",
+    "symbol": "NSE:NIFTYBANK-INDEX"
+  },
+  {
+    "name": "SENSEX",
+    "symbol": "BSE:SENSEX-INDEX"
+  },
+  {
+    "name": "360 ONE WAM LIMITED",
+    "symbol": "NSE:360ONE-EQ"
+  },
+  {
+    "name": "ABB India Limited",
+    "symbol": "NSE:ABB-EQ"
+  },
+  {
+    "name": "APL Apollo Tubes Limited",
+    "symbol": "NSE:APLAPOLLO-EQ"
+  },
+  {
+    "name": "AU Small Finance Bank Limited",
+    "symbol": "NSE:AUBANK-EQ"
+  },
+  {
+    "name": "Adani Energy Solutions Limited",
+    "symbol": "NSE:ADANIENSOL-EQ"
+  },
+  {
+    "name": "Adani Enterprises Limited",
+    "symbol": "NSE:ADANIENT-EQ"
+  },
+  {
+    "name": "Adani Green Energy Limited",
+    "symbol": "NSE:ADANIGREEN-EQ"
+  },
+  {
+    "name": "Adani Ports and Special Economic Zone Limited",
+    "symbol": "NSE:ADANIPORTS-EQ"
+  },
+  {
+    "name": "Aditya Birla Capital Limited",
+    "symbol": "NSE:ABCAPITAL-EQ"
+  },
+  {
+    "name": "Alkem Laboratories Limited",
+    "symbol": "NSE:ALKEM-EQ"
+  },
+  {
+    "name": "Amber Enterprises India Limited",
+    "symbol": "NSE:AMBER-EQ"
+  },
+  {
+    "name": "Ambuja Cements Limited",
+    "symbol": "NSE:AMBUJACEM-EQ"
+  },
+  {
+    "name": "Angel One Limited",
+    "symbol": "NSE:ANGELONE-EQ"
+  },
+  {
+    "name": "Apollo Hospitals Enterprise Limited",
+    "symbol": "NSE:APOLLOHOSP-EQ"
+  },
+  {
+    "name": "Ashok Leyland Limited",
+    "symbol": "NSE:ASHOKLEY-EQ"
+  },
+  {
+    "name": "Asian Paints Limited",
+    "symbol": "NSE:ASIANPAINT-EQ"
+  },
+  {
+    "name": "Astral Limited",
+    "symbol": "NSE:ASTRAL-EQ"
+  },
+  {
+    "name": "Aurobindo Pharma Limited",
+    "symbol": "NSE:AUROPHARMA-EQ"
+  },
+  {
+    "name": "Avenue Supermarts Limited",
+    "symbol": "NSE:DMART-EQ"
+  },
+  {
+    "name": "Axis Bank Limited",
+    "symbol": "NSE:AXISBANK-EQ"
+  },
+  {
+    "name": "BSE Limited",
+    "symbol": "NSE:BSE-EQ"
+  },
+  {
+    "name": "Bajaj Auto Limited",
+    "symbol": "NSE:BAJAJ-AUTO-EQ"
+  },
+  {
+    "name": "Bajaj Finance Limited",
+    "symbol": "NSE:BAJFINANCE-EQ"
+  },
+  {
+    "name": "Bajaj Finserv Limited",
+    "symbol": "NSE:BAJAJFINSV-EQ"
+  },
+  {
+    "name": "Bandhan Bank Limited",
+    "symbol": "NSE:BANDHANBNK-EQ"
+  },
+  {
+    "name": "Bank of Baroda",
+    "symbol": "NSE:BANKBARODA-EQ"
+  },
+  {
+    "name": "Bank of India",
+    "symbol": "NSE:BANKINDIA-EQ"
+  },
+  {
+    "name": "Bharat Dynamics Limited",
+    "symbol": "NSE:BDL-EQ"
+  },
+  {
+    "name": "Bharat Electronics Limited",
+    "symbol": "NSE:BEL-EQ"
+  },
+  {
+    "name": "Bharat Forge Limited",
+    "symbol": "NSE:BHARATFORG-EQ"
+  },
+  {
+    "name": "Bharat Heavy Electricals Limited",
+    "symbol": "NSE:BHEL-EQ"
+  },
+  {
+    "name": "Bharat Petroleum Corporation Limited",
+    "symbol": "NSE:BPCL-EQ"
+  },
+  {
+    "name": "Bharti Airtel Limited",
+    "symbol": "NSE:BHARTIARTL-EQ"
+  },
+  {
+    "name": "Biocon Limited",
+    "symbol": "NSE:BIOCON-EQ"
+  },
+  {
+    "name": "Blue Star Limited",
+    "symbol": "NSE:BLUESTARCO-EQ"
+  },
+  {
+    "name": "Bosch Limited",
+    "symbol": "NSE:BOSCHLTD-EQ"
+  },
+  {
+    "name": "Britannia Industries Limited",
+    "symbol": "NSE:BRITANNIA-EQ"
+  },
+  {
+    "name": "CG Power and Industrial Solutions Limited",
+    "symbol": "NSE:CGPOWER-EQ"
+  },
+  {
+    "name": "Canara Bank",
+    "symbol": "NSE:CANBK-EQ"
+  },
+  {
+    "name": "Central Depository Services (India) Limited",
+    "symbol": "NSE:CDSL-EQ"
+  },
+  {
+    "name": "Cholamandalam Investment and Finance Company Limited",
+    "symbol": "NSE:CHOLAFIN-EQ"
+  },
+  {
+    "name": "Cipla Limited",
+    "symbol": "NSE:CIPLA-EQ"
+  },
+  {
+    "name": "Coal India Limited",
+    "symbol": "NSE:COALINDIA-EQ"
+  },
+  {
+    "name": "Coforge Limited",
+    "symbol": "NSE:COFORGE-EQ"
+  },
+  {
+    "name": "Colgate Palmolive (India) Limited",
+    "symbol": "NSE:COLPAL-EQ"
+  },
+  {
+    "name": "Computer Age Management Services Limited",
+    "symbol": "NSE:CAMS-EQ"
+  },
+  {
+    "name": "Container Corporation of India Limited",
+    "symbol": "NSE:CONCOR-EQ"
+  },
+  {
+    "name": "Crompton Greaves Consumer Electricals Limited",
+    "symbol": "NSE:CROMPTON-EQ"
+  },
+  {
+    "name": "Cummins India Limited",
+    "symbol": "NSE:CUMMINSIND-EQ"
+  },
+  {
+    "name": "DLF Limited",
+    "symbol": "NSE:DLF-EQ"
+  },
+  {
+    "name": "Dabur India Limited",
+    "symbol": "NSE:DABUR-EQ"
+  },
+  {
+    "name": "Dalmia Bharat Limited",
+    "symbol": "NSE:DALBHARAT-EQ"
+  },
+  {
+    "name": "Delhivery Limited",
+    "symbol": "NSE:DELHIVERY-EQ"
+  },
+  {
+    "name": "Divi's Laboratories Limited",
+    "symbol": "NSE:DIVISLAB-EQ"
+  },
+  {
+    "name": "Dixon Technologies (India) Limited",
+    "symbol": "NSE:DIXON-EQ"
+  },
+  {
+    "name": "Dr. Reddy's Laboratories Limited",
+    "symbol": "NSE:DRREDDY-EQ"
+  },
+  {
+    "name": "ETERNAL LIMITED",
+    "symbol": "NSE:ETERNAL-EQ"
+  },
+  {
+    "name": "Eicher Motors Limited",
+    "symbol": "NSE:EICHERMOT-EQ"
+  },
+  {
+    "name": "Exide Industries Limited",
+    "symbol": "NSE:EXIDEIND-EQ"
+  },
+  {
+    "name": "FSN E-Commerce Ventures Limited",
+    "symbol": "NSE:NYKAA-EQ"
+  },
+  {
+    "name": "Fortis Healthcare Limited",
+    "symbol": "NSE:FORTIS-EQ"
+  },
+  {
+    "name": "GAIL (India) Limited",
+    "symbol": "NSE:GAIL-EQ"
+  },
+  {
+    "name": "GMR AIRPORTS LIMITED",
+    "symbol": "NSE:GMRAIRPORT-EQ"
+  },
+  {
+    "name": "Glenmark Pharmaceuticals Limited",
+    "symbol": "NSE:GLENMARK-EQ"
+  },
+  {
+    "name": "Godrej Consumer Products Limited",
+    "symbol": "NSE:GODREJCP-EQ"
+  },
+  {
+    "name": "Godrej Properties Limited",
+    "symbol": "NSE:GODREJPROP-EQ"
+  },
+  {
+    "name": "Grasim Industries Limited",
+    "symbol": "NSE:GRASIM-EQ"
+  },
+  {
+    "name": "HCL Technologies Limited",
+    "symbol": "NSE:HCLTECH-EQ"
+  },
+  {
+    "name": "HDFC Asset Management Company Limited",
+    "symbol": "NSE:HDFCAMC-EQ"
+  },
+  {
+    "name": "HDFC Bank Limited",
+    "symbol": "NSE:HDFCBANK-EQ"
+  },
+  {
+    "name": "HDFC Life Insurance Company Limited",
+    "symbol": "NSE:HDFCLIFE-EQ"
+  },
+  {
+    "name": "Havells India Limited",
+    "symbol": "NSE:HAVELLS-EQ"
+  },
+  {
+    "name": "Hero MotoCorp Limited",
+    "symbol": "NSE:HEROMOTOCO-EQ"
+  },
+  {
+    "name": "Hindalco Industries Limited",
+    "symbol": "NSE:HINDALCO-EQ"
+  },
+  {
+    "name": "Hindustan Aeronautics Limited",
+    "symbol": "NSE:HAL-EQ"
+  },
+  {
+    "name": "Hindustan Petroleum Corporation Limited",
+    "symbol": "NSE:HINDPETRO-EQ"
+  },
+  {
+    "name": "Hindustan Unilever Limited",
+    "symbol": "NSE:HINDUNILVR-EQ"
+  },
+  {
+    "name": "Hindustan Zinc Limited",
+    "symbol": "NSE:HINDZINC-EQ"
+  },
+  {
+    "name": "Hitachi Energy India Limited",
+    "symbol": "NSE:POWERINDIA-EQ"
+  },
+  {
+    "name": "Housing & Urban Development Corporation Limited",
+    "symbol": "NSE:HUDCO-EQ"
+  },
+  {
+    "name": "ICICI Bank Limited",
+    "symbol": "NSE:ICICIBANK-EQ"
+  },
+  {
+    "name": "ICICI Lombard General Insurance Company Limited",
+    "symbol": "NSE:ICICIGI-EQ"
+  },
+  {
+    "name": "ICICI Prudential Life Insurance Company Limited",
+    "symbol": "NSE:ICICIPRULI-EQ"
+  },
+  {
+    "name": "IDFC First Bank Limited",
+    "symbol": "NSE:IDFCFIRSTB-EQ"
+  },
+  {
+    "name": "ITC Limited",
+    "symbol": "NSE:ITC-EQ"
+  },
+  {
+    "name": "Indian Bank",
+    "symbol": "NSE:INDIANB-EQ"
+  },
+  {
+    "name": "Indian Energy Exchange Limited",
+    "symbol": "NSE:IEX-EQ"
+  },
+  {
+    "name": "Indian Oil Corporation Limited",
+    "symbol": "NSE:IOC-EQ"
+  },
+  {
+    "name": "Indian Railway Finance Corporation Limited",
+    "symbol": "NSE:IRFC-EQ"
+  },
+  {
+    "name": "Indian Renewable Energy Development Agency Limited",
+    "symbol": "NSE:IREDA-EQ"
+  },
+  {
+    "name": "Indus Towers Limited",
+    "symbol": "NSE:INDUSTOWER-EQ"
+  },
+  {
+    "name": "IndusInd Bank Limited",
+    "symbol": "NSE:INDUSINDBK-EQ"
+  },
+  {
+    "name": "Info Edge (India) Limited",
+    "symbol": "NSE:NAUKRI-EQ"
+  },
+  {
+    "name": "Infosys Limited",
+    "symbol": "NSE:INFY-EQ"
+  },
+  {
+    "name": "Inox Wind Limited",
+    "symbol": "NSE:INOXWIND-EQ"
+  },
+  {
+    "name": "InterGlobe Aviation Limited",
+    "symbol": "NSE:INDIGO-EQ"
+  },
+  {
+    "name": "JINDAL STEEL LIMITED",
+    "symbol": "NSE:JINDALSTEL-EQ"
+  },
+  {
+    "name": "JSW Energy Limited",
+    "symbol": "NSE:JSWENERGY-EQ"
+  },
+  {
+    "name": "JSW Steel Limited",
+    "symbol": "NSE:JSWSTEEL-EQ"
+  },
+  {
+    "name": "Jio Financial Services Limited",
+    "symbol": "NSE:JIOFIN-EQ"
+  },
+  {
+    "name": "Jubilant Foodworks Limited",
+    "symbol": "NSE:JUBLFOOD-EQ"
+  },
+  {
+    "name": "KEI Industries Limited",
+    "symbol": "NSE:KEI-EQ"
+  },
+  {
+    "name": "KPIT Technologies Limited",
+    "symbol": "NSE:KPITTECH-EQ"
+  },
+  {
+    "name": "Kalyan Jewellers India Limited",
+    "symbol": "NSE:KALYANKJIL-EQ"
+  },
+  {
+    "name": "Kaynes Technology India Limited",
+    "symbol": "NSE:KAYNES-EQ"
+  },
+  {
+    "name": "Kfin Technologies Limited",
+    "symbol": "NSE:KFINTECH-EQ"
+  },
+  {
+    "name": "Kotak Mahindra Bank Limited",
+    "symbol": "NSE:KOTAKBANK-EQ"
+  },
+  {
+    "name": "L&T Finance Limited",
+    "symbol": "NSE:LTF-EQ"
+  },
+  {
+    "name": "LIC Housing Finance Limited",
+    "symbol": "NSE:LICHSGFIN-EQ"
+  },
+  {
+    "name": "LTIMindtree Limited",
+    "symbol": "NSE:LTM-EQ"
+  },
+  {
+    "name": "Larsen & Toubro Limited",
+    "symbol": "NSE:LT-EQ"
+  },
+  {
+    "name": "Laurus Labs Limited",
+    "symbol": "NSE:LAURUSLABS-EQ"
+  },
+  {
+    "name": "Life Insurance Corporation Of India",
+    "symbol": "NSE:LICI-EQ"
+  },
+  {
+    "name": "Lodha Developers Limited",
+    "symbol": "NSE:LODHA-EQ"
+  },
+  {
+    "name": "Lupin Limited",
+    "symbol": "NSE:LUPIN-EQ"
+  },
+  {
+    "name": "Mahindra & Mahindra Limited",
+    "symbol": "NSE:M&M-EQ"
+  },
+  {
+    "name": "Manappuram Finance Limited",
+    "symbol": "NSE:MANAPPURAM-EQ"
+  },
+  {
+    "name": "Mankind Pharma Limited",
+    "symbol": "NSE:MANKIND-EQ"
+  },
+  {
+    "name": "Marico Limited",
+    "symbol": "NSE:MARICO-EQ"
+  },
+  {
+    "name": "Maruti Suzuki India Limited",
+    "symbol": "NSE:MARUTI-EQ"
+  },
+  {
+    "name": "Max Financial Services Limited",
+    "symbol": "NSE:MFSL-EQ"
+  },
+  {
+    "name": "Max Healthcare Institute Limited",
+    "symbol": "NSE:MAXHEALTH-EQ"
+  },
+  {
+    "name": "Mazagon Dock Shipbuilders Limited",
+    "symbol": "NSE:MAZDOCK-EQ"
+  },
+  {
+    "name": "MphasiS Limited",
+    "symbol": "NSE:MPHASIS-EQ"
+  },
+  {
+    "name": "Multi Commodity Exchange of India Limited",
+    "symbol": "NSE:MCX-EQ"
+  },
+  {
+    "name": "Muthoot Finance Limited",
+    "symbol": "NSE:MUTHOOTFIN-EQ"
+  },
+  {
+    "name": "NBCC (India) Limited",
+    "symbol": "NSE:NBCC-EQ"
+  },
+  {
+    "name": "NHPC Limited",
+    "symbol": "NSE:NHPC-EQ"
+  },
+  {
+    "name": "NMDC Limited",
+    "symbol": "NSE:NMDC-EQ"
+  },
+  {
+    "name": "NTPC Limited",
+    "symbol": "NSE:NTPC-EQ"
+  },
+  {
+    "name": "National Aluminium Company Limited",
+    "symbol": "NSE:NATIONALUM-EQ"
+  },
+  {
+    "name": "Nestle India Limited",
+    "symbol": "NSE:NESTLEIND-EQ"
+  },
+  {
+    "name": "Nuvama Wealth Management Limited",
+    "symbol": "NSE:NUVAMA-EQ"
+  },
+  {
+    "name": "Oberoi Realty Limited",
+    "symbol": "NSE:OBEROIRLTY-EQ"
+  },
+  {
+    "name": "Oil & Natural Gas Corporation Limited",
+    "symbol": "NSE:ONGC-EQ"
+  },
+  {
+    "name": "Oil India Limited",
+    "symbol": "NSE:OIL-EQ"
+  },
+  {
+    "name": "One 97 Communications Limited",
+    "symbol": "NSE:PAYTM-EQ"
+  },
+  {
+    "name": "Oracle Financial Services Software Limited",
+    "symbol": "NSE:OFSS-EQ"
+  },
+  {
+    "name": "PB Fintech Limited",
+    "symbol": "NSE:POLICYBZR-EQ"
+  },
+  {
+    "name": "PG Electroplast Limited",
+    "symbol": "NSE:PGEL-EQ"
+  },
+  {
+    "name": "PI Industries Limited",
+    "symbol": "NSE:PIIND-EQ"
+  },
+  {
+    "name": "PNB Housing Finance Limited",
+    "symbol": "NSE:PNBHOUSING-EQ"
+  },
+  {
+    "name": "Page Industries Limited",
+    "symbol": "NSE:PAGEIND-EQ"
+  },
+  {
+    "name": "Patanjali Foods Limited",
+    "symbol": "NSE:PATANJALI-EQ"
+  },
+  {
+    "name": "Persistent Systems Limited",
+    "symbol": "NSE:PERSISTENT-EQ"
+  },
+  {
+    "name": "Petronet LNG Limited",
+    "symbol": "NSE:PETRONET-EQ"
+  },
+  {
+    "name": "Pidilite Industries Limited",
+    "symbol": "NSE:PIDILITIND-EQ"
+  },
+  {
+    "name": "Piramal Pharma Limited",
+    "symbol": "NSE:PPLPHARMA-EQ"
+  },
+  {
+    "name": "Polycab India Limited",
+    "symbol": "NSE:POLYCAB-EQ"
+  },
+  {
+    "name": "Power Finance Corporation Limited",
+    "symbol": "NSE:PFC-EQ"
+  },
+  {
+    "name": "Power Grid Corporation of India Limited",
+    "symbol": "NSE:POWERGRID-EQ"
+  },
+  {
+    "name": "Prestige Estates Projects Limited",
+    "symbol": "NSE:PRESTIGE-EQ"
+  },
+  {
+    "name": "Punjab National Bank",
+    "symbol": "NSE:PNB-EQ"
+  },
+  {
+    "name": "RBL Bank Limited",
+    "symbol": "NSE:RBLBANK-EQ"
+  },
+  {
+    "name": "REC Limited",
+    "symbol": "NSE:RECLTD-EQ"
+  },
+  {
+    "name": "Rail Vikas Nigam Limited",
+    "symbol": "NSE:RVNL-EQ"
+  },
+  {
+    "name": "Reliance Industries Limited",
+    "symbol": "NSE:RELIANCE-EQ"
+  },
+  {
+    "name": "SBI Cards and Payment Services Limited",
+    "symbol": "NSE:SBICARD-EQ"
+  },
+  {
+    "name": "SBI Life Insurance Company Limited",
+    "symbol": "NSE:SBILIFE-EQ"
+  },
+  {
+    "name": "SHREE CEMENT LIMITED",
+    "symbol": "NSE:SHREECEM-EQ"
+  },
+  {
+    "name": "SRF Limited",
+    "symbol": "NSE:SRF-EQ"
+  },
+  {
+    "name": "Sammaan Capital Limited",
+    "symbol": "NSE:SAMMAANCAP-EQ"
+  },
+  {
+    "name": "Samvardhana Motherson International Limited",
+    "symbol": "NSE:MOTHERSON-EQ"
+  },
+  {
+    "name": "Shriram Finance Limited",
+    "symbol": "NSE:SHRIRAMFIN-EQ"
+  },
+  {
+    "name": "Siemens Limited",
+    "symbol": "NSE:SIEMENS-EQ"
+  },
+  {
+    "name": "Solar Industries India Limited",
+    "symbol": "NSE:SOLARINDS-EQ"
+  },
+  {
+    "name": "Sona BLW Precision Forgings Limited",
+    "symbol": "NSE:SONACOMS-EQ"
+  },
+  {
+    "name": "State Bank of India",
+    "symbol": "NSE:SBIN-EQ"
+  },
+  {
+    "name": "Steel Authority of India Limited",
+    "symbol": "NSE:SAIL-EQ"
+  },
+  {
+    "name": "Sun Pharmaceutical Industries Limited",
+    "symbol": "NSE:SUNPHARMA-EQ"
+  },
+  {
+    "name": "Supreme Industries Limited",
+    "symbol": "NSE:SUPREMEIND-EQ"
+  },
+  {
+    "name": "Suzlon Energy Limited",
+    "symbol": "NSE:SUZLON-EQ"
+  },
+  {
+    "name": "Syngene International Limited",
+    "symbol": "NSE:SYNGENE-EQ"
+  },
+  {
+    "name": "TATA CONSUMER PRODUCTS LIMITED",
+    "symbol": "NSE:TATACONSUM-EQ"
+  },
+  {
+    "name": "TVS Motor Company Limited",
+    "symbol": "NSE:TVSMOTOR-EQ"
+  },
+  {
+    "name": "Tata Consultancy Services Limited",
+    "symbol": "NSE:TCS-EQ"
+  },
+  {
+    "name": "Tata Elxsi Limited",
+    "symbol": "NSE:TATAELXSI-EQ"
+  },
+  {
+    "name": "Tata Motors Passenger Vehicles Limited",
+    "symbol": "NSE:TMPV-EQ"
+  },
+  {
+    "name": "Tata Power Company Limited",
+    "symbol": "NSE:TATAPOWER-EQ"
+  },
+  {
+    "name": "Tata Steel Limited",
+    "symbol": "NSE:TATASTEEL-EQ"
+  },
+  {
+    "name": "Tata Technologies Limited",
+    "symbol": "NSE:TATATECH-EQ"
+  },
+  {
+    "name": "Tech Mahindra Limited",
+    "symbol": "NSE:TECHM-EQ"
+  },
+  {
+    "name": "The Federal Bank Limited",
+    "symbol": "NSE:FEDERALBNK-EQ"
+  },
+  {
+    "name": "The Indian Hotels Company Limited",
+    "symbol": "NSE:INDHOTEL-EQ"
+  },
+  {
+    "name": "The Phoenix Mills Limited",
+    "symbol": "NSE:PHOENIXLTD-EQ"
+  },
+  {
+    "name": "Titan Company Limited",
+    "symbol": "NSE:TITAN-EQ"
+  },
+  {
+    "name": "Torrent Pharmaceuticals Limited",
+    "symbol": "NSE:TORNTPHARM-EQ"
+  },
+  {
+    "name": "Torrent Power Limited",
+    "symbol": "NSE:TORNTPOWER-EQ"
+  },
+  {
+    "name": "Trent Limited",
+    "symbol": "NSE:TRENT-EQ"
+  },
+  {
+    "name": "Tube Investments of India Limited",
+    "symbol": "NSE:TIINDIA-EQ"
+  },
+  {
+    "name": "UNO Minda Limited",
+    "symbol": "NSE:UNOMINDA-EQ"
+  },
+  {
+    "name": "UPL Limited",
+    "symbol": "NSE:UPL-EQ"
+  },
+  {
+    "name": "UltraTech Cement Limited",
+    "symbol": "NSE:ULTRACEMCO-EQ"
+  },
+  {
+    "name": "Union Bank of India",
+    "symbol": "NSE:UNIONBANK-EQ"
+  },
+  {
+    "name": "United Spirits Limited",
+    "symbol": "NSE:UNITDSPR-EQ"
+  },
+  {
+    "name": "Varun Beverages Limited",
+    "symbol": "NSE:VBL-EQ"
+  },
+  {
+    "name": "Vedanta Limited",
+    "symbol": "NSE:VEDL-EQ"
+  },
+  {
+    "name": "Vodafone Idea Limited",
+    "symbol": "NSE:IDEA-EQ"
+  },
+  {
+    "name": "Voltas Limited",
+    "symbol": "NSE:VOLTAS-EQ"
+  },
+  {
+    "name": "Wipro Limited",
+    "symbol": "NSE:WIPRO-EQ"
+  },
+  {
+    "name": "Yes Bank Limited",
+    "symbol": "NSE:YESBANK-EQ"
+  },
+  {
+    "name": "Zydus Lifesciences Limited",
+    "symbol": "NSE:ZYDUSLIFE-EQ"
+  }
+]

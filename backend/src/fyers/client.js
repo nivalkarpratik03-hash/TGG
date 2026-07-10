@@ -17,64 +17,16 @@ function rejectAfter(ms, label) {
   );
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// ── Rate-limit retry helpers ────────────────────────────────────────────────
-// ROOT-CAUSE NOTE: the validator/periodicSync/cold-seed paths can all fire
-// Fyers getHistory calls back-to-back with zero pacing (dozens of symbols,
-// each needing 1+ chunk). Fyers enforces a per-second request cap, so any
-// burst quickly starts failing with "request limit reached" — and the Fyers
-// SDK sometimes surfaces that as an error with an EMPTY/undefined message
-// instead of the string "request limit", which is why logs show
-// "Intraday chunk failed (undefined)". Both were previously treated as a
-// plain failure and the chunk was just skipped — for a single-chunk fetch
-// (which is what every day-repair and most periodicSync calls are) that
-// meant the ENTIRE fetch came back empty, and (for periodicSync's own
-// paths) sometimes only-just-empty-enough to look like a legitimate
-// "no data" response rather than a transient rate limit. Retrying with
-// backoff on exactly these errors — instead of silently skipping — turns
-// most of these into successful (if slightly delayed) fetches.
-function isRateLimitError(err) {
-  if (!err) return false;
-  const msg = String(err.message ?? "").trim().toLowerCase();
-  return (
-    msg === "" ||
-    msg === "undefined" ||
-    msg.includes("request limit") ||
-    msg.includes("rate limit") ||
-    msg.includes("too many requests")
-  );
-}
-
-const RETRY_BACKOFF_MS = [500, 1500, 4000]; // 3 retries, increasing delay
-const INTER_CHUNK_DELAY_MS = 350;           // pacing between chunks of the SAME multi-chunk fetch
-
 /**
- * Wraps a single fyers.getHistory() call with a timeout race AND
- * retry-with-backoff specifically for rate-limit-shaped errors. Non-rate-limit
- * errors (bad symbol, auth failure, etc.) are NOT retried — they fail fast,
- * same as before.
+ * P3 #15 — dedup-by-time + sort-ascending used to be copy-pasted identically
+ * in both fetchDailyCandles() and fetchCandles()'s intraday chunk merge.
+ * Single source of truth now.
  */
-async function getHistoryWithRetry(fyers, params, timeoutMs, label) {
-  let lastErr;
-  for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
-    try {
-      return await Promise.race([
-        fyers.getHistory(params),
-        rejectAfter(timeoutMs, label),
-      ]);
-    } catch (err) {
-      lastErr = err;
-      if (!isRateLimitError(err) || attempt === RETRY_BACKOFF_MS.length) throw err;
-      const delay = RETRY_BACKOFF_MS[attempt];
-      console.warn(`[Fyers] ${label} rate-limited (${err.message || "undefined"}) — ` +
-        `retry ${attempt + 1}/${RETRY_BACKOFF_MS.length} in ${delay}ms`);
-      await sleep(delay);
-    }
-  }
-  throw lastErr;
+function dedupSortCandles(candles) {
+  const seen = new Set();
+  return candles
+    .filter((c) => { if (seen.has(c.time)) return false; seen.add(c.time); return true; })
+    .sort((a, b) => a.time - b.time);
 }
 
 function loadToken() {
@@ -84,7 +36,6 @@ function loadToken() {
 
 function saveToken(token) {
   fs.writeFileSync(TOKEN_FILE, token.trim(), "utf8");
-  fs.writeFileSync(path.join(ROOT, ".fyers_token"), token.trim(), "utf8");
 }
 
 function getFyersClient() {
@@ -239,27 +190,22 @@ async function fetchDailyCandles(symbol, lookbackDays) {
   let failChunks = 0;
 
   // Fetch newest-first so recent data is always present even if old chunks fail
-  for (let i = 0; i < chunksNewestFirst.length; i++) {
-    const chunk = chunksNewestFirst[i];
+  for (const chunk of chunksNewestFirst) {
     const label = `${new Date(chunk.from * 1000).toISOString().slice(0, 10)}→${new Date(chunk.to * 1000).toISOString().slice(0, 10)}`;
     let res;
     try {
-      res = await getHistoryWithRetry(fyers, {
-        symbol, resolution: "D", date_format: "0",
-        range_from: String(chunk.from), range_to: String(chunk.to), cont_flag: "1",
-      }, TIMEOUT_MS, `fetchDailyCandles ${label}`);
+      res = await Promise.race([
+        fyers.getHistory({
+          symbol, resolution: "D", date_format: "0",
+          range_from: String(chunk.from), range_to: String(chunk.to), cont_flag: "1",
+        }),
+        rejectAfter(TIMEOUT_MS, `fetchDailyCandles ${label}`),
+      ]);
     } catch (err) {
       failChunks++;
       console.warn(`[Fyers] Daily chunk FAILED ${label}: ${err.message}`);
-      // Pace even after a failure — a burst of failures back-to-back is
-      // exactly what keeps the rate limit exceeded for subsequent chunks.
-      if (i < chunksNewestFirst.length - 1) await sleep(INTER_CHUNK_DELAY_MS);
       continue;
     }
-
-    // Inter-chunk pacing — only matters when there's more than one chunk
-    // (long daily/weekly lookbacks); single-chunk fetches skip this entirely.
-    if (i < chunksNewestFirst.length - 1) await sleep(INTER_CHUNK_DELAY_MS);
 
     const parsed = parseRaw(res);
     if (parsed && parsed.length > 0) {
@@ -277,10 +223,7 @@ async function fetchDailyCandles(symbol, lookbackDays) {
   if (allCandles.length === 0) return [];
 
   // Deduplicate and sort ascending
-  const seen = new Set();
-  const sorted = allCandles
-    .filter((c) => { if (seen.has(c.time)) return false; seen.add(c.time); return true; })
-    .sort((a, b) => a.time - b.time);
+  const sorted = dedupSortCandles(allCandles);
 
   console.log(
     `[Fyers] Daily final: ${sorted.length} candles | ` +
@@ -313,34 +256,12 @@ function aggregateDailyToWeekly(dailyCandles) {
 }
 
 // ── Fetch historical candles ──────────────────────────────────────────────────
-/**
- * @param {string} symbol
- * @param {number|string} resolution
- * @param {number} [count=10000]  currently unused (kept for API compat — see note above)
- * @param {number|null} [lookbackDaysOverride]  days back FROM TODAY — ignored if opts.from/to given
- * @param {object} [opts]
- * @param {Date|string|number} [opts.from]  explicit range start (intraday only).
- *        ROOT-CAUSE NOTE: lookbackDaysOverride is always anchored to "now," so
- *        it cannot target an OLD day precisely — repairing a single day from
- *        2 months ago using lookbackDaysOverride would either miss it (window
- *        too short) or pull the whole 30/60/90-day default just to reach it
- *        (wasteful — this is exactly why a single-day repair was fetching a
- *        full 30-day window from Fyers for every affected symbol). Passing
- *        opts.from/opts.to bypasses lookback math entirely and fetches only
- *        the requested window, however old it is.
- * @param {Date|string|number} [opts.to]  explicit range end (intraday only)
- */
-async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverride = null, opts = {}) {
+async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverride = null) {
   const fyers = getFyersClient();
   const now = Math.floor(Date.now() / 1000);
   const isWeekly = resolution === 10080 || String(resolution).toUpperCase() === "W";
   const isDaily = resolution === 1440 || String(resolution).toUpperCase() === "D";
   const lookbackDays = lookbackDaysOverride != null ? lookbackDaysOverride : calcLookbackDays(resolution);
-
-  // ── Explicit date-range path (intraday only) ────────────────────────────
-  // Used by repairDay() for a single-day repair — fetches ONLY the requested
-  // window instead of the usual 30-day-from-today default.
-  const explicitRange = !isWeekly && !isDaily && opts && (opts.from != null || opts.to != null);
 
   // ── WEEKLY ────────────────────────────────────────────────────────────────
   if (isWeekly) {
@@ -373,21 +294,8 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
   const CHUNK_DAYS = 90;
   const TIMEOUT_MS = 15_000;
   const chunkSizeS = CHUNK_DAYS * 86400;
-
-  let todayEnd, totalFrom;
-  if (explicitRange) {
-    // Pad the requested window by ±1 day so timezone/boundary rounding never
-    // clips the actual target day — repairDay() deletes/upserts only the
-    // exact day it cares about anyway, so a little extra fetched data on
-    // either side is harmless (just gets upserted, not deleted).
-    const fromSec = opts.from != null ? Math.floor(new Date(opts.from).getTime() / 1000) : now - 86400;
-    const toSec = opts.to != null ? Math.floor(new Date(opts.to).getTime() / 1000) : now;
-    totalFrom = fromSec - 86400;
-    todayEnd = Math.min(endOfTodayIST(now), toSec + 86400);
-  } else {
-    todayEnd = endOfTodayIST(now);
-    totalFrom = now - lookbackDays * 86400;
-  }
+  const todayEnd = endOfTodayIST(now);
+  const totalFrom = now - lookbackDays * 86400;
 
   function parseIntraday(res) {
     if (!res || res.s !== "ok") return null;
@@ -411,113 +319,74 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
   }
 
   const allCandles = [];
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    const label = `fetchCandles intraday ${new Date(chunk.from * 1000).toISOString().slice(0, 10)}→${new Date(chunk.to * 1000).toISOString().slice(0, 10)}`;
+  for (const chunk of chunks) {
     let res;
     try {
-      res = await getHistoryWithRetry(fyers, {
-        symbol, resolution: fyersResolution, date_format: "0",
-        range_from: String(chunk.from), range_to: String(chunk.to), cont_flag: "1",
-      }, TIMEOUT_MS, label);
+      res = await Promise.race([
+        fyers.getHistory({
+          symbol, resolution: fyersResolution, date_format: "0",
+          range_from: String(chunk.from), range_to: String(chunk.to), cont_flag: "1",
+        }),
+        rejectAfter(TIMEOUT_MS, `fetchCandles intraday`),
+      ]);
     } catch (err) {
-      console.warn(`[Fyers] Intraday chunk failed (${err.message || "undefined"}) — skipping`);
-      // Pace even after a failure — a burst of failures back-to-back is
-      // exactly what keeps the rate limit exceeded for subsequent chunks/symbols.
-      if (i < chunks.length - 1) await sleep(INTER_CHUNK_DELAY_MS);
-      continue;
+      // Rate-limit errors are transient (Fyers' window resets quickly) —
+      // one short retry recovers most of them instead of silently giving
+      // up and serving stale data for the rest of the session. Any other
+      // error (timeout, bad symbol, etc.) still skips immediately as before.
+      if (/limit/i.test(err.message)) {
+        console.warn(`[Fyers] Intraday chunk hit rate limit — retrying once in 1.5s...`);
+        await new Promise((r) => setTimeout(r, 1500));
+        try {
+          res = await Promise.race([
+            fyers.getHistory({
+              symbol, resolution: fyersResolution, date_format: "0",
+              range_from: String(chunk.from), range_to: String(chunk.to), cont_flag: "1",
+            }),
+            rejectAfter(TIMEOUT_MS, `fetchCandles intraday`),
+          ]);
+        } catch (err2) {
+          console.warn(`[Fyers] Intraday chunk failed again after retry (${err2.message}) — skipping`);
+          continue;
+        }
+      } else {
+        console.warn(`[Fyers] Intraday chunk failed (${err.message}) — skipping`);
+        continue;
+      }
     }
     const parsed = parseIntraday(res);
     if (parsed && parsed.length > 0) allCandles.push(...parsed);
     else console.warn(`[Fyers] Intraday chunk empty: ${res?.message || res?.errmsg || "unknown"}`);
-
-    // Inter-chunk pacing — only matters when there's more than one chunk;
-    // single-chunk fetches (the common case: single-day repairs, 30d default
-    // lookback) skip this entirely since CHUNK_DAYS=90 covers them in one call.
-    if (i < chunks.length - 1) await sleep(INTER_CHUNK_DELAY_MS);
   }
 
   if (allCandles.length === 0) throw new Error(`Fyers getHistory returned no candles for ${symbol} res=${fyersResolution}`);
 
-  const seen = new Set();
-  const deduped = allCandles
-    .filter((c) => { if (seen.has(c.time)) return false; seen.add(c.time); return true; })
-    .sort((a, b) => a.time - b.time);
+  const deduped = dedupSortCandles(allCandles);
 
-  if (explicitRange) {
-    console.log(`[Fyers] ${symbol} ${fyersResolution}: ${deduped.length} candles for targeted range ` +
-      `${new Date(totalFrom * 1000).toISOString().slice(0,10)} → ${new Date(todayEnd * 1000).toISOString().slice(0,10)} ` +
-      `(${chunks.length} chunk${chunks.length > 1 ? "s" : ""}, single-day repair — not the usual ${calcLookbackDays(resolution)}d default)`);
-  } else {
-    console.log(`[Fyers] ${symbol} ${fyersResolution}: ${deduped.length} candles over ${lookbackDays}d (${chunks.length} chunk${chunks.length > 1 ? "s" : ""})`);
-  }
+  console.log(`[Fyers] ${symbol} ${fyersResolution}: ${deduped.length} candles over ${lookbackDays}d (${chunks.length} chunk${chunks.length > 1 ? "s" : ""})`);
   return deduped;
 }
 
-/**
- * fetchOptionExpiries — returns available expiry dates for an underlying symbol.
- *
- * Uses the Fyers v3 `getOptionChain` API (strike_count=1 to minimise payload)
- * and extracts the `expiryData` list from the response.
- *
- * @param {string} underlyingSymbol  e.g. "NSE:NIFTY50-INDEX", "BSE:SENSEX-INDEX"
- * @returns {Promise<string[]>}       Array of expiry date strings in "DD-MM-YYYY"
- *                                    format (Fyers native), sorted nearest-first.
- *                                    Returns [] if unavailable (token expired, holiday, etc.)
- */
-async function fetchOptionExpiries(underlyingSymbol) {
-  try {
-    const fyers = getFyersClient();
-    // strike_count=1 → smallest possible payload; we only need expiryData not strikes
-    const res = await Promise.race([
-      fyers.getOptionChain({ symbol: underlyingSymbol, strikecount: 1, timestamp: "" }),
-      rejectAfter(10_000, "fetchOptionExpiries"),
-    ]);
-    if (!res || res.s !== "ok" || !res.data?.expiryData) {
-      console.warn(`[Fyers] fetchOptionExpiries: no expiry data for ${underlyingSymbol} — s=${res?.s} msg="${res?.message || res?.errmsg || "?"}"`);
-      return [];
-    }
-    // expiryData items have shape { date: "DD-MM-YYYY", ... }
-    const dates = res.data.expiryData
-      .map((e) => e.date || e.expiry || e)
-      .filter(Boolean)
-      .sort((a, b) => {
-        // Parse DD-MM-YYYY for chronological sort
-        const parse = (s) => { const [d, m, y] = String(s).split("-"); return new Date(`${y}-${m}-${d}`).getTime(); };
-        return parse(a) - parse(b);
-      });
-    return dates;
-  } catch (err) {
-    console.warn(`[Fyers] fetchOptionExpiries error for ${underlyingSymbol}:`, err.message);
-    return [];
-  }
-}
 
 /**
- * fetchOptionChain — returns the REAL, broker-confirmed option symbols for
+ * fetchOptionChain -- returns the REAL, broker-confirmed option symbols for
  * an underlying's option chain, for a specific expiry (or the nearest one
  * if no timestamp given).
  *
- * ROOT-CAUSE NOTE: this project used to hand-build option symbols locally
- * (see optionsChain.js's `optionSymbol()` on the frontend) by guessing at
- * Fyers' date-encoding scheme — e.g. {YY}{monthChar}{DD} for weekly
- * contracts. That guess produced strings like "NIFTY2663023950CE" that
- * Fyers rejected with "Invalid symbol provided". This is a documented,
- * widely-hit problem — other Fyers API users report the exact same error
- * with the exact same hand-built format (including the format this
- * project's own changelog once cited as "confirmed working"), because
- * Fyers' weekly symbol encoding isn't reliably reverse-engineerable and
- * has changed over time. There is no need to guess: Fyers' own
- * `getOptionChain` response already includes the literal, always-valid
- * `symbol` string for every strike in `data.optionsChain[].symbol` — this
- * function returns that directly instead of constructing anything.
+ * ROOT-CAUSE NOTE: hand-building option symbols locally (guessing at Fyers'
+ * date-encoding scheme) produces strings Fyers frequently rejects with
+ * "Invalid symbol provided" -- a documented, widely-hit problem, not unique
+ * to this project. Fyers' own `getOptionChain` response already includes
+ * the literal, always-valid `symbol` string for every strike in
+ * `data.optionsChain[].symbol` -- this function returns that directly
+ * instead of constructing anything.
  *
  * @param {string} underlyingSymbol  e.g. "NSE:NIFTY50-INDEX", "BSE:SENSEX-INDEX"
  * @param {object} [opts]
  * @param {number} [opts.strikeCount=20]  strikes each side of ATM to request
  * @param {string} [opts.timestamp]       Fyers expiry timestamp (epoch seconds,
  *                                        as a string) to select a specific
- *                                        expiry — omit for the nearest one.
+ *                                        expiry -- omit for the nearest one.
  * @returns {Promise<{expiries: Array<{date,expiry}>, strikes: Array<{symbol,strike_price,option_type,ltp,oi}>}>}
  *          Returns { expiries: [], strikes: [] } if unavailable.
  */
@@ -530,13 +399,13 @@ async function fetchOptionChain(underlyingSymbol, opts = {}) {
       rejectAfter(10_000, "fetchOptionChain"),
     ]);
     if (!res || res.s !== "ok" || !res.data) {
-      console.warn(`[Fyers] fetchOptionChain: no data for ${underlyingSymbol} — s=${res?.s} msg="${res?.message || res?.errmsg || "?"}"`);
+      console.warn(`[Fyers] fetchOptionChain: no data for ${underlyingSymbol} -- s=${res?.s} msg="${res?.message || res?.errmsg || "?"}"`);
       return { expiries: [], strikes: [] };
     }
     const expiries = (res.data.expiryData || [])
       .map((e) => ({ date: e.date || e.expiry, expiry: e.expiry || e.date }))
       .filter((e) => e.date);
-    // optionsChain entries carry the real tradable symbol per strike — this
+    // optionsChain entries carry the real tradable symbol per strike -- this
     // is the whole point of calling this function instead of building one.
     const strikes = (res.data.optionsChain || [])
       .filter((s) => s && s.symbol)
@@ -555,4 +424,4 @@ async function fetchOptionChain(underlyingSymbol, opts = {}) {
   }
 }
 
-module.exports = { loadToken, saveToken, getAuthURL, generateToken, validateToken, fetchCandles, fetchOptionExpiries, fetchOptionChain, sleep };
+module.exports = { loadToken, saveToken, getAuthURL, generateToken, validateToken, fetchCandles, fetchOptionChain };

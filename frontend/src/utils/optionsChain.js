@@ -4,34 +4,36 @@
 // Supports: NSE equities, NSE/BSE indices, MCX commodities.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { previousTradingDay } from "./holidayCalendar";
+
 // ── Month codes ───────────────────────────────────────────────────────────────
-const MONTH_CODES = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+const MONTH_CODES = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 
 // ── MCX commodity config ──────────────────────────────────────────────────────
 // strikeStep  — interval between strikes (in ₹ per unit)
 // decimals    — decimal places in strike price
 // unit        — traded unit label shown in the options chain header
 export const MCX_COMMODITIES = {
-  GOLD:        { name: "Gold",             strikeStep: 100,  decimals: 0, unit: "10g",   exchange: "MCX" },
-  GOLDM:       { name: "Gold Mini",        strikeStep: 100,  decimals: 0, unit: "100g",  exchange: "MCX" },
-  GOLDPETAL:   { name: "Gold Petal",       strikeStep: 50,   decimals: 0, unit: "1g",    exchange: "MCX" },
-  SILVER:      { name: "Silver",           strikeStep: 500,  decimals: 0, unit: "1kg",   exchange: "MCX" },
-  SILVERM:     { name: "Silver Mini",      strikeStep: 500,  decimals: 0, unit: "100g",  exchange: "MCX" },
-  SILVERMIC:   { name: "Silver Micro",     strikeStep: 100,  decimals: 0, unit: "1kg",   exchange: "MCX" },
-  CRUDEOIL:    { name: "Crude Oil",        strikeStep: 50,   decimals: 0, unit: "bbl",   exchange: "MCX" },
-  CRUDEOILM:   { name: "Crude Oil Mini",   strikeStep: 50,   decimals: 0, unit: "bbl",   exchange: "MCX" },
-  NATURALGAS:  { name: "Natural Gas",      strikeStep: 5,    decimals: 1, unit: "mmBtu", exchange: "MCX" },
-  NATGASMINI:  { name: "Natural Gas Mini", strikeStep: 5,    decimals: 1, unit: "mmBtu", exchange: "MCX" },
-  COPPER:      { name: "Copper",           strikeStep: 5,    decimals: 1, unit: "1kg",   exchange: "MCX" },
-  ZINC:        { name: "Zinc",             strikeStep: 1,    decimals: 1, unit: "1kg",   exchange: "MCX" },
-  ZINCMINI:    { name: "Zinc Mini",        strikeStep: 1,    decimals: 1, unit: "1kg",   exchange: "MCX" },
-  LEAD:        { name: "Lead",             strikeStep: 1,    decimals: 1, unit: "1kg",   exchange: "MCX" },
-  LEADMINI:    { name: "Lead Mini",        strikeStep: 1,    decimals: 1, unit: "1kg",   exchange: "MCX" },
-  NICKEL:      { name: "Nickel",           strikeStep: 10,   decimals: 0, unit: "1kg",   exchange: "MCX" },
-  ALUMINIUM:   { name: "Aluminium",        strikeStep: 1,    decimals: 1, unit: "1kg",   exchange: "MCX" },
-  MENTHAOIL:   { name: "Mentha Oil",       strikeStep: 1,    decimals: 1, unit: "kg",    exchange: "MCX" },
-  COTTON:      { name: "Cotton",           strikeStep: 100,  decimals: 0, unit: "bale",  exchange: "MCX" },
-  CASTORSEED:  { name: "Castor Seed",      strikeStep: 50,   decimals: 0, unit: "100kg", exchange: "MCX" },
+  GOLD: { name: "Gold", strikeStep: 100, decimals: 0, unit: "10g", exchange: "MCX" },
+  GOLDM: { name: "Gold Mini", strikeStep: 100, decimals: 0, unit: "100g", exchange: "MCX" },
+  GOLDPETAL: { name: "Gold Petal", strikeStep: 50, decimals: 0, unit: "1g", exchange: "MCX" },
+  SILVER: { name: "Silver", strikeStep: 500, decimals: 0, unit: "1kg", exchange: "MCX" },
+  SILVERM: { name: "Silver Mini", strikeStep: 500, decimals: 0, unit: "100g", exchange: "MCX" },
+  SILVERMIC: { name: "Silver Micro", strikeStep: 100, decimals: 0, unit: "1kg", exchange: "MCX" },
+  CRUDEOIL: { name: "Crude Oil", strikeStep: 50, decimals: 0, unit: "bbl", exchange: "MCX" },
+  CRUDEOILM: { name: "Crude Oil Mini", strikeStep: 50, decimals: 0, unit: "bbl", exchange: "MCX" },
+  NATURALGAS: { name: "Natural Gas", strikeStep: 5, decimals: 1, unit: "mmBtu", exchange: "MCX" },
+  NATGASMINI: { name: "Natural Gas Mini", strikeStep: 5, decimals: 1, unit: "mmBtu", exchange: "MCX" },
+  COPPER: { name: "Copper", strikeStep: 5, decimals: 1, unit: "1kg", exchange: "MCX" },
+  ZINC: { name: "Zinc", strikeStep: 1, decimals: 1, unit: "1kg", exchange: "MCX" },
+  ZINCMINI: { name: "Zinc Mini", strikeStep: 1, decimals: 1, unit: "1kg", exchange: "MCX" },
+  LEAD: { name: "Lead", strikeStep: 1, decimals: 1, unit: "1kg", exchange: "MCX" },
+  LEADMINI: { name: "Lead Mini", strikeStep: 1, decimals: 1, unit: "1kg", exchange: "MCX" },
+  NICKEL: { name: "Nickel", strikeStep: 10, decimals: 0, unit: "1kg", exchange: "MCX" },
+  ALUMINIUM: { name: "Aluminium", strikeStep: 1, decimals: 1, unit: "1kg", exchange: "MCX" },
+  MENTHAOIL: { name: "Mentha Oil", strikeStep: 1, decimals: 1, unit: "kg", exchange: "MCX" },
+  COTTON: { name: "Cotton", strikeStep: 100, decimals: 0, unit: "bale", exchange: "MCX" },
+  CASTORSEED: { name: "Castor Seed", strikeStep: 50, decimals: 0, unit: "100kg", exchange: "MCX" },
 };
 
 // ── MCX expiry-day approximations ─────────────────────────────────────────────
@@ -54,6 +56,21 @@ const EXPIRY_GRACE_DAYS = 1; // roll this many days AFTER the approx expiry (nev
 // Commodities that trade WEEKLY options (every Friday expiry on MCX)
 export const WEEKLY_EXPIRY_COMMODITIES = new Set(["SILVERMIC"]);
 
+// ── Restricted contract-month cycles ─────────────────────────────────────
+// MUST stay in sync with symbolsRouter.js RESTRICTED_MONTH_CYCLE. Unlike
+// CRUDEOIL/NATURALGAS/COPPER etc (which list a new contract every single
+// calendar month), MCX's silver family does NOT trade every month — it only
+// lists contracts in a fixed cycle. Building an options-chain tab for a
+// month outside this cycle produces a symbol that was never listed, which
+// Fyers correctly rejects with "Invalid symbol provided" for every strike
+// in that tab. Confirmed via MCX expiry circulars: Feb, Apr, Jun, Aug, Nov, Dec.
+// (SILVERMIC is unaffected — it's routed through WEEKLY_EXPIRY_COMMODITIES
+// above and never reaches this monthly branch.)
+const RESTRICTED_MONTH_CYCLE = {
+  SILVER: [1, 3, 5, 7, 10, 11],   // 0-based: Feb, Apr, Jun, Aug, Nov, Dec
+  SILVERM: [1, 3, 5, 7, 10, 11],
+};
+
 // ── Index weekly expiry weekday ───────────────────────────────────────────────
 // SEBI's Oct-2024 circular limited weekly index options to ONE benchmark per
 // exchange: NSE kept NIFTY, BSE kept SENSEX. Every other index (BANKNIFTY,
@@ -73,12 +90,12 @@ export { INDEX_WEEKLY_EXPIRY_DAY };
 
 // ── NSE index option roots ────────────────────────────────────────────────────
 const NSE_INDEX_ROOTS = {
-  "NIFTY50-INDEX":    "NIFTY",
-  "NIFTYBANK-INDEX":  "BANKNIFTY",
+  "NIFTY50-INDEX": "NIFTY",
+  "NIFTYBANK-INDEX": "BANKNIFTY",
   "CNXFINANCE-INDEX": "FINNIFTY",
-  "CNXIT-INDEX":      "NIFTYIT",
+  "CNXIT-INDEX": "NIFTYIT",
   "MIDCPNIFTY-INDEX": "MIDCPNIFTY",
-  "SENSEX-INDEX":     "SENSEX",   // BSE
+  "SENSEX-INDEX": "SENSEX",   // BSE
 };
 
 // Inverse of NSE_INDEX_ROOTS (option root → index ticker), derived once so the
@@ -93,7 +110,7 @@ export function getOptionRoot(symbolStr) {
   if (!symbolStr) return { exch: "NSE", root: "", isIndex: false, isCommodity: false, strikeStep: 50, decimals: 0 };
 
   const colonIdx = symbolStr.indexOf(":");
-  const exch   = colonIdx >= 0 ? symbolStr.slice(0, colonIdx) : "NSE";
+  const exch = colonIdx >= 0 ? symbolStr.slice(0, colonIdx) : "NSE";
   const ticker = colonIdx >= 0 ? symbolStr.slice(colonIdx + 1) : symbolStr;
 
   // MCX commodity — ticker may be:
@@ -106,12 +123,12 @@ export function getOptionRoot(symbolStr) {
     base = base.toUpperCase();
     const cfg = MCX_COMMODITIES[base] || { strikeStep: 50, decimals: 0 };
     return {
-      exch:          "MCX",
-      root:          base,
-      isIndex:       false,
-      isCommodity:   true,
-      strikeStep:    cfg.strikeStep,
-      decimals:      cfg.decimals,
+      exch: "MCX",
+      root: base,
+      isIndex: false,
+      isCommodity: true,
+      strikeStep: cfg.strikeStep,
+      decimals: cfg.decimals,
       commodityName: cfg.name || base,
     };
   }
@@ -145,16 +162,24 @@ function mcxNearMonthOffset(root, now = new Date()) {
 // the first expiry shown here always matches the contract month shown
 // in the Commodity tab and Futures tab of the search bar.
 //
-// NSE equities/indices: last Thursday of the month (exchange rule, exact) —
+// NSE equities/indices (monthly-only underlyings — BANKNIFTY, FINNIFTY,
+// MIDCPNIFTY, NIFTYIT, and all single-stock F&O): last TUESDAY of the month,
+// holiday-adjusted. NSE moved its monthly/quarterly/half-yearly expiry from
+// the last Thursday to the last Tuesday of the month effective contracts
+// expiring on/after 1 Sep 2025 (NSE circular Ref. 111/2025). If that
+// computed last-Tuesday falls on an exchange holiday, actual expiry shifts
+// to the previous trading day — see holidayCalendar.js.
 // EXCEPT NIFTY/SENSEX, which also trade WEEKLY (see INDEX_WEEKLY_EXPIRY_DAY)
 // and so must list every week's expiry, not just the monthly one. Before this
 // fix, nextMonthlyExpiries always jumped straight to lastThursdayOfMonth(),
-// which IS a real SENSEX/NIFTY expiry (the monthly one) but skips every
-// weekly expiry before it in the same month — e.g. on 26 Jun 2026 it returned
-// "30 JUL" as the nearest SENSEX expiry, when the true nearest expiry is the
-// next Thursday, "02 JUL".
+// which used the WRONG weekday (Thursday, pre-Sep-2025 rule) AND skipped
+// every weekly expiry before the month-end one — e.g. on 26 Jun 2026 it
+// returned "30 JUL" as the nearest SENSEX expiry, when the true nearest
+// expiry is the next Thursday, "02 JUL".
 // MCX commodities: approximate expiry day per commodity (MCX publishes exact
-// date via monthly circular; `approx: true` flags this in the UI).
+// date via monthly circular; `approx: true` flags this in the UI). Holiday
+// adjustment is applied here too (MCX's own 4 full-closure holidays only),
+// which only ever refines the approximation — never makes it less accurate.
 export function nextMonthlyExpiries(count = 3, commodityRoot = null, indexRoot = null) {
   // Silver Micro uses WEEKLY expiries (every Friday), not monthly
   if (commodityRoot && WEEKLY_EXPIRY_COMMODITIES.has(commodityRoot)) {
@@ -169,42 +194,60 @@ export function nextMonthlyExpiries(count = 3, commodityRoot = null, indexRoot =
   const now = new Date();
   const results = [];
 
-  // For MCX: start from the near-month offset so we match symbolsRouter
-  // For NSE: start offset = 0 (current month), let the cutoff skip if passed
-  const startOffset = commodityRoot ? mcxNearMonthOffset(commodityRoot, now) : 0;
-  const approxDay   = commodityRoot ? MCX_EXPIRY_DAY[commodityRoot] : null;
+  const approxDay = commodityRoot ? MCX_EXPIRY_DAY[commodityRoot] : null;
+  const cycle = commodityRoot ? RESTRICTED_MONTH_CYCLE[commodityRoot] : null;
 
-  let year  = now.getFullYear();
-  let month = now.getMonth() + startOffset; // 0-based, may exceed 11
-  year  += Math.floor(month / 12);
-  month  = month % 12;
+  // For unrestricted MCX roots (every calendar month lists a contract): start
+  // from the near-month offset so we match symbolsRouter.
+  // For restricted-cycle roots (SILVER/SILVERM): don't pre-jump via
+  // mcxNearMonthOffset — that offset only knows about day-of-month, not which
+  // months are even valid. Instead walk forward from the current month and
+  // let the `cycle` check below skip non-listed months, and the cutoff check
+  // skip cycle months whose expiry has already passed this year.
+  // For NSE: start offset = 0 (current month), let the cutoff skip if passed.
+  let year = now.getFullYear();
+  let month = now.getMonth();
+  if (commodityRoot && !cycle) {
+    month += mcxNearMonthOffset(commodityRoot, now);
+    year += Math.floor(month / 12);
+    month = month % 12;
+  }
 
-  for (let i = 0; results.length < count; i++) {
+  let guard = 0;
+  for (let i = 0; results.length < count && guard < 60; i++, guard++) {
     let m = month + i;
     let y = year + Math.floor(m / 12);
     m = m % 12;
 
-    const expDate = approxDay
+    // Restricted-cycle commodities only list contracts in specific months —
+    // skip any month that was never a real listed contract.
+    if (cycle && !cycle.includes(m)) continue;
+
+    let expDate = approxDay
       ? clampToLastDayOfMonth(y, m, approxDay)
-      : lastThursdayOfMonth(y, m);
+      : lastWeekdayOfMonth(y, m, 2); // 2 = Tuesday (NSE rule since 1 Sep 2025)
 
-    // For NSE (no approxDay), skip months whose expiry has already passed
-    if (!approxDay) {
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - 1);
-      if (expDate < cutoff) continue;
-    }
-    // For MCX, we trust the offset calculation — no additional cutoff check
-    // needed because mcxNearMonthOffset() already ensures we start fresh.
+    // Holiday-adjust: if the computed date lands on an exchange holiday,
+    // the exchange itself shifts expiry to the previous trading day.
+    expDate = previousTradingDay(expDate, approxDay ? "MCX" : "NSE");
 
-    const dd  = String(expDate.getDate()).padStart(2, "0");
+    // Skip months whose expiry (+ grace period for MCX) has already passed.
+    // For unrestricted MCX roots this never actually triggers (offset above
+    // already starts on a fresh month), but for restricted-cycle roots this
+    // is essential — e.g. if today is just past Aug's expiry, Aug must be
+    // skipped in favour of Nov, not re-shown.
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - (approxDay ? (1 + EXPIRY_GRACE_DAYS) : 1));
+    if (expDate < cutoff) continue;
+
+    const dd = String(expDate.getDate()).padStart(2, "0");
     const mon = MONTH_CODES[m];
-    const yy  = String(y).slice(-2);
+    const yy = String(y).slice(-2);
 
     results.push({
-      label:  `${approxDay ? "~" : ""}${dd} ${mon}`,
-      code:   `${yy}${mon}`,  // e.g. "26JUL" — used in Fyers option symbol
-      date:   expDate,
+      label: `${approxDay ? "~" : ""}${dd} ${mon}`,
+      code: `${yy}${mon}`,  // e.g. "26JUL" — used in Fyers option symbol
+      date: expDate,
       approx: !!approxDay,
       weekly: false,
     });
@@ -226,22 +269,36 @@ const FYERS_WEEKLY_MONTH_CHAR = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "O
 // options (Tuesday/Thursday, fyersWeeklyCode:true — uses Fyers' actual
 // {YY}{monthChar}{DD} weekly symbol format, confirmed against real examples).
 function nextWeeklyExpiries(count, weekday, { fyersWeeklyCode }) {
+  // Holiday adjustment: index weekly (fyersWeeklyCode:true) is exact
+  // per-exchange — Tuesday belongs to NSE, Thursday to BSE. MCX weekly
+  // (Friday, SILVERMIC) uses MCX's own 4-holiday calendar. If neither
+  // applies (shouldn't happen given current callers) skip adjustment.
+  const exchange = fyersWeeklyCode
+    ? (weekday === 4 ? "BSE" : "NSE")
+    : "MCX";
+  const seenKeys = new Set();
+
   const results = [];
   const d = new Date();
   d.setHours(0, 0, 0, 0);
   d.setDate(d.getDate() + 1); // start from tomorrow
   while (results.length < count) {
     if (d.getDay() === weekday) {
-      const dd  = String(d.getDate()).padStart(2, "0");
-      const mon = MONTH_CODES[d.getMonth()];
-      const yy  = String(d.getFullYear()).slice(-2);
-      results.push({
-        label:  `${dd} ${mon}`,
-        code:   fyersWeeklyCode ? `${yy}${FYERS_WEEKLY_MONTH_CHAR[d.getMonth()]}${dd}` : `${yy}${mon}`,
-        date:   new Date(d),
-        approx: !fyersWeeklyCode, // MCX weekly stays "approx" as before; index weekly is exact (exchange-published rule)
-        weekly: true,
-      });
+      const adjusted = previousTradingDay(d, exchange);
+      const key = adjusted.toISOString().slice(0, 10);
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
+        const dd = String(adjusted.getDate()).padStart(2, "0");
+        const mon = MONTH_CODES[adjusted.getMonth()];
+        const yy = String(adjusted.getFullYear()).slice(-2);
+        results.push({
+          label: `${dd} ${mon}`,
+          code: fyersWeeklyCode ? `${yy}${FYERS_WEEKLY_MONTH_CHAR[adjusted.getMonth()]}${dd}` : `${yy}${mon}`,
+          date: adjusted,
+          approx: !fyersWeeklyCode, // MCX weekly stays "approx" as before; index weekly is exact (exchange-published rule)
+          weekly: true,
+        });
+      }
     }
     d.setDate(d.getDate() + 1);
   }
@@ -253,9 +310,14 @@ function clampToLastDayOfMonth(year, month, day) {
   return new Date(year, month, Math.min(day, lastDay));
 }
 
-function lastThursdayOfMonth(year, month) {
+// Generic "last <weekday> of month" finder — weekday: 0=Sun..6=Sat.
+// Replaces the old hardcoded lastThursdayOfMonth() now that the NSE monthly
+// rule is Tuesday (2), not Thursday (4). BSE monthly (Thursday) is handled
+// via the weekly-expiry branch for SENSEX (INDEX_WEEKLY_EXPIRY_DAY), since
+// SENSEX is the only BSE underlying with options in this codebase.
+function lastWeekdayOfMonth(year, month, weekday) {
   const d = new Date(year, month + 1, 0); // last day of month
-  while (d.getDay() !== 4) d.setDate(d.getDate() - 1);
+  while (d.getDay() !== weekday) d.setDate(d.getDate() - 1);
   return new Date(d);
 }
 
@@ -293,25 +355,25 @@ export function buildStrikeLadder(spot, indexRoot, stepsEachSide = 14, overrideS
 }
 
 const INDEX_STRIKE_STEPS = {
-  NIFTY:      50,
-  BANKNIFTY:  100,
-  FINNIFTY:   50,
+  NIFTY: 50,
+  BANKNIFTY: 100,
+  FINNIFTY: 50,
   MIDCPNIFTY: 25,
-  NIFTYIT:    50,
-  SENSEX:     100,
+  NIFTYIT: 50,
+  SENSEX: 100,
 };
 
 function guessStep(price) {
   if (price >= 50000) return 500;
   if (price >= 10000) return 200;
-  if (price >=  5000) return 100;
-  if (price >=  2000) return 50;
-  if (price >=  1000) return 20;
-  if (price >=   500) return 10;
-  if (price >=   200) return 5;
-  if (price >=   100) return 2;
-  if (price >=    50) return 1;
-  if (price >=    10) return 0.5;
+  if (price >= 5000) return 100;
+  if (price >= 2000) return 50;
+  if (price >= 1000) return 20;
+  if (price >= 500) return 10;
+  if (price >= 200) return 5;
+  if (price >= 100) return 2;
+  if (price >= 50) return 1;
+  if (price >= 10) return 0.5;
   return 0.1;
 }
 
@@ -335,6 +397,13 @@ export function optionSymbol(exch, root, expiryCode, strike, kind) {
 // Both are exactly 5 characters, so a single alternation handles both without
 // ambiguity (the 3-letter month only matches A-Z letters, so "702" can never
 // be misread as a month code).
+//
+// IMPORTANT — P3 #13: the canonical version of this parsing logic now lives
+// in database/src/symbolParser.js (parseDerivativeSymbol()), and
+// backend/src/server.js delegates to it. This frontend copy stays separate
+// on purpose — browser code can't require() that Node module — but if the
+// symbol format ever changes, update both. Same pattern as
+// holidays.js/holidayCalendar.js and tickStream.js/useSocket.js.
 const OPTION_SYMBOL_RE = /^([A-Z]+):(.*?)(\d{2}(?:[A-Z]{3}|[1-9OND]\d{2}))(\d+(?:\.\d+)?)(CE|PE)$/;
 
 export function isOptionSymbol(symbolStr) {

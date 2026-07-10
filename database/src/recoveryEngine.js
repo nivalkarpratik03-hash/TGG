@@ -14,8 +14,14 @@
  * ║    • fetchCandles is always called with resolution=1                 ║
  * ║    • upsertCandles is always called with resolution=1                ║
  * ║    • repairDay / periodicSync always operate on resolution=1         ║
- * ║    • fullRefetch only fetches & stores 1m — never other TFs          ║
  * ╚══════════════════════════════════════════════════════════════════════╝
+ *
+ * NOTE: fullRefetch() (delete-a-symbol's-history-then-reinsert) was removed
+ * entirely. It was never wired to any route or UI button, and its only
+ * remaining job — replacing a symbol's full history — always deleted that
+ * symbol's rows first. Per architecture, no symbol's data is ever deleted.
+ * Ongoing gap-filling is handled by periodicSync (purely additive), and a
+ * single bad trading day is handled by repairDay (scoped to one day only).
  *
  * Responsibilities (from architecture diagram):
  *  • Fetch latest closed 1m broker candles
@@ -27,9 +33,16 @@
  *  • Emit status events so the frontend can show repair progress
  */
 
-const { upsertCandles, deleteDayCandles, deleteAllCandles } = require("./candleStore");
+// FIX (derivatives-routing): these two used to come straight from
+// candleStore.js, which unconditionally writes/reads the plain `candles`
+// table. That was safe for repairDay() calls from the curated-symbol gap
+// scan (always equities/indices), but periodicSync's fallback full-day
+// repair can run against whatever symbol a client currently has open in a
+// chart — including option/future contracts — so it needs dataRouter.js's
+// symbol-aware routing to land in nse_options_candles/etc. instead.
+const { upsertCandles, replaceDayCandles } = require("./dataRouter");
 const { validateCandleArray, checkPeriodicSync } = require("./validationEngine");
-const { logRepairStart, logRepairFinish, getRecentFailureCount } = require("./repairLog");
+const { logRepairStart, logRepairFinish } = require("./repairLog");
 
 // ─── DB resolution constant ───────────────────────────────────────────────────
 // Only 1m candles are stored in and read from the DB.
@@ -81,23 +94,11 @@ function emit(event, data) {
  *       repair always operates on DB_RESOLUTION (1m). Higher TFs are derived
  *       in-memory from the repaired 1m data by the caller (server.js).
  *
- * ROOT-CAUSE NOTE: this used to call fetchCandles(symbol, resolution) with no
- * date range, which always fell back to a 30-day-from-TODAY window — so
- * repairing one bad day from two months ago still pulled the full default
- * lookback from Fyers every time, for every affected symbol, even though
- * only ~375 candles (one trading day) were ever going to be used. With
- * dozens of symbols each needing several day-repairs, a single validation
- * pass could take minutes and hammer the broker far more than necessary.
- * Now `fetchCandles` is called with an explicit {from, to} window padded by
- * one day on each side of `tradingDay`, fetching only what's actually needed.
- *
  * @param {object} opts
  * @param {string} opts.symbol
  * @param {number} [opts.resolution]  ignored — always repairs 1m in DB
  * @param {Date|string} opts.tradingDay   any moment within the affected day
- * @param {Function} opts.fetchCandles    (symbol, resolution, rangeOpts?) => Promise<candle[]>
- *                                         rangeOpts = {from, to} — caller (server.js) must
- *                                         forward this through to client.js's fetchCandles
+ * @param {Function} opts.fetchCandles    (symbol, resolution) => Promise<candle[]>  (Fyers REST)
  * @param {string}  [opts.trigger]        'corruption'|'startup'|'periodic'|'manual'
  */
 async function repairDay(opts) {
@@ -106,39 +107,9 @@ async function repairDay(opts) {
   const resolution = DB_RESOLUTION;
   const key = `${symbol}:${resolution}`;
 
-  // Tight fetch window: one day on either side of the target day, so
-  // timezone/session-boundary rounding never clips the actual trading day
-  // this repair cares about, while still avoiding a 30-day pull.
-  const ONE_DAY_MS = 86400 * 1000;
-  const targetMs = new Date(tradingDay).getTime();
-  const fetchFrom = new Date(targetMs - ONE_DAY_MS);
-  const fetchTo = new Date(targetMs + ONE_DAY_MS);
-
   if (activeRepairs.has(key)) {
     console.log(`[Recovery] Repair already active for ${key} — skipping duplicate`);
     return { skipped: true };
-  }
-
-  // ROOT-CAUSE FIX: without this, a day that genuinely can't be fixed by
-  // re-fetching (a persistent RANGE_OUTLIER false-positive on a real price
-  // move, or a day that's simply unreachable while Fyers is rate-limiting)
-  // got re-attempted every single validator cycle — every 10 minutes,
-  // forever — hammering Fyers for a fetch that has no realistic chance of
-  // changing the outcome. Back off once a day has failed repeatedly in a
-  // short window: skip attempting it again until the backoff period
-  // elapses, but keep logging clearly so it isn't silently ignored forever.
-  const MAX_RECENT_FAILURES = 3;
-  const BACKOFF_WINDOW_HOURS = 3;
-  if (trigger !== "manual" && trigger !== "manual_full_refetch") {
-    const recentFailures = await getRecentFailureCount(symbol, tradingDay, BACKOFF_WINDOW_HOURS);
-    if (recentFailures >= MAX_RECENT_FAILURES) {
-      const dayKey = new Date(tradingDay).toISOString().slice(0, 10);
-      console.warn(`[Recovery] ${symbol} day=${dayKey}: skipping — already failed ${recentFailures} time(s) ` +
-        `in the last ${BACKOFF_WINDOW_HOURS}h. Backing off instead of retrying every cycle. ` +
-        `Use the manual VALIDATE/REPAIR button to force another attempt.`);
-      emit("repair_status", { symbol, resolution, status: "skipped_backoff", tradingDay: dayKey, recentFailures });
-      return { skipped: true, reason: "backoff", recentFailures };
-    }
   }
 
   return enqueueRepair(symbol, async () => {
@@ -159,9 +130,8 @@ async function repairDay(opts) {
       // replacement, which is exactly how 1m data went missing mid-day in
       // production. Fetching first means a failed/partial refetch never
       // touches existing DB rows.
-      console.log(`[Recovery] Refetching 1m candles from broker for ${symbol} ` +
-        `(targeted: ${fetchFrom.toISOString().slice(0,10)} → ${fetchTo.toISOString().slice(0,10)})...`);
-      const fresh = await fetchCandles(symbol, resolution, { from: fetchFrom, to: fetchTo });
+      console.log(`[Recovery] Refetching 1m candles from broker for ${symbol}...`);
+      const fresh = await fetchCandles(symbol, resolution);
       emit("repair_status", { symbol, resolution, status: "fetched", count: fresh.length });
 
       if (!fresh || fresh.length === 0) {
@@ -187,37 +157,15 @@ async function repairDay(opts) {
         emit("repair_status", { symbol, resolution, status: "validation_warning", issues: issues.length });
       }
 
-      // Filter fetched range down to ONLY the target trading day before upserting.
-      // The fetch window is ±1 day (for timezone safety), but we must not silently
-      // rewrite neighbor days' candles as a side-effect of repairing one bad day.
-      // Use the same UTC midnight boundary logic as deleteDayCandles() so that
-      // deleted and inserted always refer to the exact same set of candles.
-      const targetDay = new Date(tradingDay);
-      const dayStart = new Date(targetDay);
-      dayStart.setUTCHours(0, 0, 0, 0);
-      const dayEnd = new Date(dayStart);
-      dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
-      const dayStartMs = dayStart.getTime();
-      const dayEndMs   = dayEnd.getTime();
-      const targetDayCandles = fresh.filter(c => c.time >= dayStartMs && c.time < dayEndMs);
-
-      if (targetDayCandles.length === 0) {
-        const errMsg = `Broker returned ${fresh.length} candles but none fall within target day ${new Date(tradingDay).toISOString().slice(0,10)} — aborting repair without touching existing DB data`;
-        console.error(`[Recovery] ${symbol} res=1: ${errMsg}`);
-        emit("repair_status", { symbol, resolution, status: "error", error: errMsg });
-        await logRepairFinish(logId, { status: "error", detail: errMsg }).catch(() => null);
-        return { success: false, error: errMsg };
-      }
-
-      // Step 3: NOW it's safe to delete the corrupted/affected day — a
-      // validated replacement is already in hand and about to be written back.
-      console.log(`[Recovery] Deleting 1m day data for ${symbol} day=${new Date(tradingDay).toISOString().slice(0,10)}`);
-      const deleted = await deleteDayCandles(symbol, resolution, tradingDay);
+      // Step 3+4 (FIXED — was: separate delete then separate insert, two
+      // independently-committed queries). A client reading via loadCandles()
+      // in the gap between those two calls could see this trading day as
+      // empty — a transient phantom gap. Both steps now run inside ONE DB
+      // transaction (replaceDayCandles), so readers always see either the
+      // old day intact or the new day intact, never neither.
+      console.log(`[Recovery] Atomically replacing 1m day data for ${symbol} day=${new Date(tradingDay).toISOString().slice(0, 10)}`);
+      const { deleted, inserted } = await replaceDayCandles(symbol, resolution, tradingDay, fresh);
       emit("repair_status", { symbol, resolution, status: "deleted", deleted });
-
-      // Step 4: Store only the target day's 1m candles into DB.
-      // (neighbor-day candles from the padded fetch window are discarded)
-      const inserted = await upsertCandles(symbol, resolution, targetDayCandles);
       console.log(`[Recovery] ${symbol} res=1: inserted ${inserted} 1m candles`);
       emit("repair_status", { symbol, resolution, status: "restored", inserted });
 
@@ -231,13 +179,16 @@ async function repairDay(opts) {
         return { success: false, error: errMsg, deleted, inserted };
       }
 
-      console.log(`[Recovery] ${symbol} res=1: ✅ COMPLETE — day ${new Date(tradingDay).toISOString().slice(0,10)} repaired (deleted=${deleted}, inserted=${inserted})`);
       emit("repair_status", { symbol, resolution, status: "ok", inserted, deleted });
+      // FRONTEND-SYNC FIX: same reasoning as the staleness-backfill broadcast —
+      // a chart already open for this symbol when the repair started would
+      // otherwise keep showing the pre-repair (possibly gapped/corrupt) day
+      // until a manual reload. Let any open chart silently re-pull fresh data.
+      emit("history_updated", { symbol, resolution, reason: "repair", inserted });
       await logRepairFinish(logId, { status: "ok", deleted, inserted }).catch(() => null);
       return { success: true, inserted, deleted };
 
     } catch (err) {
-      console.error(`[Recovery] ${symbol} res=1: ❌ FAILED — ${err.message}`);
       emit("repair_status", { symbol, resolution, status: "error", error: err.message });
       await logRepairFinish(logId, { status: "error", detail: err.message }).catch(() => null);
       throw err;
@@ -247,98 +198,47 @@ async function repairDay(opts) {
   });
 }
 
-// ─── Full refetch (nuke + reload 1m only) ────────────────────────────────────
+// ─── Dead-letter tracking for periodicSync ───────────────────────────────────
+// P1 (was "not yet fixed"): periodicSync retried a dead/expired/invalid
+// symbol forever — every 5-minute sweep, indefinitely, with no memory of
+// prior failures. A symbol only ends up in periodicSync's sweep because a
+// real client had it open (server.js scopes the sweep to
+// getLiveBroadcastSymbols()), so this isn't hypothetical: an expired option
+// contract sitting open in a stale browser tab, or any symbol Fyers rejects,
+// would get hammered every cycle with no backoff.
+//
+// FIX: track consecutive failures per symbol. After DEAD_LETTER_THRESHOLD
+// consecutive failures, the symbol is "dead-lettered" — periodicSync skips
+// it immediately (no fetchCandles call at all) until DEAD_LETTER_COOLDOWN_MS
+// has passed, then gives it one more try. A single success at any point
+// clears the symbol's failure count entirely. This is intentionally
+// in-memory/per-process (matches every other piece of sync state in this
+// file — repairQueues, activeRepairs) — a restart naturally clears it and
+// gives every symbol a fresh start, which is the right behavior here (no
+// symbol should be dead-lettered "forever" across restarts on stale info).
+const DEAD_LETTER_THRESHOLD = 3;          // consecutive failures before dead-lettering
+const DEAD_LETTER_COOLDOWN_MS = 30 * 60 * 1000; // 30 min before retrying a dead-lettered symbol
 
-/**
- * Delete ALL stored 1m candles for a symbol and refetch the complete 1m timeline.
- * Triggered by the "Full Refetch" button in the frontend.
- *
- * ARCHITECTURE NOTE: Only 1m candles are fetched from the broker and stored in DB.
- * The `resolutions` option is intentionally removed — higher TFs are always
- * derived in-memory from 1m data by CandleBuilder after this completes.
- * The caller (server.js) must call fetchAndProcess / deriveAllTFs after fullRefetch
- * completes to rebuild the in-memory TF cache.
- *
- * @param {object} opts
- * @param {string} opts.symbol
- * @param {Function} opts.fetchCandles   (symbol, resolution) => Promise<candle[]>
- */
-async function fullRefetch(opts) {
-  const { symbol, fetchCandles } = opts;
+const syncFailures = new Map(); // symbol -> { count, deadUntil }
 
-  return enqueueRepair(symbol, async () => {
-    emit("repair_status", { symbol, status: "full_refetch_start" });
+function isDeadLettered(symbol) {
+  const rec = syncFailures.get(symbol);
+  if (!rec || !rec.deadUntil) return false;
+  return Date.now() < rec.deadUntil;
+}
 
-    const logId = await logRepairStart({ symbol, resolution: DB_RESOLUTION, trigger: "manual_full_refetch" }).catch(() => null);
+function recordSyncSuccess(symbol) {
+  syncFailures.delete(symbol);
+}
 
-    let totalDeleted = 0;
-    let totalInserted = 0;
-
-    // Step 1 (REORDERED — was: delete first, fetch second):
-    // Fetch + validate BEFORE deleting the existing timeline. The old order
-    // could leave a symbol with ZERO candles permanently if the refetch
-    // failed outright or validateCandleArray flagged any issue anywhere in
-    // the fetched range (a hard abort that skipped storage entirely after
-    // the delete had already run).
-    let candles;
-    try {
-      console.log(`[Recovery] Full refetch ${symbol}: fetching 1m candles from broker...`);
-      candles = await fetchCandles(symbol, DB_RESOLUTION);
-      emit("repair_status", { symbol, resolution: DB_RESOLUTION, status: "full_refetch_fetched", count: candles.length });
-    } catch (err) {
-      console.error(`[Recovery] Full refetch ${symbol} res=1 fetch error:`, err.message);
-      emit("repair_status", { symbol, resolution: DB_RESOLUTION, status: "full_refetch_error", error: err.message });
-      await logRepairFinish(logId, { status: "error", detail: err.message }).catch(() => null);
-      return { success: false, error: err.message };
-    }
-
-    if (!candles || candles.length === 0) {
-      const errMsg = "Broker returned no candles — aborting full refetch without touching existing DB data";
-      console.error(`[Recovery] Full refetch ${symbol}: ${errMsg}`);
-      emit("repair_status", { symbol, resolution: DB_RESOLUTION, status: "full_refetch_error", error: errMsg });
-      await logRepairFinish(logId, { status: "error", detail: errMsg }).catch(() => null);
-      return { success: false, error: errMsg };
-    }
-
-    // Validation is informational only — see repairDay() for the full
-    // rationale. upsertCandles() filters out structurally corrupt rows on
-    // its own, so a stray GAP/duplicate flag must never block storage.
-    const { valid, issues } = validateCandleArray(candles, DB_RESOLUTION);
-    if (!valid) {
-      console.warn(`[Recovery] Full refetch ${symbol} res=1: ${issues.length} validation issue(s) — storing valid rows anyway`);
-      emit("repair_status", { symbol, resolution: DB_RESOLUTION, status: "full_refetch_validation_warning", issues: issues.length });
-    }
-
-    // Step 2: NOW delete the old (possibly corrupted) timeline — a validated
-    // replacement is already in hand and about to be written back immediately.
-    const deleted = await deleteAllCandles(symbol, DB_RESOLUTION);
-    totalDeleted += deleted;
-    console.log(`[Recovery] Full refetch ${symbol}: deleted ${deleted} 1m candles`);
-    emit("repair_status", { symbol, status: "full_refetch_deleted", deleted });
-
-    // Prune any stale candles >3 months old across all symbols (safety net)
-    try {
-      const pruned = await require("./candleStore").pruneOldCandles(null, null, 90);
-      if (pruned > 0) console.log(`[Recovery] Full refetch: pruned ${pruned} stale candles (>3 months)`);
-    } catch { /* non-fatal */ }
-
-    // Step 3: Store the freshly fetched candles — idempotent, always run
-    // regardless of the informational validation result above.
-    const inserted = await upsertCandles(symbol, DB_RESOLUTION, candles);
-    totalInserted += inserted;
-    console.log(`[Recovery] Full refetch ${symbol} res=1: ${inserted} 1m candles stored`);
-    emit("repair_status", { symbol, resolution: DB_RESOLUTION, status: "full_refetch_res_ok", inserted });
-
-    console.log(`[Recovery] ${symbol}: ✅ COMPLETE — full refetch done (deleted=${totalDeleted}, inserted=${totalInserted})`);
-    emit("repair_status", { symbol, status: "full_refetch_complete", totalInserted, totalDeleted });
-    await logRepairFinish(logId, {
-      status: totalInserted > 0 ? "ok" : "error",
-      deleted: totalDeleted,
-      inserted: totalInserted,
-    }).catch(() => null);
-
-    return { success: totalInserted > 0, totalInserted, totalDeleted };
-  });
+function recordSyncFailure(symbol) {
+  const rec = syncFailures.get(symbol) || { count: 0, deadUntil: null };
+  rec.count += 1;
+  if (rec.count >= DEAD_LETTER_THRESHOLD) {
+    rec.deadUntil = Date.now() + DEAD_LETTER_COOLDOWN_MS;
+    console.warn(`[PeriodicSync] ${symbol}: ${rec.count} consecutive failures — dead-lettered for ${DEAD_LETTER_COOLDOWN_MS / 60000}min`);
+  }
+  syncFailures.set(symbol, rec);
 }
 
 // ─── Periodic sync job ───────────────────────────────────────────────────────
@@ -363,6 +263,13 @@ async function periodicSync(opts) {
   const resolution = DB_RESOLUTION;
   const THREE_MONTHS_AGO = Date.now() - 90 * 86400 * 1000;
 
+  // Dead-letter check — skip symbols that have failed repeatedly, instead of
+  // hammering them every single sweep. No fetchCandles call is made at all.
+  if (isDeadLettered(symbol)) {
+    console.log(`[PeriodicSync] ${symbol}: skipped — dead-lettered (retrying after cooldown)`);
+    return { inSync: false, deadLettered: true };
+  }
+
   try {
     const brokerCandles = await fetchCandles(symbol, resolution);
     // Only consider 1m candles within the 3-month retention window
@@ -371,66 +278,46 @@ async function periodicSync(opts) {
 
     if (inSync) {
       console.log(`[PeriodicSync] ${symbol} res=1 ✓ in sync`);
+      recordSyncSuccess(symbol);
       return { inSync: true };
     }
 
     // Out of sync — upsert the missing 1m candles
-    console.warn(`[PeriodicSync] ${symbol} res=1 out of sync (gap=${(gapMs/60000).toFixed(1)}min) — recovering`);
+    console.warn(`[PeriodicSync] ${symbol} res=1 out of sync (gap=${(gapMs / 60000).toFixed(1)}min) — recovering`);
 
     // Find 1m candles that are newer than what we have in DB
     const from = latestDb ? latestDb.time : THREE_MONTHS_AGO;
     const missing = recentBroker.filter(c => c.time > from);
 
-    // ROOT-CAUSE FIX: this used to treat validateCandleArray as a hard
-    // all-or-nothing gate — if the freshly fetched batch (often 20-30
-    // trading days = 7,000-11,000 candles for a cold symbol) had even ONE
-    // GAP (e.g. a holiday) or RANGE_OUTLIER flagged ANYWHERE in it, the
-    // ENTIRE batch was discarded without storing a single row, and this
-    // fell through to repairDay() for only the single most-recent trading
-    // day. That is exactly why a freshly-searched symbol so often showed
-    // just one day (or less) of candles: weeks of perfectly good,
-    // already-fetched data were thrown away over one flagged candle, and
-    // the single-day fallback repair then had its own chance to fail
-    // (rate limiting) with nothing to fall back on.
-    //
-    // repairDay() and fullRefetch() already treat validation as
-    // informational-only for this exact reason — upsertCandles() filters
-    // out structurally corrupt rows itself, so a stray GAP/RANGE_OUTLIER
-    // flag must never block storing the rest of a valid batch. periodicSync
-    // was the one path that never got that fix. Bring it in line: always
-    // store whatever came back, and only fall back to a single-day repair
-    // when NOTHING useful was fetched at all.
     if (missing.length > 0) {
-      const { valid, issues } = validateCandleArray(missing, resolution);
-      if (!valid) {
-        console.warn(`[PeriodicSync] ${symbol} res=1: refetch has ${issues.length} validation issue(s) ` +
-          `(${issues.slice(0, 3).map(i => i.type).join(", ")}) — storing valid rows anyway; ` +
-          `corrupt rows are filtered out by upsertCandles()`);
-        emit("repair_status", { symbol, resolution, status: "periodic_sync_validation_warning", issues: issues.length });
+      const { valid } = validateCandleArray(missing, resolution);
+      if (valid) {
+        const inserted = await upsertCandles(symbol, resolution, missing);
+        console.log(`[PeriodicSync] ${symbol} res=1: inserted ${inserted} missing 1m candles`);
+        emit("repair_status", { symbol, resolution, status: "periodic_sync_ok", inserted });
+        emit("history_updated", { symbol, resolution, reason: "periodic_sync", inserted });
+        recordSyncSuccess(symbol);
+        return { inSync: true, recovered: inserted };
       }
-      const inserted = await upsertCandles(symbol, resolution, missing);
-      console.log(`[PeriodicSync] ${symbol} res=1: inserted ${inserted} missing 1m candles`);
-      emit("repair_status", { symbol, resolution, status: "periodic_sync_ok", inserted });
-      if (inserted > 0) return { inSync: true, recovered: inserted };
-      // Fetched candles but every single row failed basic OHLC sanity —
-      // fall through to single-day repair as a last resort.
     }
 
-    // Nothing usable came back from the batch fetch — trigger full day
-    // repair (1m only) for the latest trading day as a last resort.
+    // Can't auto-recover with missing candles — trigger full day repair (1m only)
     const tradingDay = latestBroker ? new Date(latestBroker.time) : new Date();
     await repairDay({ symbol, resolution, tradingDay, fetchCandles, trigger: "periodic" });
+    recordSyncSuccess(symbol);
     return { inSync: false, repaired: true };
 
   } catch (err) {
     console.error(`[PeriodicSync] ${symbol} res=1 error:`, err.message);
+    recordSyncFailure(symbol);
     return { inSync: false, error: err.message };
   }
 }
 
 module.exports = {
   repairDay,
-  fullRefetch,
   periodicSync,
   injectStatusEmitter,
+  // Exposed for tests / diagnostics only — not used by server.js.
+  _deadLetter: { isDeadLettered, recordSyncSuccess, recordSyncFailure, syncFailures },
 };

@@ -1,13 +1,14 @@
 // AtmWorkspace.js
 // ─────────────────────────────────────────────────────────────────────────────
-// 3-pane ATM Workspace: CE | Underlying | PE, opened by Ctrl+Q (focuses CE) or
-// Ctrl+D (focuses PE) from ChartsPage. Each column is fully independent (own
+// 3-pane ATM Workspace: CE | Underlying | PE, opened by Ctrl+Q from
+// ChartsPage (always focuses CE first — click a column to focus it
+// directly). Each column is fully independent (own
 // live data feed via useSocket, own mini chart) and has its own × close
 // button. Click a CE/PE column to focus it, then Ctrl+Shift+↑ / Ctrl+Shift+↓
 // steps that column one real strike up/down — using the actual strike ladder
 // Fyers returned, never a hand-built symbol.
 //
-// ROOT-CAUSE CONTEXT: the old Ctrl+Q/Ctrl+D shortcut mutated the active
+// ROOT-CAUSE CONTEXT: the old Ctrl+Q/Ctrl+D shortcuts mutated the active
 // panel's OWN symbol and picked the nearest strike by comparing the fetched
 // chain against candles[last].close — i.e. whatever price happened to be on
 // screen. That's the underlying's spot when viewing the underlying, but an
@@ -97,8 +98,9 @@ export default function AtmWorkspace({ baseSymbol, resolution, focus, onClose })
   const [focused, setFocused] = useState(focus === "pe" ? "pe" : "ce");
   const [loadErr, setLoadErr] = useState(null);
 
-  // Ctrl+Q / Ctrl+D pressed again while this workspace is already open on the
-  // same underlying just changes which column should be focused.
+  // `focus` is set once by ChartsPage when the workspace first opens
+  // (always "ce"). Click the PE or Underlying column directly to focus it
+  // instead — there's no longer a separate shortcut for that.
   useEffect(() => { if (focus) setFocused(focus); }, [focus]);
 
   // Fetch the option chain ONCE per baseSymbol — this single response gives
@@ -111,7 +113,23 @@ export default function AtmWorkspace({ baseSymbol, resolution, focus, onClose })
     setLoadErr(null);
     const params = new URLSearchParams({ symbol: baseSymbol, strikeCount: "20" });
     fetch(`${BACKEND}/api/options/chain?${params.toString()}`)
-      .then((res) => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.json(); })
+      .then(async (res) => {
+        if (res.ok) return res.json();
+        // 401 specifically means the Fyers token expired — that's a known,
+        // actionable case, so give a plain-English message instead of the
+        // raw "HTTP 401" the generic branch below would otherwise show.
+        if (res.status === 401) throw new Error("Session expired — please re-authenticate with Fyers");
+        // Other failures: try to surface the backend's own error message
+        // (chartRouter.js always responds with JSON { error }), falling
+        // back to a plain status-code message only if that body can't be
+        // parsed at all.
+        let message = `Request failed (HTTP ${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.error) message = body.error;
+        } catch { /* body wasn't JSON — keep the fallback message */ }
+        throw new Error(message);
+      })
       .then((data) => {
         if (cancelled) return;
         const strikes = data.strikes || [];
@@ -132,7 +150,7 @@ export default function AtmWorkspace({ baseSymbol, resolution, focus, onClose })
 
         const nearest = (list) => (spotPrice != null
           ? list.reduce((best, s) =>
-              Math.abs(s.strike_price - spotPrice) < Math.abs(best.strike_price - spotPrice) ? s : best)
+            Math.abs(s.strike_price - spotPrice) < Math.abs(best.strike_price - spotPrice) ? s : best)
           : list[Math.floor(list.length / 2)]);
 
         if (ce.length) setCeSymbol(nearest(ce).symbol);

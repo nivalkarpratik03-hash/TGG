@@ -31,6 +31,15 @@
 
 "use strict";
 
+// FIX (single source of truth): isMarketLiveNow() below used to be its own
+// separate implementation that unconditionally treated Saturday as closed
+// — wrong for MCX, which trades Saturday 09:00–14:00. tickStream.js's
+// isLiveMarket() already handles this correctly (and is what the tick
+// stream itself, plus the frontend's useSocket.js, both already agree on),
+// so this file now delegates to that instead of keeping a second, drifted
+// copy of the same market-hours logic.
+const { isLiveMarket } = require("../fyers/tickStream");
+
 // ── Constants ────────────────────────────────────────────────────
 const MARKET_OPEN_HOUR = 9;
 const MARKET_OPEN_MIN = 15;
@@ -79,19 +88,19 @@ function istDateKey(tsMs) {
 }
 
 /**
- * Returns true only when the NSE market is currently live (Mon–Fri 09:15–15:30 IST).
+ * Returns true only when the market is currently live for `symbol`.
  * Used to decide whether the last higher-TF bar group is "still forming" (live)
  * or "already completed" (closed/after-hours/weekend).
+ *
+ * BUG FIXED: this used to be a standalone copy that returned false for
+ * ANY Saturday, regardless of symbol — wrong for MCX, which trades
+ * Saturday 09:00–14:00 IST. Now delegates to tickStream.js's isLiveMarket(),
+ * which already gets this right (NSE/BSE: Mon–Fri 09:15–15:30; MCX: Mon–Fri
+ * 09:00–23:30, Sat 09:00–14:00) — one shared implementation instead of two
+ * that can silently drift apart.
  */
 function isMarketLiveNow(symbol) {
-  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-  const istMs = Date.now() + IST_OFFSET_MS;
-  const d = new Date(istMs);
-  const dow = d.getUTCDay(); // 0=Sun, 6=Sat
-  if (dow === 0 || dow === 6) return false;
-  const istMin = d.getUTCHours() * 60 + d.getUTCMinutes();
-  const closeMin = isMCXSymbol(symbol) ? (23 * 60 + 30) : (15 * 60 + 30);
-  return istMin >= (9 * 60 + 15) && istMin < closeMin;
+  return isLiveMarket(symbol);
 }
 
 // ── CandleBuilder class ──────────────────────────────────────────

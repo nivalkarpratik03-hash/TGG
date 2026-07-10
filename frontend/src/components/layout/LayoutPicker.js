@@ -13,11 +13,12 @@ import React, { useState, useEffect, useRef } from "react";
 // ─── Layout definitions ───────────────────────────────────────────────────────
 // Single source of truth — imported by ChartsPage and LayoutPicker both.
 export const LAYOUTS = [
-  { id: "1",  label: "Single",         cols: 1, rows: 1, panels: 1, icon: "1x1" },
-  { id: "2h", label: "2 Side-by-Side", cols: 2, rows: 1, panels: 2, icon: "2h"  },
-  { id: "2v", label: "2 Stacked",      cols: 1, rows: 2, panels: 2, icon: "2v"  },
-  { id: "3",  label: "3 Panels",       cols: 2, rows: 2, panels: 3, icon: "3"   },
-  { id: "4",  label: "4 Panels",       cols: 2, rows: 2, panels: 4, icon: "4"   },
+  { id: "1", label: "Single", cols: 1, rows: 1, panels: 1, icon: "1x1" },
+  { id: "2h", label: "2 Side-by-Side", cols: 2, rows: 1, panels: 2, icon: "2h" },
+  { id: "2v", label: "2 Stacked", cols: 1, rows: 2, panels: 2, icon: "2v" },
+  { id: "3h", label: "3 Side-by-Side", cols: 3, rows: 1, panels: 3, icon: "3h" },
+  { id: "3", label: "3 Panels", cols: 2, rows: 2, panels: 3, icon: "3" },
+  { id: "4", label: "4 Panels", cols: 2, rows: 2, panels: 4, icon: "4" },
 ];
 
 // ─── LayoutIcon — SVG thumbnail of each layout shape ─────────────────────────
@@ -38,6 +39,14 @@ export function LayoutIcon({ icon, size = 18 }) {
         <rect x={p} y={p} width={inner} height={half} rx={1.5} stroke="currentColor" strokeWidth={1.5} />
         <rect x={p} y={p + half + gap} width={inner} height={half} rx={1.5} stroke="currentColor" strokeWidth={1.5} />
       </svg>;
+    case "3h": {
+      const third = (inner - gap * 2) / 3;
+      return <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`} fill="none">
+        <rect x={p} y={p} width={third} height={inner} rx={1.5} stroke="currentColor" strokeWidth={1.5} />
+        <rect x={p + third + gap} y={p} width={third} height={inner} rx={1.5} stroke="currentColor" strokeWidth={1.5} />
+        <rect x={p + (third + gap) * 2} y={p} width={third} height={inner} rx={1.5} stroke="currentColor" strokeWidth={1.5} />
+      </svg>;
+    }
     case "3":
       return <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`} fill="none">
         <rect x={p} y={p} width={half} height={inner} rx={1.5} stroke="currentColor" strokeWidth={1.5} />

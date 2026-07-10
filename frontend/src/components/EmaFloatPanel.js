@@ -1,8 +1,20 @@
 // EmaFloatPanel.js
-import React, { useMemo } from "react";
+// Uses forwardRef + useImperativeHandle so the parent (ChartPanel) can call
+// update(bar) imperatively — no React state in ChartPanel fires on crosshair move.
+import React, { useState, useMemo, useRef, useImperativeHandle, forwardRef } from "react";
 import "../styles/EmaFloatPanel.css";
 
-export default function EmaFloatPanel({ emaHighs, emaLows, candles, crosshairBar }) {
+const EmaFloatPanel = forwardRef(function EmaFloatPanel({ emaHighs, emaLows, candles }, ref) {
+  const [crosshairBar, setCrosshairBar] = useState(null);
+  const candlesRef = useRef(candles);
+  candlesRef.current = candles;
+
+  // Expose an imperative update() so ChartPanel can push crosshair moves
+  // without triggering a ChartPanel re-render.
+  useImperativeHandle(ref, () => ({
+    update(bar) { setCrosshairBar(bar); },
+  }), []);
+
   const crosshairIndex = useMemo(() => {
     if (!crosshairBar || !candles?.length) return -1;
     const targetMs = crosshairBar.unixSec * 1000;
@@ -55,4 +67,6 @@ export default function EmaFloatPanel({ emaHighs, emaLows, candles, crosshairBar
       </div>
     </div>
   );
-}
+});
+
+export default EmaFloatPanel;

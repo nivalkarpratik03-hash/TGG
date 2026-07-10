@@ -5,10 +5,13 @@
   "main": "src/index.js",
   "scripts": {
     "migrate": "node src/migrate.js",
-    "test": "node src/healthcheck.js"
+    "test": "node src/healthcheck.js",
+    "backfill:derivatives": "node src/backfillDerivatives.js",
+    "test:symbolParser": "node src/symbolParser.test.js",
+    "test:integration": "node src/integration.test.js"
   },
   "dependencies": {
-    "dotenv": "^16.3.1",
-    "pg": "^8.11.3"
+    "dotenv": "^16.6.1",
+    "pg": "^8.22.0"
   }
 }

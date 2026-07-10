@@ -79,9 +79,6 @@ async function authenticate() {
     fs.writeFileSync(path.join(rootDir, "fyers_refresh_token.txt"), refresh_token);
   }
 
-  // Also save to .fyers_token for server.js compatibility
-  fs.writeFileSync(path.join(rootDir, ".fyers_token"), access_token);
-
   console.log("\n✅ Token saved successfully!");
   console.log("═".repeat(55));
   console.log("\n🚀 Now run:   npm start");
@@ -92,10 +89,10 @@ async function authenticate() {
 function getStoredTokens() {
   const rootDir = path.resolve(__dirname, "..");
   const refreshTokenPath = path.join(rootDir, "fyers_refresh_token.txt");
-  const accessTokenPath  = path.join(rootDir, "fyers_access_token.txt");
+  const accessTokenPath = path.join(rootDir, "fyers_access_token.txt");
   return {
     refresh_token: fs.existsSync(refreshTokenPath) ? fs.readFileSync(refreshTokenPath, "utf8").trim() : null,
-    access_token:  fs.existsSync(accessTokenPath)  ? fs.readFileSync(accessTokenPath,  "utf8").trim() : null,
+    access_token: fs.existsSync(accessTokenPath) ? fs.readFileSync(accessTokenPath, "utf8").trim() : null,
   };
 }
 

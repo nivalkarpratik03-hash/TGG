@@ -3,22 +3,17 @@
  * Exact port of Pine Script v6 logic
  */
 
-/**
- * Calculate EMA for a series of values
- * @param {number[]} values - array of prices (oldest first)
- * @param {number} period
- * @returns {number[]} ema values
- */
-function calcEMA(values, period) {
-  if (values.length === 0) return [];
-  const k = 2 / (period + 1);
-  const ema = new Array(values.length).fill(0);
-  ema[0] = values[0];
-  for (let i = 1; i < values.length; i++) {
-    ema[i] = values[i] * k + ema[i - 1] * (1 - k);
-  }
-  return ema;
-}
+// FIX: this file used to have its own unguarded calcEMA — if a single
+// candle had a null/NaN high/low (gap-filled placeholder, malformed row,
+// etc.), that value produced NaN which propagated forward through every
+// subsequent EMA value for the rest of the day, silently killing NH/NL/BC
+// signal detection AND corrupting emaHighs/emaLows before they're sent to
+// the frontend (server.js buildPayload() feeds these straight into
+// WavesIndicator.js / SRZonesIndicator.js / ConsolidationIndicator.js).
+// Now using the same single source of truth as motherwave.js,
+// backtestRunner.js, and the scanner — which skip bad values instead of
+// letting them poison everything after.
+const { calcEMA } = require("./indicatorMath");
 
 /**
  * Run Pine Script NH/NL/BC state machine on OHLC candles
@@ -51,12 +46,12 @@ function runSignalEngine(candles) {
     if (bothTouch) {
       // BC signal - both sides touched
       signals.push({ type: "BC_HIGH", barIndex: i, price: bar.high, time: bar.time });
-      signals.push({ type: "BC_LOW",  barIndex: i, price: bar.low,  time: bar.time });
+      signals.push({ type: "BC_LOW", barIndex: i, price: bar.low, time: bar.time });
 
       // Confirm pending state
-      if (state === 1)  signals.push({ type: "NH", barIndex: bestBar, price: bestPrice, time: candles[bestBar].time });
+      if (state === 1) signals.push({ type: "NH", barIndex: bestBar, price: bestPrice, time: candles[bestBar].time });
       else if (state === -1) signals.push({ type: "NL", barIndex: bestBar, price: bestPrice, time: candles[bestBar].time });
-      else if (state === 2)  signals.push({ type: "NL", barIndex: bestBar, price: bestPrice, time: candles[bestBar].time });
+      else if (state === 2) signals.push({ type: "NL", barIndex: bestBar, price: bestPrice, time: candles[bestBar].time });
       else if (state === -2) signals.push({ type: "NH", barIndex: bestBar, price: bestPrice, time: candles[bestBar].time });
 
       // Full reset

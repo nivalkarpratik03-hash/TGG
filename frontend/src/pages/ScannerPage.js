@@ -14,7 +14,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { io } from "socket.io-client";
+import { createBackendSocket } from "../utils/backendSocket";
 import { BACKEND } from "../config";
 import { useTheme } from "../App";
 import "../styles/ScannerPage.css";
@@ -267,7 +267,7 @@ export default function ScannerPage() {
   // ── Socket ────────────────────────────────────────────────────────────────
   useEffect(() => {
     fetchStatus();
-    const sock = io(BACKEND, { transports: ["websocket"] });
+    const sock = createBackendSocket();
     socketRef.current = sock;
     sock.on("scanner_start", (d) => {
       setProgress({ total: d.total, done: 0 });

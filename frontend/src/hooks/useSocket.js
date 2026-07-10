@@ -17,6 +17,22 @@ import { BACKEND } from "../config";
 // ── IST live-market check (frontend guard for REST poll fallback only) ─────────
 // NOTE: This is used ONLY to gate the REST poll fallback timer — not for routing
 // GET vs POST. The backend handles all routing decisions via isLiveMarket(symbol).
+//
+// IMPORTANT — keep this logic identical (in spirit) to backend/src/fyers/tickStream.js's
+// isLiveMarket()/isMCXSymbol(). They intentionally live as two separate copies
+// (browser ES module frontend vs Node CommonJS backend, deployed separately —
+// frontend to Vercel, backend to Cloudflare — so this file can't require() the
+// backend module directly) — if you update one, update the other. Same pattern
+// already used for frontend/src/utils/holidayCalendar.js vs backend/src/data/holidays.js.
+//
+// Verified line-by-line equivalent to tickStream.js as of this comment,
+// including the MCX Saturday early-close case.
+const NSE_OPEN_MIN = 9 * 60 + 15;   // 555  — NSE/BSE open
+const NSE_CLOSE_MIN = 15 * 60 + 30;  // 930  — NSE/BSE close
+const MCX_OPEN_MIN = 9 * 60 + 0;    // 540  — MCX open (Mon–Fri)
+const MCX_CLOSE_MIN = 23 * 60 + 30;  // 1410 — MCX weekday close
+const MCX_SAT_CLOSE = 14 * 60 + 0;   // 840  — MCX Saturday close
+
 function isMCXSymbol(symbol) {
   return symbol && String(symbol).toUpperCase().startsWith("MCX:");
 }
@@ -31,12 +47,12 @@ function isLiveMarketFrontend(symbol) {
   if (dow === 0) return false; // Sunday — nothing trades
   if (isMCXSymbol(symbol)) {
     // MCX: Mon–Fri 09:00–23:30, Saturday 09:00–14:00
-    if (dow === 6) return istMin >= (9 * 60) && istMin < (14 * 60);
-    return istMin >= (9 * 60) && istMin < (23 * 60 + 30);
+    if (dow === 6) return istMin >= MCX_OPEN_MIN && istMin < MCX_SAT_CLOSE;
+    return istMin >= MCX_OPEN_MIN && istMin < MCX_CLOSE_MIN;
   }
   // NSE/BSE: Mon–Fri 09:15–15:30 only
   if (dow === 6) return false;
-  return istMin >= (9 * 60 + 15) && istMin < (15 * 60 + 30);
+  return istMin >= NSE_OPEN_MIN && istMin < NSE_CLOSE_MIN;
 }
 
 function sleep(ms) {
@@ -50,19 +66,28 @@ export function useSocket() {
   const [error, setError] = useState(null);
   const [tickStreamActive, setTickStreamActive] = useState(false);
   const [ticksFlowing, setTicksFlowing] = useState(null); // null = not yet known, true/false = server confirmed
-  // Auto-ATM side-channel: LTP of the underlying index/equity, only populated
-  // while setUnderlying(optionSymbol) has been called with a non-null value.
-  // { symbol, ltp, timestamp } | null — independent of chartData/candles.
-  const [underlyingTick, setUnderlyingTick] = useState(null);
+  const [underlyingTick, setUnderlyingTick] = useState(null); // Auto-ATM: last LTP from underlying
 
   const socketRef = useRef(null);
   const activeResolutionRef = useRef(null);
   const activeSymbolRef = useRef(null);
-  const underlyingOptionSymbolRef = useRef(null); // last symbol passed to setUnderlying
   const latestRequestIdRef = useRef(0);
   const lastSocketUpdateRef = useRef(0);
   const hasDataRef = useRef(false);
+  // NEW BUG FIX (reported: chart shows only 2-3 candles after a backend
+  // restart, until a manual page reload). Root cause: hasDataRef stays
+  // `true` across a backend restart (this tab never remounted), so the
+  // "connect" handler's `!hasDataRef.current` guard below skipped
+  // fetchChart() on reconnect — and the backend's own in-memory cache is
+  // wiped by a restart, so its set_symbol fast-path had nothing to push
+  // either. Net effect: the tab was stuck rendering only whatever live
+  // ticks arrived after reconnecting, with no way to recover short of a
+  // hard reload. needsResyncRef forces a real fetchChart() on the very
+  // next "connect" after ANY "disconnect" — including a reconnect to a
+  // freshly-restarted backend — regardless of hasDataRef's state.
+  const needsResyncRef = useRef(false);
   const pollTimerRef = useRef(null);
+  const underlyingOptionSymbolRef = useRef(null); // last symbol passed to setUnderlying
 
   // ── matchesActive — drop stale socket events ──────────────────────────────
   const matchesActive = useCallback((d) => {
@@ -91,7 +116,10 @@ export function useSocket() {
 
         if (!r.data?.candles?.length) {
           if (attempt < retries) { await sleep(1500 * (attempt + 1)); continue; }
+          // All retries exhausted — no data in DB and Fyers unreachable.
+          // Set a clear error instead of leaving an infinite empty state.
           setLoading(false);
+          setError("no_data");
           return;
         }
 
@@ -108,6 +136,7 @@ export function useSocket() {
         if (reqId !== latestRequestIdRef.current) return;
         if (attempt < retries) { await sleep(1500 * (attempt + 1)); continue; }
         setLoading(false);
+        setError("no_data");
       }
     }
     // Mount-only: socket and poll setup runs once. All state setters are stable.
@@ -155,14 +184,19 @@ export function useSocket() {
       // so the server's socketSymbols map is populated before any refresh fires.
       if (activeSymbolRef.current) socket.emit("set_symbol", activeSymbolRef.current);
       if (activeResolutionRef.current) socket.emit("set_resolution", activeResolutionRef.current);
-      // Auto-ATM: re-register the underlying side-channel after a reconnect —
-      // the server's socketUnderlyings map is keyed by socket.id, which is
-      // fresh after every reconnect, so this would otherwise silently drop.
+      // Re-register Auto-ATM underlying after reconnect
       if (underlyingOptionSymbolRef.current) socket.emit("set_underlying", underlyingOptionSymbolRef.current);
       // Only fall back to a GET fetch if there's genuinely no data and nothing is in-flight.
       // ChartsPage calls refresh() (POST) on mount which already covers the initial load.
       // The latestRequestIdRef check inside fetchChart prevents stale responses from landing.
-      if (!hasDataRef.current && latestRequestIdRef.current === 0) {
+      //
+      // needsResyncRef.current is also checked here — see its declaration above.
+      // Without it, a tab that survives a backend restart (no page reload) would
+      // never re-fetch full history: hasDataRef stays true from before the
+      // restart, so this guard alone would skip fetchChart forever, leaving the
+      // chart stuck showing only whatever live ticks trickle in post-reconnect.
+      if (needsResyncRef.current || (!hasDataRef.current && latestRequestIdRef.current === 0)) {
+        needsResyncRef.current = false;
         fetchChart(activeSymbolRef.current, activeResolutionRef.current, { retries: 3 });
       }
     });
@@ -174,13 +208,9 @@ export function useSocket() {
       setTicksFlowing(null);
       setTickStreamActive(false);
       setUnderlyingTick(null);
-    });
-
-    // Auto-ATM side-channel — pure LTP passthrough, independent of chartData.
-    // Only arrives while setUnderlying() has registered a symbol server-side.
-    socket.on("underlying_tick", (d) => {
-      if (!d?.symbol) return;
-      setUnderlyingTick(d);
+      // Any reconnect after this point must re-fetch full history — see
+      // needsResyncRef's declaration above for why hasDataRef alone isn't enough.
+      needsResyncRef.current = true;
     });
 
     socket.on("chart_update", (d) => {
@@ -265,12 +295,40 @@ export function useSocket() {
       });
     });
 
+    // Only arrives while setUnderlying() has registered a symbol server-side.
+    socket.on("underlying_tick", (d) => {
+      setUnderlyingTick(d);
+    });
+
     socket.on("market_status", (d) => {
       if (d?.tickStreamActive != null) setTickStreamActive(!!d.tickStreamActive);
       if (d?.ticksFlowing != null) setTicksFlowing(!!d.ticksFlowing);
     });
 
+    // FRONTEND-SYNC FIX: the server broadcasts this whenever a staleness
+    // backfill, repair, or periodic sync writes NEW history for a symbol —
+    // e.g. you opened a chart for a symbol that hadn't been touched in days,
+    // the server caught it up in the background, and your already-rendered
+    // chart would otherwise carry that pre-catch-up gap forward forever
+    // (the live tick stream only appends new candles going forward, it never
+    // retroactively patches an old render). Only react if it's for the
+    // symbol currently on screen, and re-pull via the same "request_refresh"
+    // path the Refresh button already uses — no new state plumbing needed.
+    socket.on("history_updated", (d) => {
+      if (!d?.symbol || d.symbol !== activeSymbolRef.current) return;
+      socket.emit("request_refresh");
+    });
+
+    // FIX: the server now attaches { symbol, resolution } to error events that
+    // are tied to a specific fetch (e.g. a failed request_refresh) — filter it
+    // through the same matchesActive() check as chart_update/tick_update/etc
+    // so an error for a DIFFERENT symbol or resolution (e.g. a background
+    // res=1 fetch unrelated to what's actually on screen) never overwrites
+    // the error bar on a panel that's rendering perfectly fine. Errors with
+    // no symbol/resolution at all (genuine connection-level failures) still
+    // always apply, since there's nothing to filter them against.
     socket.on("error", (e) => {
+      if (e && (e.symbol != null || e.resolution != null) && !matchesActive(e)) return;
       setError(e?.message || String(e));
       setLoading(false);
     });
@@ -350,10 +408,8 @@ export function useSocket() {
   }, []);
 
   // ── setUnderlying — Auto-ATM side-channel control ──────────────────────────
-  // Pass the OPTION symbol currently on the chart to start/refresh the
-  // underlying LTP feed (server derives the underlying itself), or null/
-  // undefined to stop it (toggle off, switched to a non-option symbol, etc).
-  // Cheap to call on every render — it no-ops if the symbol hasn't changed.
+  // Call with option symbol string to start receiving underlying_tick events.
+  // Call with null to stop (toggle off, symbol changed, panel unmounted).
   const setUnderlying = useCallback((optionSymbolOrNull) => {
     if (underlyingOptionSymbolRef.current === (optionSymbolOrNull || null)) return;
     underlyingOptionSymbolRef.current = optionSymbolOrNull || null;
@@ -361,8 +417,5 @@ export function useSocket() {
     if (socketRef.current?.connected) socketRef.current.emit("set_underlying", optionSymbolOrNull || null);
   }, []);
 
-  return {
-    chartData, connected, loading, error, refresh, tickStreamActive, ticksFlowing,
-    underlyingTick, setUnderlying,
-  };
+  return { chartData, connected, loading, error, refresh, tickStreamActive, ticksFlowing, underlyingTick, setUnderlying };
 }

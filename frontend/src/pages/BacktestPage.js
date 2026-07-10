@@ -15,7 +15,7 @@ import React, {
   useState, useEffect, useRef, useCallback, useMemo,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { io } from "socket.io-client";
+import { createBackendSocket } from "../utils/backendSocket";
 import { BACKEND } from "../config";
 import { useTheme } from "../App";
 import "../styles/BacktestPage.css";
@@ -157,7 +157,7 @@ export default function BacktestPage() {
     fetchStatus();
     fetchResults();
 
-    const sock = io(BACKEND, { transports: ["websocket"] });
+    const sock = createBackendSocket();
     socketRef.current = sock;
 
     sock.on("backtest_start", (d) => { setPhase("running"); setHits([]); setProgress({ total: d.total, done: 0, hits: 0 }); });

@@ -131,10 +131,10 @@ const SEARCH_ALIASES = {
 //                         when picking a result while the "Options" tab is
 //                         active, since options need a strike chain, not a
 //                         single symbol)
-//   initialQuery — string (optional) — seeds the search box on open, used by
-//                  the "type anywhere to search" shortcut (the keystroke that
-//                  triggered the open is the first character of the query,
-//                  so the modal must open already showing it, not empty).
+// initialQuery — string (optional) — seeds the search box on open, used by
+//                the "type anywhere to search" shortcut (the keystroke that
+//                triggered the open is the first character of the query,
+//                so the modal must open already showing it, not empty).
 export default function SymbolSearch({ isOpen, onClose, onSelect, onOpenOptionsChain, initialQuery }) {
   const [symbols, setSymbols] = useState([]);
   const [query, setQuery] = useState("");
@@ -166,6 +166,27 @@ export default function SymbolSearch({ isOpen, onClose, onSelect, onOpenOptionsC
       return () => clearTimeout(t);
     }
   }, [isOpen, initialQuery]);
+
+  // Prune Recent Searches against the live symbol list. A dated future/option
+  // (e.g. a monthly contract) that has since expired and been pruned
+  // server-side would otherwise sit in localStorage forever — or until
+  // pushed out by MAX_RECENT newer searches — and clicking it would send an
+  // expired/invalid symbol straight to the chart, failing the exact same way
+  // a stale dated MCX/NSE contract request does elsewhere in the app.
+  // Equities/indices never expire, so this only ever drops genuinely dead
+  // dated contracts, never a real symbol.
+  useEffect(() => {
+    if (isOpen && symbols.length > 0) {
+      const validSymbols = new Set(symbols.map(s => s.symbol));
+      setRecent(prev => {
+        const pruned = prev.filter(s => validSymbols.has(s.symbol));
+        if (pruned.length !== prev.length) {
+          try { localStorage.setItem(RECENT_KEY, JSON.stringify(pruned)); } catch { }
+        }
+        return pruned;
+      });
+    }
+  }, [isOpen, symbols]);
 
   // Live search filter
   useEffect(() => {

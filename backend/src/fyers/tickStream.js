@@ -19,6 +19,15 @@
  * RULE:
  *   Tick stream (WebSocket) → only when isLiveMarket() is true
  *   REST fetch / cache      → always works, any time, any day
+ *
+ * IMPORTANT — the MARKET_HOURS constants and isLiveMarket()/isMCXSymbol() logic
+ * below intentionally have a second copy in frontend/src/hooks/useSocket.js
+ * (isLiveMarketFrontend(), used only to gate that file's REST poll fallback
+ * timer). Browser code can't require() this Node module, and the two apps
+ * deploy separately (frontend → Vercel, backend → Cloudflare), so a shared
+ * npm package would be the "real" fix — until then, if you change the hours
+ * here, update useSocket.js too. Same pattern as backend/src/data/holidays.js
+ * vs frontend/src/utils/holidayCalendar.js.
  * ─────────────────────────────────────────────────────────────────
  */
 
@@ -128,6 +137,22 @@ class TickStream extends EventEmitter {
     this._reconnTimer = null;
     this._userStopped = false;
     this._lastTickTime = 0;
+    // REENTRANCY GUARD — fixes the "double tick-stream connect" boot race.
+    // server.js has two independent callers that can both reach start() before
+    // either has finished connecting: maybeStartTickStream() (server boot) and
+    // updateTickSubscription() (fires the instant a client emits set_symbol).
+    // Both check isConnected() first, but updateTickSubscription() does an
+    // `await validateToken()` BEFORE calling start() — that await is a yield
+    // point, so both callers can see isConnected() === false and both go on
+    // to call start(), with the second call overwriting this._socket while
+    // the first connection attempt is still in flight (orphaning it — its
+    // event handlers stay attached and later fire a stray "Socket error").
+    // _connecting closes that window: it's true for the entire time between
+    // "we decided to open a socket" and "that socket connected, errored, or
+    // closed", so a second start() call landing anywhere in that window is a
+    // safe no-op that just refreshes the symbol list instead of opening a
+    // second socket.
+    this._connecting = false;
   }
 
   /** Start streaming ticks for the given symbols. */
@@ -138,6 +163,20 @@ class TickStream extends EventEmitter {
     }
     this._symbols = symbols;
     this._userStopped = false;
+
+    // Already connected, or a connection attempt is already in flight —
+    // don't open a second socket. Just make sure the live/incoming socket
+    // ends up with the latest symbol list.
+    if (this.isConnected()) {
+      this.setSymbols(symbols);
+      return;
+    }
+    if (this._connecting) {
+      // _onConnect() reads this._symbols (already updated above) when the
+      // in-flight connection completes, so nothing further to do here.
+      return;
+    }
+
     this._running = true;
     this._reconnects = 0;
     this._connect();
@@ -147,6 +186,7 @@ class TickStream extends EventEmitter {
   stop() {
     this._userStopped = true;
     this._running = false;
+    this._connecting = false;
     if (this._reconnTimer) {
       clearTimeout(this._reconnTimer);
       this._reconnTimer = null;
@@ -174,14 +214,18 @@ class TickStream extends EventEmitter {
   // ── Private ───────────────────────────────────────────────────────────────
 
   _connect() {
+    this._connecting = true;
+
     const token = loadToken();
     if (!token) {
       console.warn("[TickStream] No access token — cannot start WebSocket.");
+      this._connecting = false;
       return;
     }
     const appId = process.env.APP_ID;
     if (!appId) {
       console.warn("[TickStream] APP_ID missing — cannot start WebSocket.");
+      this._connecting = false;
       return;
     }
 
@@ -215,6 +259,7 @@ class TickStream extends EventEmitter {
       console.log("[TickStream] Connecting to Fyers data socket (LiteMode)…");
     } catch (err) {
       console.error("[TickStream] Connect error:", err.message);
+      this._connecting = false;
       this._scheduleReconnect();
     }
   }
@@ -227,6 +272,7 @@ class TickStream extends EventEmitter {
   }
 
   _onConnect() {
+    this._connecting = false;
     this._reconnects = 0;
     console.log(`[TickStream] Connected ✓ Subscribing to: ${this._symbols.join(", ")}`);
     try {
@@ -281,25 +327,13 @@ class TickStream extends EventEmitter {
   }
 
   _onError(err) {
-    // Cloudflare/Fyers rate-limit (HTTP 429 / error_code 1015)
-    // The error payload includes retry_after in seconds — respect it.
-    const retryAfterS = err?.retry_after || err?.retryAfter;
-    if (retryAfterS && Number.isFinite(Number(retryAfterS))) {
-      const waitMs = Number(retryAfterS) * 1000 + 2000; // add 2s safety margin
-      console.warn(`[TickStream] Rate-limited (429) — pausing ${retryAfterS}s before next reconnect.`);
-      this._userStopped = true;   // prevent _onClose from firing another reconnect
-      setTimeout(() => {
-        this._userStopped = false;
-        if (isAnyMarketLive(this._symbols)) this._connect();
-        else console.log(`[TickStream] Rate-limit backoff finished but market is closed — not reconnecting.`);
-      }, waitMs);
-    } else {
-      console.error("[TickStream] Socket error:", err?.message || err);
-    }
+    this._connecting = false;
+    console.error("[TickStream] Socket error:", err?.message || err);
     this.emit("error", err);
   }
 
   _onClose() {
+    this._connecting = false;
     console.log("[TickStream] Socket closed.");
     this.emit("disconnected");
     if (!this._userStopped && this._running) {
@@ -309,25 +343,14 @@ class TickStream extends EventEmitter {
 
   _scheduleReconnect() {
     if (this._userStopped) return;
-
-    // ── Market-closed guard ────────────────────────────────────────────────
-    // If no subscribed symbol has an open market right now, stop reconnecting.
-    // This prevents the endless reconnect storm seen on holidays / after 15:30.
-    // MCX symbols keep reconnecting after NSE close (their market stays open).
-    if (this._symbols.length > 0 && !isAnyMarketLive(this._symbols)) {
-      console.log(`[TickStream] Market closed — not reconnecting. Will restart when market opens.`);
-      this._running = false;
-      return;
-    }
-
     if (this._reconnects >= MAX_RECONNECT) {
       console.warn("[TickStream] Max reconnects reached — giving up.");
       this._running = false;
       return;
     }
     this._reconnects++;
-    // Exponential backoff: 3s, 6s, 12s, 24s, 60s (capped at 60s)
-    const delay = Math.min(RECONNECT_DELAY_MS * Math.pow(2, this._reconnects - 1), 60_000);
+    // Exponential backoff: 3s, 6s, 9s, 12s, 15s (capped)
+    const delay = RECONNECT_DELAY_MS * Math.min(this._reconnects, 5);
     console.log(`[TickStream] Reconnecting in ${delay / 1000}s (attempt ${this._reconnects})…`);
     this._reconnTimer = setTimeout(() => {
       this._disconnect();

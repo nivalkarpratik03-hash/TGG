@@ -30,6 +30,16 @@ const { fetchCandles } = require("../fyers/client");
 const strategies = require("../strategies/strategyRegistry");
 const { detectMotherWaveForAPI, calcTrapZone, classifyZone } = require("./motherwave");
 
+// ─── DB (optional) ────────────────────────────────────────────────────────────
+let db = null;
+let dbEnabled = false;
+try {
+  db = require("../../../database/src/index");
+  dbEnabled = true;
+} catch { /* DB optional — runs Fyers-only if not available */ }
+
+const { deriveTimeframe } = require("./candleBuilder");
+
 // ─── Config ───────────────────────────────────────────────────────────────────
 const CONCURRENCY = parseInt(process.env.SCANNER_CONCURRENCY || "3");
 const BATCH_DELAY_MS = parseInt(process.env.SCANNER_BATCH_DELAY_MS || "1000");
@@ -37,12 +47,10 @@ const DEFAULT_RESOLUTION = parseInt(process.env.SCANNER_RESOLUTION || "15");
 const RETRY_LIMIT = 5;
 
 // ─── Symbol filter ────────────────────────────────────────────────────────────
-function isValidScanSymbol(symbol) {
-  if (!symbol) return false;
-  const s = String(symbol).trim().toUpperCase();
-  if (s.startsWith("MCX:") && /-I$/.test(s.split(":")[1] || "")) return false;
-  return true;
-}
+// P3 #18 — shared with backtestRunner.js via ../utils/symbolValidation.js.
+// Aliased to the existing local name so the two call sites below don't need
+// to change.
+const { isValidSymbol: isValidScanSymbol } = require("../utils/symbolValidation");
 
 // ─── ScannerRunner ────────────────────────────────────────────────────────────
 class ScannerRunner extends EventEmitter {
@@ -168,7 +176,30 @@ class ScannerRunner extends EventEmitter {
   // ── Process one symbol — fetch candles ONCE, run all strategies ───────────────
   async _processSymbol(symbol, isRetry = false, resolution = DEFAULT_RESOLUTION) {
     try {
-      const candles = await fetchCandles(symbol, resolution, 5000);
+      // ── DB-first: read from Postgres, fall back to Fyers if empty ─────────
+      let candles = null;
+
+      if (dbEnabled && db) {
+        try {
+          const windowMs = 90 * 24 * 60 * 60 * 1000;
+          const oneMin = await db.loadCandles(symbol, 1, {
+            from: new Date(Date.now() - windowMs),
+            to: new Date(),
+            limit: 50000,
+          });
+          if (oneMin && oneMin.length > 0) {
+            candles = resolution === 1 ? oneMin : deriveTimeframe(oneMin, resolution);
+            if (!candles || candles.length === 0) candles = null;
+          }
+        } catch (dbErr) {
+          console.warn(`[Scanner] DB read failed for ${symbol}: ${dbErr.message} — trying Fyers`);
+        }
+      }
+
+      if (!candles) {
+        candles = await fetchCandles(symbol, resolution, 5000);
+      }
+
       this._errors.delete(symbol);
 
       // ── Compute Mother Wave ONCE for this symbol ───────────────────────────

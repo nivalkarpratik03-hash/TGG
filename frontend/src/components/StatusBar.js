@@ -1,5 +1,5 @@
 // StatusBar.js
-import React, { memo } from "react";
+import React, { memo, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTheme } from "../App";
 import { LayoutPicker } from "./layout/LayoutPicker";
@@ -19,8 +19,9 @@ function fmt(n) {
 //   onSymbolChange, onResolutionChange
 //   onOpenSearch                                 — callback to open SymbolSearch (managed by ChartPanel)
 //   todayMode, onTodayToggle                     — today filter
-//   crosshairBar                                 — OHLC display
-//   onSidebarToggle                              — sidebar toggle
+//   crosshairBar (initial value, ref read)       — OHLC display seed
+//   onCrosshairBarUpdate                         — registers an imperative update fn so StatusBar
+//                                                  manages its own crosshair state (no ChartPanel re-render)
 //   tickStreamActive                             — (unused, kept for back-compat)
 //   layoutId, onLayoutChange                     — layout picker (primary panel only)
 //   indicators, onIndicatorChange                — indicator panel
@@ -31,8 +32,8 @@ function StatusBar({
   onSymbolChange, onResolutionChange,
   onOpenSearch,
   todayMode, onTodayToggle,
-  crosshairBar,
-  onSidebarToggle,
+  crosshairBar: crosshairBarProp,
+  onCrosshairBarUpdate,
   tickStreamActive,
   ticksFlowing,
   layoutId,
@@ -42,6 +43,12 @@ function StatusBar({
 }) {
   const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
+
+  // Manage crosshair state internally so ChartPanel doesn't re-render on mouse moves.
+  const [crosshairBar, setCrosshairBar] = useState(crosshairBarProp ?? null);
+  useEffect(() => {
+    if (onCrosshairBarUpdate) onCrosshairBarUpdate(setCrosshairBar);
+  }, [onCrosshairBarUpdate]);
 
   const lastCandle = chartData?.candles?.at(-1);
   const displayBar = crosshairBar
@@ -181,8 +188,6 @@ function StatusBar({
           {" "}REFRESH
         </button>
 
-        {/* Sidebar toggle */}
-        <button onClick={onSidebarToggle} style={S.actionBtn} title="Toggle signals / stats panel">☰</button>
 
       </div>
     </header>

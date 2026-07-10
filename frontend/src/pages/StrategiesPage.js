@@ -18,7 +18,7 @@ import React, {
   useState, useEffect, useCallback, useRef, useMemo
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { io } from "socket.io-client";
+import { createBackendSocket } from "../utils/backendSocket";
 import { BACKEND } from "../config";
 import { useTheme } from "../App";
 import "../styles/StrategiesPage.css";
@@ -405,7 +405,7 @@ function StrategyPicker({ strategies, lastScan, status }) {
   useEffect(() => { fetchResults(selectedId); }, [selectedId, fetchResults]);
 
   useEffect(() => {
-    const sock = io(BACKEND, { transports: ["websocket"] });
+    const sock = createBackendSocket();
     socketRef.current = sock;
     sock.on("scanner_complete", (d) => {
       setLocalLastScan(d.scannedAt);

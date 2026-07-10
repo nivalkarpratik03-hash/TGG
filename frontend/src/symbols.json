@@ -8,10 +8,6 @@
         "symbol": "NSE:NIFTYBANK-INDEX"
     },
     {
-        "name": "NIFTY IT",
-        "symbol": "NSE:CNXIT-INDEX"
-    },
-    {
         "name": "SENSEX",
         "symbol": "BSE:SENSEX-INDEX"
     },

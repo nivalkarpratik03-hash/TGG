@@ -37,18 +37,8 @@
 "use strict";
 
 // ─── EMA helper ───────────────────────────────────────────────────────────────
-function calcEMA(prices, period) {
-  const k = 2 / (period + 1);
-  const out = new Array(prices.length).fill(null);
-  let ema = null;
-  for (let i = 0; i < prices.length; i++) {
-    const p = prices[i];
-    if (p == null || isNaN(p)) continue;
-    ema = ema === null ? p : p * k + ema * (1 - k);
-    out[i] = ema;
-  }
-  return out;
-}
+// Single source of truth — see backend/src/services/indicatorMath.js
+const { calcEMA } = require("./indicatorMath");
 
 // ─── Wave segment computation (matches WavesIndicator.js) ─────────────────────
 function computeSegments(candles) {

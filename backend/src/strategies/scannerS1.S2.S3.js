@@ -28,19 +28,8 @@
 
 "use strict";
 
-// ─── EMA helper ───────────────────────────────────────────────────────────────
-function calcEMA(prices, period) {
-  const k = 2 / (period + 1);
-  const out = new Array(prices.length).fill(null);
-  let ema = null;
-  for (let i = 0; i < prices.length; i++) {
-    const p = prices[i];
-    if (p == null || isNaN(p)) continue;
-    ema = ema === null ? p : p * k + ema * (1 - k);
-    out[i] = ema;
-  }
-  return out;
-}
+// ─── EMA helper — single source of truth: backend/src/services/indicatorMath.js
+const { calcEMA } = require("../services/indicatorMath");
 
 // ─── Fib price helper (matches FibDashboardPage computeFibLevels) ─────────────
 // price(ratio) = toPrice + ratio × (fromPrice − toPrice)
