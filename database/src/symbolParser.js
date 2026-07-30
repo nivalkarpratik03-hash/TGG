@@ -25,12 +25,35 @@
  *   Monthly option : ROOT + YY + MON(3-letter) + STRIKE + CE/PE   e.g. NIFTY26JUL24000CE
  *   Weekly option  : ROOT + YY + monthChar(1) + DD + STRIKE + CE/PE  e.g. NIFTY26712000CE
  *                    (weekly month char: 1-9=Jan-Sep, O=Oct, N=Nov, D=Dec —
- *                    weekly expiries only exist for NIFTY on this platform)
+ *                    on NSE this is restricted to NIFTY; on BSE, to SENSEX
+ *                    — see the BSE WEEKLY CAVEAT note below)
  *
- * Returns null for anything that isn't a dated NSE/MCX option or future —
- * spot indices/equities (-EQ, -INDEX), MCX continuous root tickers (-I),
- * and anything unrecognized all return null and should keep going into
- * the existing `candles` table untouched.
+ * Returns null for anything that isn't a dated NSE/MCX/BSE option or
+ * future — spot indices/equities (-EQ, -INDEX), MCX continuous root
+ * tickers (-I), and anything unrecognized all return null and should keep
+ * going into the existing `candles` table untouched.
+ *
+ * BSE SUPPORT — added for SENSEX derivatives, which previously had no
+ * exchange match here at all (fell through to null → miscategorized into
+ * the plain `candles` table via dataRouter.js's default path).
+ *   - Monthly + futures: HIGH CONFIDENCE. Same ROOT+YY+MON(+STRIKE+CE/PE)
+ *     structure already used identically for NSE/MCX elsewhere in this
+ *     file — this is a broker-wide Fyers convention, not BSE-specific
+ *     guesswork. Monthly expiry day uses lastThursdayOfMonth() for BSE
+ *     (BSE SENSEX monthly = last Thursday, confirmed via NSE/BSE circular
+ *     research during this project's design phase — distinct from NSE's
+ *     last-Tuesday rule).
+ *   - BSE WEEKLY CAVEAT — LOWER CONFIDENCE, FLAGGED, NOT SILENTLY TRUSTED:
+ *     a real live Fyers BSE weekly symbol was found during research
+ *     (`BSE:SENSEX2410571800PE`), but its exact digit-encoding could not
+ *     be independently confirmed against a known real expiry date with
+ *     full confidence from that single example alone. This parser
+ *     currently assumes BSE weekly options reuse the exact same
+ *     YY+monthChar+DD scheme as NSE weekly (same OPT_WK_RE regex, same
+ *     WEEKLY_MONTH_CHARS table), restricted to root === "SENSEX". This is
+ *     a stated ASSUMPTION, not a verified fact — before relying on this
+ *     in production, confirm it against a real BSE:SENSEX weekly symbol
+ *     paired with its actual known expiry date.
  *
  * EXPIRY-DATE CALCULATION — exact day, not just month:
  *   - NSE monthly: last Tuesday of the contract month (NSE circular
@@ -39,6 +62,14 @@
  *     backend/src/routes/symbolsRouter.js.
  *   - NSE weekly (NIFTY only): the exact year/month/day encoded in the
  *     symbol, rolled back to the previous trading day if it's a holiday.
+ *   - BSE monthly (SENSEX): last Thursday of the contract month, rolled
+ *     back to the previous trading day if that Thursday is a holiday.
+ *     BSE and NSE share the same equity/index holiday calendar
+ *     (holidays.js), so previousTradingDay(date, "BSE") behaves
+ *     identically to the "NSE" case there — kept as a distinct exchange
+ *     argument for clarity/traceability, not because the calendar differs.
+ *   - BSE weekly (SENSEX) — see "BSE WEEKLY CAVEAT" above; encoding
+ *     assumed identical to NSE weekly, not independently confirmed.
  *   - MCX: per-commodity approximate expiry day-of-month (MCX_EXPIRY_DAY
  *     below — mirrors the table in symbolsRouter.js), rolled back to the
  *     previous trading day if that day is a holiday. MCX does not publish
@@ -90,6 +121,13 @@ function lastTuesdayOfMonth(year, month) {
   return d;
 }
 
+/** Last Thursday of `month` (0-based) in `year`, at midnight local time. */
+function lastThursdayOfMonth(year, month) {
+  const d = lastCalendarDayOfMonth(year, month);
+  while (d.getDay() !== 4) d.setDate(d.getDate() - 1);
+  return d;
+}
+
 function toDateOnly(d) {
   const out = new Date(d);
   out.setHours(0, 0, 0, 0);
@@ -112,6 +150,10 @@ function computeMonthlyExpiry(exchange, root, year, month) {
     const raw = lastTuesdayOfMonth(year, month);
     return { date: previousTradingDay(raw, "NSE"), approximate: false };
   }
+  if (exchange === "BSE") {
+    const raw = lastThursdayOfMonth(year, month);
+    return { date: previousTradingDay(raw, "BSE"), approximate: false };
+  }
   // MCX
   const approxDay = MCX_EXPIRY_DAY[root];
   if (approxDay) {
@@ -127,9 +169,9 @@ function computeMonthlyExpiry(exchange, root, year, month) {
  * Compute the exact expiry_date for a weekly (NIFTY-only) contract.
  * @returns {{date: Date, approximate: boolean}}
  */
-function computeWeeklyExpiry(year, month, day) {
+function computeWeeklyExpiry(year, month, day, exchange = "NSE") {
   const raw = toDateOnly(new Date(year, month, day));
-  return { date: previousTradingDay(raw, "NSE"), approximate: false };
+  return { date: previousTradingDay(raw, exchange), approximate: false };
 }
 
 /**
@@ -158,7 +200,7 @@ function parseDerivativeSymbol(fullSymbol) {
   const exchange = fullSymbol.slice(0, colonIdx);
   const ticker = fullSymbol.slice(colonIdx + 1);
 
-  if (exchange !== "NSE" && exchange !== "MCX") return null;
+  if (exchange !== "NSE" && exchange !== "MCX" && exchange !== "BSE") return null;
 
   // Spot tickers (equities/indices/continuous-root) never carry expiry —
   // let them fall straight through to the existing `candles` table.
@@ -206,20 +248,25 @@ function parseDerivativeSymbol(fullSymbol) {
     };
   }
 
-  // ── Weekly options (NIFTY only, NSE only) ───────────────────────────
-  // Weekly expiries only exist for NIFTY on this platform (see header) —
-  // restricting the root here, not just relying on real-world data never
-  // producing this shape for other underlyings, so the invariant is
-  // actually enforced rather than assumed.
-  if (exchange === "NSE") {
+  // ── Weekly options ───────────────────────────────────────────────────
+  // On NSE, weekly expiries only exist for NIFTY on this platform (see
+  // header) — restricting the root here, not just relying on real-world
+  // data never producing this shape for other underlyings, so the
+  // invariant is actually enforced rather than assumed.
+  // On BSE, weekly is restricted to SENSEX the same way — see the
+  // "BSE WEEKLY CAVEAT" note in the header: the digit-encoding is
+  // ASSUMED identical to NSE weekly's, not independently confirmed
+  // against a known real expiry date. Flagged, not silently trusted.
+  if (exchange === "NSE" || exchange === "BSE") {
+    const weeklyRoot = exchange === "NSE" ? "NIFTY" : "SENSEX";
     m = OPT_WK_RE.exec(ticker);
-    if (m && m[1] === "NIFTY") {
+    if (m && m[1] === weeklyRoot) {
       const [, root, yy, monChar, ddStr, strikeStr, optType] = m;
       const monthIdx = WEEKLY_MONTH_CHARS.indexOf(monChar);
       const day = parseInt(ddStr, 10);
       if (monthIdx < 0 || day < 1 || day > 31) return null;
       const year = 2000 + parseInt(yy, 10);
-      const { date, approximate } = computeWeeklyExpiry(year, monthIdx, day);
+      const { date, approximate } = computeWeeklyExpiry(year, monthIdx, day, exchange);
       return {
         symbol: fullSymbol,
         exchange,
@@ -230,6 +277,11 @@ function parseDerivativeSymbol(fullSymbol) {
         strike: parseFloat(strikeStr),
         option_type: optType,
         expiryApproximate: approximate,
+        // Only present (and true) for BSE weekly — surfaces the parsing
+        // caveat at the data level too, not just in code comments, so
+        // anything consuming this can choose to treat it with caution
+        // (e.g. flag for manual spot-check) until independently confirmed.
+        ...(exchange === "BSE" ? { expiryEncodingUnverified: true } : {}),
       };
     }
   }
@@ -242,5 +294,6 @@ module.exports = {
   // exported for unit tests / debugging only:
   computeMonthlyExpiry,
   computeWeeklyExpiry,
+  lastThursdayOfMonth,
   MCX_EXPIRY_DAY,
-};
+};   

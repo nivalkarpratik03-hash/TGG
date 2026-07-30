@@ -1,0 +1,143 @@
+{
+  "_readme": "Which underlyings get ATM+-4 options tracking. Every value sourced from an actual confirmation in this project's build log (real Fyers/MCX screenshots, NSE circular 111/2025, or the commodities desk) - never guessed. Where something is still open, see openItems below rather than a filled-in best guess. The ~200 individual NSE equities are NOT listed here by hand - they're derived at load time from backend/src/data/noExpirySymbols.json (see curatedUnderlyingsLoader.js) to avoid two lists silently drifting apart. Every equity uses the same rule: single monthly cycle, NSE, last Tuesday.",
+
+  "indices": [
+    {
+      "underlying": "NIFTY",
+      "assetClass": "INDEX",
+      "exchange": "NSE",
+      "spotSymbol": "NSE:NIFTY50-INDEX",
+      "expiryTypes": ["weekly", "monthly"],
+      "expiryDayRule": { "exchange": "NSE", "weekly": "every Tuesday", "monthly": "last Tuesday" },
+      "mcxAtmReference": null,
+      "strikeGap": null,
+      "notes": "Only NSE index with a live weekly cycle (SEBI Oct-2024 circular limits each exchange to one weekly-expiry benchmark; NSE picked NIFTY). Spot symbol confirmed via INDEX_ROOT_TO_SYMBOL in server.js. Expiry day rule confirmed via NSE circular 111/2025 (effective 1-Sep-2025)."
+    },
+    {
+      "underlying": "BANKNIFTY",
+      "assetClass": "INDEX",
+      "exchange": "NSE",
+      "spotSymbol": "NSE:NIFTYBANK-INDEX",
+      "expiryTypes": ["monthly"],
+      "expiryDayRule": { "exchange": "NSE", "monthly": "last Tuesday" },
+      "mcxAtmReference": null,
+      "strikeGap": null,
+      "notes": "Weekly discontinued Nov 2024 per SEBI's one-weekly-per-exchange rule. Spot symbol confirmed via INDEX_ROOT_TO_SYMBOL in server.js."
+    },
+    {
+      "underlying": "FINNIFTY",
+      "assetClass": "INDEX",
+      "exchange": "NSE",
+      "spotSymbol": "NSE:CNXFINANCE-INDEX",
+      "expiryTypes": ["monthly"],
+      "expiryDayRule": { "exchange": "NSE", "monthly": "last Tuesday" },
+      "mcxAtmReference": null,
+      "strikeGap": null,
+      "notes": "Monthly only. Spot symbol confirmed via INDEX_ROOT_TO_SYMBOL in server.js -- not guessed."
+    },
+    {
+      "underlying": "MIDCPNIFTY",
+      "assetClass": "INDEX",
+      "exchange": "NSE",
+      "spotSymbol": "NSE:MIDCPNIFTY-INDEX",
+      "expiryTypes": ["monthly"],
+      "expiryDayRule": { "exchange": "NSE", "monthly": "last Tuesday" },
+      "mcxAtmReference": null,
+      "strikeGap": null,
+      "notes": "Monthly only. Spot symbol confirmed via INDEX_ROOT_TO_SYMBOL in server.js -- not guessed."
+    },
+    {
+      "underlying": "SENSEX",
+      "assetClass": "INDEX",
+      "exchange": "BSE",
+      "spotSymbol": "BSE:SENSEX-INDEX",
+      "expiryTypes": ["weekly", "monthly"],
+      "expiryDayRule": { "exchange": "BSE", "weekly": "every Thursday", "monthly": "last Thursday" },
+      "mcxAtmReference": null,
+      "strikeGap": null,
+      "notes": "BSE's single weekly-expiry benchmark (mirrors NIFTY's role on NSE). WEEKLY OPTION SYMBOL ENCODING STILL FLAGGED UNVERIFIED in symbolParser.js (expiryEncodingUnverified:true on parse) -- this entry does not resolve that, only the expiry-day rule."
+    }
+  ],
+
+  "commodities": [
+    {
+      "underlying": "CRUDEOILM",
+      "assetClass": "COMMODITY",
+      "exchange": "MCX",
+      "spotSymbol": null,
+      "hasOptions": true,
+      "hasFutures": true,
+      "expiryTypes": ["monthly"],
+      "mcxAtmReference": "own_futures",
+      "strikeGap": 50,
+      "notes": "Fut+opt symbols confirmed via live Fyers screenshot (MCX:CRUDEOILM26AUGFUT, MCX:CRUDEOILM26AUG7900CE). Gap + ATM reference confirmed by commodities desk. No Saturday session, single cycle -- confirmed."
+    },
+    {
+      "underlying": "NATGASMINI",
+      "assetClass": "COMMODITY",
+      "exchange": "MCX",
+      "spotSymbol": null,
+      "hasOptions": true,
+      "hasFutures": true,
+      "expiryTypes": ["monthly"],
+      "mcxAtmReference": "own_futures",
+      "strikeGap": 5,
+      "notes": "Fut+opt symbols + strike gap confirmed via live Fyers screenshot (MCX:NATGASMINI26JULFUT, MCX:NATGASMINI26JUL280CE / 285CE -- 5-point spacing visible directly). ATM reference confirmed by commodities desk. No Saturday session, single cycle -- confirmed."
+    },
+    {
+      "underlying": "SILVERM",
+      "assetClass": "COMMODITY",
+      "exchange": "MCX",
+      "spotSymbol": null,
+      "hasOptions": true,
+      "hasFutures": true,
+      "expiryTypes": ["monthly"],
+      "mcxAtmReference": "own_futures",
+      "strikeGap": 250,
+      "notes": "OPTIONS-ONLY TRACKING TARGET -- Silver Micro (SILVERMIC, the contract actually traded for capital efficiency) has NO listed options; SILVERM's options are used instead, confirmed by commodities desk. Strike gap CORRECTED to 250 after live MCX option-chain screenshot showed consecutive strikes 224000/224250/224500/... -- an earlier '1000' figure (from desk + a flawed single-symbol-search check) was wrong and is superseded by this direct screenshot evidence. ATM reference confirmed via the same screenshot (SILVERMQ2026 marker sitting on the futures price line between strikes)."
+    },
+    {
+      "underlying": "GOLDM",
+      "assetClass": "COMMODITY",
+      "exchange": "MCX",
+      "spotSymbol": null,
+      "hasOptions": true,
+      "hasFutures": true,
+      "expiryTypes": ["monthly"],
+      "mcxAtmReference": "own_futures",
+      "strikeGap": 500,
+      "notes": "OPTIONS-ONLY TRACKING TARGET -- Gold Petal (GOLDPETAL, the contract actually traded) has NO listed options; GOLDM's options are used instead, confirmed by commodities desk. Strike gap 500 confirmed 3 independent ways: desk figure, live Fyers search for the specific strike 148500, and a live MCX option-chain screenshot showing consecutive 500-spaced strikes. ATM reference confirmed via the same screenshot (GOLDMQ2026 marker on the futures price line)."
+    },
+    {
+      "underlying": "SILVERMIC",
+      "assetClass": "COMMODITY",
+      "exchange": "MCX",
+      "spotSymbol": null,
+      "hasOptions": false,
+      "hasFutures": true,
+      "expiryTypes": [],
+      "mcxAtmReference": null,
+      "strikeGap": null,
+      "notes": "FUTURES-ONLY. No options exist for this contract -- confirmed by commodities desk and MCX's own product list (Options page lists Silver Mini, not Silver Micro). Not part of the ATM merge-check at all; only needs the separate current+next-month futures roll (not yet built)."
+    },
+    {
+      "underlying": "GOLDPETAL",
+      "assetClass": "COMMODITY",
+      "exchange": "MCX",
+      "spotSymbol": null,
+      "hasOptions": false,
+      "hasFutures": true,
+      "expiryTypes": [],
+      "mcxAtmReference": null,
+      "strikeGap": null,
+      "notes": "FUTURES-ONLY. No options exist for this contract -- confirmed by commodities desk and MCX's own product list. Not part of the ATM merge-check at all; only needs the separate current+next-month futures roll (not yet built)."
+    }
+  ],
+
+  "atmBandWidth": 4,
+
+  "openItems": [
+    "SILVERM single-active-cycle status: inferred from the MCX option-chain screenshot showing one expiry-per-month rolling list (Jul/Aug/Sep/...), same shape as GOLDM's confirmed single cycle, but not independently stated by the desk the way GOLDM's cycle was implied. Treat as high-confidence, not fully independently confirmed.",
+    "Exact options-vs-futures expiry day offset for all 4 commodities: NOT needed for correctness (expiry dates are always fetched live via fetchOptionChain, never computed from an offset) -- recorded here only so nobody re-opens this as a blocker later."
+  ]
+}

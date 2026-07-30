@@ -20,6 +20,12 @@
  *      was written, for both a spot and a derivative symbol.
  *   6. Two different option contracts on the same underlying+expiry+time
  *      but different strikes do NOT collide (PK correctness check).
+ *   7. BSE option/future symbols route to bse_options_candles /
+ *      bse_futures_candles — not `candles`, not the NSE tables (migration
+ *      004 + symbolParser.js BSE support).
+ *   8. Open Interest (oi) is captured and read back correctly on write,
+ *      defaults to NULL when omitted, and works on MCX options too
+ *      (which have no expiry_type column but do have oi).
  *
  * Cleans up every row it inserts at the end, regardless of pass/fail.
  */
@@ -56,11 +62,15 @@ const SPOT_SYMBOL = "NSE:RELIANCE-EQ";
 const OPTION_SYMBOL = "NSE:NIFTY26JUL24000CE";
 const OPTION_SYMBOL_2 = "NSE:NIFTY26JUL24500CE"; // different strike, same underlying/expiry/time
 const FUTURE_SYMBOL = "MCX:CRUDEOILM26AUGFUT";
+const BSE_OPTION_SYMBOL = "BSE:SENSEX26JUL80000CE";
+const BSE_FUTURE_SYMBOL = "BSE:SENSEX26JULFUT";
 
 async function cleanup() {
   await query("DELETE FROM candles WHERE symbol=$1 AND time=to_timestamp($2/1000.0)", [SPOT_SYMBOL, T]);
   await query("DELETE FROM nse_options_candles WHERE symbol = ANY($1) AND time=to_timestamp($2/1000.0)", [[OPTION_SYMBOL, OPTION_SYMBOL_2], T]);
   await query("DELETE FROM mcx_futures_candles WHERE symbol=$1 AND time=to_timestamp($2/1000.0)", [FUTURE_SYMBOL, T]);
+  await query("DELETE FROM bse_options_candles WHERE symbol=$1 AND time=to_timestamp($2/1000.0)", [BSE_OPTION_SYMBOL, T]);
+  await query("DELETE FROM bse_futures_candles WHERE symbol=$1 AND time=to_timestamp($2/1000.0)", [BSE_FUTURE_SYMBOL, T]);
 }
 
 async function main() {
@@ -165,6 +175,96 @@ async function main() {
     const viaStore = await derivativesStore.countDerivativeCandles("NSE", "option", OPTION_SYMBOL);
     const viaQuery = await query("SELECT COUNT(*) AS cnt FROM nse_options_candles WHERE symbol=$1", [OPTION_SYMBOL]);
     assert.strictEqual(viaStore, parseInt(viaQuery[0].cnt, 10));
+  });
+
+  console.log("\n[integration.test] ── BSE routing (new — migration 004) ──────");
+
+  await check("BSE option symbol routes to bse_options_candles, not `candles` or nse_options_candles", async () => {
+    const candle = { time: T, open: 800, high: 820, low: 790, close: 810, volume: 150 };
+    const n = await router.upsertCandles(BSE_OPTION_SYMBOL, 1, [candle]);
+    assert.strictEqual(n, 1);
+
+    const inBse = await query("SELECT * FROM bse_options_candles WHERE symbol=$1 AND time=to_timestamp($2/1000.0)", [BSE_OPTION_SYMBOL, T]);
+    assert.strictEqual(inBse.length, 1);
+    assert.strictEqual(inBse[0].underlying, "SENSEX");
+    assert.strictEqual(Number(inBse[0].strike), 80000);
+    assert.strictEqual(inBse[0].option_type, "CE");
+    assert.strictEqual(inBse[0].expiry_type, "monthly", "BSE options must carry expiry_type, same as NSE — only MCX options omit it");
+
+    const inCandles = await query("SELECT * FROM candles WHERE symbol=$1 AND time=to_timestamp($2/1000.0)", [BSE_OPTION_SYMBOL, T]);
+    assert.strictEqual(inCandles.length, 0, "must NOT fall through to the spot table — this was the confirmed bug before migration 004 + symbolParser BSE support");
+
+    const inNse = await query("SELECT * FROM nse_options_candles WHERE symbol=$1 AND time=to_timestamp($2/1000.0)", [BSE_OPTION_SYMBOL, T]);
+    assert.strictEqual(inNse.length, 0, "must NOT land in the NSE table either — BSE has its own table");
+  });
+
+  await check("BSE future symbol routes to bse_futures_candles", async () => {
+    const candle = { time: T, open: 81000, high: 81200, low: 80800, close: 81050, volume: 900 };
+    const n = await router.upsertCandles(BSE_FUTURE_SYMBOL, 1, [candle]);
+    assert.strictEqual(n, 1);
+
+    const inBse = await query("SELECT * FROM bse_futures_candles WHERE symbol=$1 AND time=to_timestamp($2/1000.0)", [BSE_FUTURE_SYMBOL, T]);
+    assert.strictEqual(inBse.length, 1);
+    assert.strictEqual(inBse[0].underlying, "SENSEX");
+  });
+
+  await check("router.getLatestCandle / loadCandles read back BSE rows correctly", async () => {
+    const latest = await router.getLatestCandle(BSE_OPTION_SYMBOL, 1);
+    assert.ok(latest);
+    assert.strictEqual(latest.close, 810);
+
+    const rows = await router.loadCandles(BSE_FUTURE_SYMBOL, 1, { from: T, to: T });
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].close, 81050);
+  });
+
+  console.log("\n[integration.test] ── Open Interest capture (new — migration 004) ──");
+
+  await check("oi is stored and read back correctly for a new option row", async () => {
+    const withOi = { time: T + 60000, open: 55, high: 58, low: 53, close: 56, volume: 300, oi: 184300 };
+    const n = await router.upsertCandles(OPTION_SYMBOL, 1, [withOi]);
+    assert.strictEqual(n, 1);
+
+    const row = await query("SELECT oi FROM nse_options_candles WHERE symbol=$1 AND time=to_timestamp($2/1000.0)", [OPTION_SYMBOL, T + 60000]);
+    assert.strictEqual(Number(row[0].oi), 184300);
+
+    const latest = await router.getLatestCandle(OPTION_SYMBOL, 1);
+    assert.strictEqual(latest.oi, 184300, "router.getLatestCandle must surface oi, not silently drop it");
+
+    await query("DELETE FROM nse_options_candles WHERE symbol=$1 AND time=to_timestamp($2/1000.0)", [OPTION_SYMBOL, T + 60000]);
+  });
+
+  await check("oi defaults to NULL when omitted (backward compatible with rows that never carried it)", async () => {
+    const withoutOi = { time: T + 120000, open: 55, high: 58, low: 53, close: 56, volume: 300 }; // no oi field at all
+    await router.upsertCandles(OPTION_SYMBOL, 1, [withoutOi]);
+
+    const row = await query("SELECT oi FROM nse_options_candles WHERE symbol=$1 AND time=to_timestamp($2/1000.0)", [OPTION_SYMBOL, T + 120000]);
+    assert.strictEqual(row[0].oi, null, "omitted oi must store as NULL, not 0 or throw");
+
+    await query("DELETE FROM nse_options_candles WHERE symbol=$1 AND time=to_timestamp($2/1000.0)", [OPTION_SYMBOL, T + 120000]);
+  });
+
+  await check("oi is stored correctly on MCX options too (no expiry_type column, oi must still work)", async () => {
+    const mcxOptSymbol = "MCX:GOLDM26AUG68000CE";
+    const candle = { time: T, open: 100, high: 105, low: 98, close: 102, volume: 50, oi: 7700 };
+    await router.upsertCandles(mcxOptSymbol, 1, [candle]);
+
+    const row = await query("SELECT oi FROM mcx_options_candles WHERE symbol=$1 AND time=to_timestamp($2/1000.0)", [mcxOptSymbol, T]);
+    assert.strictEqual(row.length, 1);
+    assert.strictEqual(Number(row[0].oi), 7700);
+    // Confirms the table genuinely has no expiry_type column at all (not
+    // just that the app chooses not to populate it) — the query below
+    // must fail, proving the schema itself omits it, same as before
+    // migration 004 (that column was never added to mcx_options_candles).
+    let threw = false;
+    try {
+      await query("SELECT expiry_type FROM mcx_options_candles LIMIT 1", []);
+    } catch {
+      threw = true;
+    }
+    assert.ok(threw, "mcx_options_candles must NOT have an expiry_type column — if this stops throwing, the schema changed unexpectedly");
+
+    await query("DELETE FROM mcx_options_candles WHERE symbol=$1 AND time=to_timestamp($2/1000.0)", [mcxOptSymbol, T]);
   });
 }
 

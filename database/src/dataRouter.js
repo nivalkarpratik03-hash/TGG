@@ -4,11 +4,16 @@
  * Drop-in, signature-compatible replacements for candleStore.js's
  * upsertCandles / getLatestCandle / loadCandles. Each function here parses
  * the symbol first:
- *   - not a dated NSE/MCX option or future (equities, indices, MCX
+ *   - not a dated NSE/MCX/BSE option or future (equities, indices, MCX
  *     continuous roots, anything unrecognized) → delegates straight to
  *     candleStore.js, UNCHANGED behavior.
- *   - a dated NSE/MCX option or future → delegates to derivativesStore.js,
- *     writing/reading the correct one of the 4 new tables instead.
+ *   - a dated NSE/MCX/BSE option or future → delegates to
+ *     derivativesStore.js, writing/reading the correct one of the 6
+ *     derivatives tables instead. BSE support (migrations/
+ *     004_bse_tables_and_oi.sql) required ZERO logic changes in this
+ *     file — it has always dispatched purely off parseDerivativeSymbol()'s
+ *     `exchange` field, confirming this router was already
+ *     exchange-agnostic by design.
  *
  * database/src/index.js spreads this module's exports LAST, so these
  * names override candleStore.js's versions app-wide. Every existing
