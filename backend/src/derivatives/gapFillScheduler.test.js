@@ -6,11 +6,21 @@
  * No real Postgres/Fyers needed — runGapFillCheckpoint and nowIST are
  * both mocked here; this only tests the scheduling logic itself (does
  * the right checkpoint fire at the right simulated time, exactly once
- * per day).
+ * per day, and does the startup checkpoint fire exactly once and only
+ * on explicit request).
+ *
+ * UPDATED 2026-07-30: startGapFillScheduler() was split into
+ * wireGapFillScheduler() (recurring close-time checks only) +
+ * fireStartupCheckpoint() (explicit, caller-triggered). This also fixes
+ * this test's own previously-broken import: `NSE_CLOSE_MIN`/`MCX_CLOSE_MIN`
+ * used to come back `undefined` from tickStream.js (never exported there),
+ * so the old version of this test was silently comparing `mins >=
+ * undefined` — always false — and would NOT actually have caught a
+ * scheduling regression. tickStream.js now exports both correctly.
  */
 
 const assert = require("assert");
-const { startGapFillScheduler } = require("./gapFillScheduler");
+const { wireGapFillScheduler } = require("./gapFillScheduler");
 
 let passed = 0, failed = 0;
 function check(name, fn) {
@@ -39,19 +49,32 @@ async function main() {
     return { scanned: 1, optionsDiscovered: 0, optionsBackfilled: 0, futuresBackfilled: 0, failed: [] };
   };
 
-  const scheduler = startGapFillScheduler({ nowIST: fakeNowIST, runGapFillCheckpoint: fakeRunFn, log: () => { } });
+  const scheduler = wireGapFillScheduler({ nowIST: fakeNowIST, runGapFillCheckpoint: fakeRunFn, log: () => { } });
 
-  // Let the startup checkpoint's setImmediate actually run.
-  await new Promise((r) => setImmediate(r));
-  check("startup checkpoint fires immediately, exactly once", () => {
+  check("wiring the scheduler does NOT fire a startup checkpoint by itself", () => {
+    assert.deepStrictEqual(fired, [], "startup must only fire via an explicit fireStartupCheckpoint() call, never automatically");
+  });
+
+  await scheduler.fireStartupCheckpoint();
+  check("fireStartupCheckpoint() fires the startup checkpoint exactly once when called", () => {
     assert.deepStrictEqual(fired, ["startup"]);
+  });
+
+  await scheduler.fireStartupCheckpoint();
+  check("calling fireStartupCheckpoint() again is a safe no-op (no duplicate broker sweep)", () => {
+    assert.deepStrictEqual(fired, ["startup"], "must not fire a second startup checkpoint");
   });
 
   // Manually invoke the internal interval tick logic the same way
   // setInterval would, without waiting 60 real seconds per check —
   // we do this by directly re-implementing the guard check against the
-  // scheduler's exposed _state, using the same threshold constants.
-  const { nowIST: realNowIST, NSE_CLOSE_MIN, MCX_CLOSE_MIN } = require("../fyers/tickStream");
+  // scheduler's exposed _state, using the same threshold constants this
+  // file itself now correctly exports.
+  const { NSE_CLOSE_MIN, MCX_CLOSE_MIN } = require("../fyers/tickStream");
+  check("tickStream.js actually exports NSE_CLOSE_MIN/MCX_CLOSE_MIN (regression guard for the root-cause export bug)", () => {
+    assert.strictEqual(typeof NSE_CLOSE_MIN, "number", "NSE_CLOSE_MIN must be a real exported number, not undefined");
+    assert.strictEqual(typeof MCX_CLOSE_MIN, "number", "MCX_CLOSE_MIN must be a real exported number, not undefined");
+  });
 
   function simulateTick() {
     // Mirrors gapFillScheduler.js's own interval callback exactly, driven

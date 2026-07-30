@@ -31,6 +31,7 @@ const { detectMotherWaveForAPI } = require("./services/motherwave");
 const createChartRouter = require("./routes/chartRouter");
 const corsMiddleware = require("./middleware/cors");
 const rateLimiter = require("./middleware/rateLimiter");
+const { wireGapFillScheduler } = require("./derivatives/gapFillScheduler");
 
 // ─── Database ─────────────────────────────────────────────────────────────────
 // DB is optional — if DATABASE_URL / PGHOST is not set, TGG runs without DB
@@ -1267,12 +1268,48 @@ server.listen(PORT, async () => {
           console.log("[PeriodicSync] Wired — checking actively-viewed symbols every 5 minutes during market hours");
         }
 
-        // ── Curated-symbol gap scan + staleness sweep ──────────────────────
+        // ── Derivatives GapFill scheduler ───────────────────────────────────
+        // Wires ONLY the recurring NSE/BSE-close (15:30 IST) and MCX-close
+        // (23:30 IST / 14:00 IST Sat) checks right now — that's safe, it
+        // makes zero broker calls itself, it only starts a once-a-minute
+        // clock comparison (see gapFillScheduler.js). The startup checkpoint
+        // is fired explicitly below, chained after curated catch-up.
+        let gapFillScheduler = null;
+        try {
+          gapFillScheduler = wireGapFillScheduler();
+        } catch (e) {
+          console.warn("[GapFill] Failed to wire scheduler:", e.message);
+        }
+
+        // ── Curated-symbol gap scan + staleness sweep, THEN GapFill startup ──
         // See runCuratedSymbolCatchUp() (hoisted function declaration,
         // defined further down this file) for the full implementation.
-        // Fires once now at boot; the /api/auth/token route also calls it
-        // again after a successful re-auth (fix 5 — see chartRouter.js).
-        setImmediate(() => runCuratedSymbolCatchUp("startup"));
+        //
+        // SEQUENCING FIX (2026-07-30 — root cause #3 of "everything
+        // overlaps"): runCuratedSymbolCatchUp("startup") used to be fired
+        // with its own bare setImmediate, and gapFillScheduler.js used to
+        // fire its OWN separate, completely independent setImmediate for the
+        // startup checkpoint — two unrelated boot-time broker sweeps racing
+        // each other with no ordering guarantee. Fixed by chaining: curated
+        // spot/index catch-up (Recovery gap-scan + Staleness sweep, ~205
+        // symbols) now runs first and must fully resolve before the GapFill
+        // startup checkpoint (indices + MCX commodities F&O — see
+        // derivativesGapFill.js) is even attempted. This matches the order
+        // you asked for: curated spot first, then index F&O, then MCX F&O.
+        //
+        // The /api/auth/token route also calls runCuratedSymbolCatchUp again
+        // after a successful re-auth (fix 5 — see chartRouter.js); that path
+        // is untouched — it does not re-fire the GapFill checkpoint, since
+        // re-auth isn't a fresh boot.
+        setImmediate(() => {
+          runCuratedSymbolCatchUp("startup")
+            .then(() => {
+              if (gapFillScheduler) return gapFillScheduler.fireStartupCheckpoint();
+            })
+            .catch((e) => {
+              console.warn("[Recovery] Startup catch-up chain failed — GapFill startup checkpoint will NOT run this boot:", e.message);
+            });
+        });
 
       } else {
         console.warn("[DB] ⚠️  PostgreSQL health check failed — DB writes disabled");

@@ -2,7 +2,10 @@
  * backend/src/derivatives/gapFillScheduler.js
  *
  * Fires derivativesGapFill.runGapFillCheckpoint() at the 3 agreed points:
- *   - "startup"        — once, immediately, when the server boots
+ *   - "startup"        — once, but NOT from this file directly (see
+ *                        fireStartupCheckpoint below) — the caller
+ *                        (server.js) triggers it explicitly, only after
+ *                        curated spot/index catch-up genuinely finishes.
  *   - "nse_bse_close"  — once per day, the first time the clock crosses
  *                        NSE/BSE's real close (15:30 IST)
  *   - "mcx_close"      — once per day, the first time the clock crosses
@@ -24,6 +27,16 @@
  * checkpoint last fired on. A checkpoint won't fire again until that date
  * string changes — this is what stops it re-firing every minute for the
  * ~8+ hours the clock stays past the threshold each day.
+ *
+ * ROOT CAUSE FIXED HERE (2026-07-30): this file used to fire the startup
+ * checkpoint itself, via its own unconditional `setImmediate(() =>
+ * fire("startup"))`, completely independent of server.js's
+ * `runCuratedSymbolCatchUp("startup")` setImmediate. Two unrelated
+ * boot-time tasks both hitting the broker at the same time — the
+ * "everything overlaps" symptom. Fixed by removing that call entirely and
+ * exposing `fireStartupCheckpoint()` instead, which server.js now calls
+ * explicitly, chained onto the curated catch-up Promise (`.then(...)`), so
+ * curated spot/index catch-up always finishes first.
  */
 
 const { nowIST, NSE_CLOSE_MIN, MCX_CLOSE_MIN, MCX_SAT_CLOSE } = require("../fyers/tickStream");
@@ -38,27 +51,32 @@ function istDateString() {
 }
 
 /**
- * @param {object} [deps] — for tests: override nowIST, runGapFillCheckpoint, or the logger.
- * @returns {{ stop: () => void, _state: object }} stop() clears the interval — used by tests, not production.
+ * Wires ONLY the recurring NSE/BSE-close and MCX-close checks. Does NOT
+ * fire a startup checkpoint — call the returned fireStartupCheckpoint()
+ * explicitly once curated spot/index catch-up has resolved.
+ *
+ * @param {object} [deps] — for tests: override nowIST, runGapFillCheckpoint, log, or sleep.
+ * @returns {{ stop: () => void, fireStartupCheckpoint: () => Promise<void>, _state: object }}
+ *   stop() clears the interval — used by tests, not production.
+ *   fireStartupCheckpoint() runs the "startup" checkpoint exactly once —
+ *   calling it again after the first call is a safe no-op (logged).
  */
-function startGapFillScheduler(deps = {}) {
+function wireGapFillScheduler(deps = {}) {
   const nowFn = deps.nowIST || nowIST;
   const runFn = deps.runGapFillCheckpoint || runGapFillCheckpoint;
   const log = deps.log || ((msg) => console.log(msg));
 
   const lastRunDate = { nse_bse_close: null, mcx_close: null };
+  let startupFired = false;
 
   async function fire(label) {
     try {
-      const r = await runFn(label);
+      const r = await runFn(label, deps);
       log(`[GapFill] ${label}: scanned ${r.scanned} underlying(s) — options discovered ${r.optionsDiscovered}, options backfilled ${r.optionsBackfilled}, futures backfilled ${r.futuresBackfilled}${r.failed.length ? `, FAILED ${r.failed.length} (${r.failed.map((f) => f.underlying).join(", ")})` : ""}`);
     } catch (err) {
       log(`[GapFill] ${label} sweep error: ${err.message}`);
     }
   }
-
-  // Startup checkpoint — once, immediately.
-  setImmediate(() => fire("startup"));
 
   const interval = setInterval(() => {
     const { mins, dow } = nowFn();
@@ -76,9 +94,18 @@ function startGapFillScheduler(deps = {}) {
     }
   }, CHECK_INTERVAL_MS);
 
-  log("[GapFill] Scheduler wired — startup checkpoint now, NSE/BSE-close and MCX-close checked every minute thereafter");
+  log("[GapFill] Scheduler wired — NSE/BSE-close and MCX-close checked every minute; startup checkpoint fires once curated spot/index catch-up finishes");
 
-  return { stop: () => clearInterval(interval), _state: lastRunDate };
+  async function fireStartupCheckpoint() {
+    if (startupFired) {
+      log("[GapFill] Startup checkpoint already fired — skipping duplicate call");
+      return;
+    }
+    startupFired = true;
+    await fire("startup");
+  }
+
+  return { stop: () => clearInterval(interval), fireStartupCheckpoint, _state: lastRunDate };
 }
 
-module.exports = { startGapFillScheduler, istDateString };
+module.exports = { wireGapFillScheduler, istDateString };
