@@ -359,4 +359,21 @@ class TickStream extends EventEmitter {
   }
 }
 
-module.exports = { TickStream, isMarketOpen, isLiveMarket, isAnyMarketLive, isMCXSymbol, isTradingDay };
+// nowIST + the 3 close-time constants are exported here (in addition to the
+// original 6) because gapFillScheduler.js needs the REAL close-time clock
+// this file already owns, rather than a second copy. ROOT CAUSE (2026-07-30):
+// gapFillScheduler.js was already importing these 4 names from here, but
+// this file never actually exported them — every one came back `undefined`,
+// silently breaking its NSE/BSE-close and MCX-close comparisons.
+module.exports = {
+  TickStream,
+  isMarketOpen,
+  isLiveMarket,
+  isAnyMarketLive,
+  isMCXSymbol,
+  isTradingDay,
+  nowIST,
+  NSE_CLOSE_MIN,
+  MCX_CLOSE_MIN,
+  MCX_SAT_CLOSE,
+};

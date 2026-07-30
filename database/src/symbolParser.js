@@ -295,5 +295,15 @@ module.exports = {
   computeMonthlyExpiry,
   computeWeeklyExpiry,
   lastThursdayOfMonth,
+  // ROOT-CAUSE FIX (2026-07-30): lastTuesdayOfMonth was defined above but
+  // never exported, while lastThursdayOfMonth was. derivativesGapFill.js's
+  // classifyMonthlyExpiry() destructures BOTH from this module and picks
+  // lastTuesdayOfMonth for every NSE dual-cycle underlying (in the curated
+  // list, that's NIFTY only — SENSEX is BSE and correctly used the already-
+  // exported lastThursdayOfMonth, which is why only NIFTY ever crashed).
+  // With it undefined, calling it threw `TypeError: lastDayFn is not a
+  // function` immediately after NIFTY's first fetchOptionChain call
+  // logged — the exact, reproducible point the checkpoint appeared to die.
+  lastTuesdayOfMonth,
   MCX_EXPIRY_DAY,
-};   
+};
