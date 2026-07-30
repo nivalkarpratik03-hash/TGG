@@ -1149,18 +1149,17 @@ server.listen(PORT, async () => {
       if (ok) {
         console.log("[DB] ✅  PostgreSQL connection healthy");
 
-        // ── PRUNING DISABLED (2026-07-03) ──────────────────────────────────
+        // ── PRUNING DISABLED (2026-07-03) — legacy `candles`-table pruning ──
         // Both pruneOldCandles() and pruneExpiredContracts() hard-DELETE rows
         // from `candles` with no archive anywhere else — every expired
         // option/future contract they touch is gone permanently, which
         // breaks backtesting (confirmed: they had already deleted 3 SENSEX
         // option contracts / 3420 candles by the time this was caught).
-        // Turned off site-wide until the separate backtest archive
-        // (derivatives_eod / underlying_eod, permanent, typed columns) is
-        // built and populated — only then is it safe to prune this live
-        // cache again, since the archive would hold the permanent copy.
-        // See database/src/candleStore.js for the (still intact, just
-        // unused) implementations of both functions.
+        // Still turned off, still untouched, still applies ONLY to the
+        // legacy `candles` table (see database/src/candleStore.js) — this
+        // has NOTHING to do with the new derivatives archive/prune below,
+        // which targets the 6 separate derivatives tables and always
+        // archives to a real local Parquet file before ever deleting.
         //
         // const pruned = await db.pruneOldCandles(null, 1, 365);
         // if (pruned > 0) console.log(`[DB] Pruned ${pruned} old candles (>365 days)`);
@@ -1179,6 +1178,52 @@ server.listen(PORT, async () => {
         //     console.warn("[DB] Periodic expired-contract prune failed:", e.message);
         //   }
         // }, 6 * 60 * 60 * 1000); // every 6 hours
+
+        // ── NEW: derivatives archive + prune (nse/mcx/bse options+futures) ──
+        // Unlike the legacy block above, this ALWAYS archives a contract's
+        // full row history to a local Parquet file (see
+        // backend/src/archive/parquetExport.js — writes under
+        // {DATASET_ROOT or ./dataset}/{ASSET_CLASS}/{UNDERLYING}/...) and
+        // ONLY deletes from Postgres after that archive write is confirmed
+        // successful. A failed archive leaves the contract's rows
+        // untouched, retried on the next sweep — see
+        // backend/src/derivatives/pruneExpiredDerivatives.js for the exact
+        // ordering guarantee.
+        //
+        // Deliberately NOT gated by isTradingDay() — unlike periodicSync
+        // and the curated sweep below, this makes zero Fyers/broker calls
+        // (archiving reads only from Postgres, and expiry is a pure
+        // calendar comparison against the already-stored expiry_date
+        // column) — so it's harmless and correct to run on any day,
+        // including weekends/holidays, not just trading days.
+        //
+        // Scheduling note: runs once at startup, then every 24h. This does
+        // NOT yet implement the more precise "run at NSE close (~15:40) /
+        // MCX close (~23:30) separately" timing discussed during design —
+        // that precision matters for the (not-yet-built) EOD
+        // reconciliation job, which needs that day's data specifically.
+        // It doesn't matter here: pruning only ever acts on contracts
+        // whose expiry_date has ALREADY passed as of a prior calendar day,
+        // so which hour of the day this runs at has no effect on
+        // correctness — a daily cadence is enough.
+        try {
+          const { runPruneSweep } = require("./derivatives/pruneExpiredDerivatives");
+          const runSweep = async (label) => {
+            try {
+              const r = await runPruneSweep();
+              if (r.scanned > 0 || r.archived > 0) {
+                console.log(`[Prune] ${label}: scanned ${r.scanned} expired contract(s) — archived ${r.archived}, pruned ${r.pruned}, already-empty ${r.alreadyEmpty}${r.failed.length ? `, FAILED ${r.failed.length} (left in DB, retried next sweep: ${r.failed.map(f => f.symbol).join(", ")})` : ""}`);
+              }
+            } catch (e) {
+              console.warn(`[Prune] ${label} sweep error:`, e.message);
+            }
+          };
+          setImmediate(() => runSweep("startup"));
+          setInterval(() => runSweep("daily"), 24 * 60 * 60 * 1000);
+          console.log("[Prune] Derivatives archive+prune wired — runs at startup, then every 24h (any day, not gated to trading days)");
+        } catch (e) {
+          console.warn("[Prune] Failed to wire derivatives archive+prune:", e.message);
+        }
 
 
         // ── Wire up recovery engine WebSocket emitter ──────────────────────

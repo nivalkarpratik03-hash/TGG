@@ -56,8 +56,14 @@ check("Empty/undefined input returns null, does not throw", () => {
   assert.strictEqual(parseDerivativeSymbol(undefined), null);
   assert.strictEqual(parseDerivativeSymbol(null), null);
 });
-check("Non-NSE/MCX exchange returns null (e.g. BSE equity)", () => {
+check("BSE equity (-EQ) returns null (spot suffix, not an exchange rejection anymore)", () => {
+  // BSE is now an accepted exchange (see BSE derivatives tests below) —
+  // this returns null because of the -EQ spot suffix, same reason NSE/MCX
+  // spot symbols return null above, not because BSE itself is rejected.
   assert.strictEqual(parseDerivativeSymbol("BSE:SOMESTOCK-EQ"), null);
+});
+check("Unrecognized exchange (not NSE/MCX/BSE) still returns null", () => {
+  assert.strictEqual(parseDerivativeSymbol("NYSE:AAPL26JUL200CE"), null);
 });
 
 console.log("\n[symbolParser.test] ── NSE monthly futures ──────────────────────");
@@ -202,13 +208,77 @@ check("Unknown MCX root falls back to last-day-of-month, flagged approximate", (
   assert.strictEqual(r.expiryApproximate, true);
 });
 
+console.log("\n[symbolParser.test] ── BSE monthly & futures (SENSEX) — high confidence ──");
+
+check("BSE:SENSEX26JUL80000CE parses as monthly option", () => {
+  const r = parseDerivativeSymbol("BSE:SENSEX26JUL80000CE");
+  assert.ok(r, "expected non-null result");
+  assert.strictEqual(r.exchange, "BSE");
+  assert.strictEqual(r.underlying, "SENSEX");
+  assert.strictEqual(r.instrument_type, "option");
+  assert.strictEqual(r.expiry_type, "monthly");
+  assert.strictEqual(r.strike, 80000);
+  assert.strictEqual(r.option_type, "CE");
+  assert.match(r.expiry_date, /^2026-07-\d{2}$/);
+  assert.strictEqual(r.expiryEncodingUnverified, undefined, "monthly must NOT carry the unverified flag — only weekly does");
+});
+
+check("BSE monthly SENSEX expiry lands on a Thursday (or earlier weekday via holiday rollback)", () => {
+  const r = parseDerivativeSymbol("BSE:SENSEX26JUL80000CE");
+  const dow = new Date(r.expiry_date + "T00:00:00").getDay();
+  assert.ok(dow === 4 || dow <= 5, `expiry ${r.expiry_date} landed on weekday ${dow}, expected Thu or an earlier weekday (holiday rollback)`);
+});
+
+check("BSE:SENSEX26JULFUT parses as monthly future", () => {
+  const r = parseDerivativeSymbol("BSE:SENSEX26JULFUT");
+  assert.ok(r);
+  assert.strictEqual(r.exchange, "BSE");
+  assert.strictEqual(r.underlying, "SENSEX");
+  assert.strictEqual(r.instrument_type, "future");
+  assert.strictEqual(r.strike, null);
+  assert.strictEqual(r.option_type, null);
+});
+
+check("BSE monthly is not restricted to SENSEX at the parser level (BANKEX etc. would also parse if ever needed)", () => {
+  const r = parseDerivativeSymbol("BSE:BANKEX26JUL55000CE");
+  assert.ok(r, "monthly/futures pattern is generic across roots, same as NSE");
+  assert.strictEqual(r.underlying, "BANKEX");
+});
+
+console.log("\n[symbolParser.test] ── BSE weekly (SENSEX) — FLAGGED, lower confidence ──");
+
+check("BSE:SENSEX2570780000PE parses as weekly option and carries the unverified-encoding flag", () => {
+  const r = parseDerivativeSymbol("BSE:SENSEX2570780000PE");
+  assert.ok(r, "expected non-null result");
+  assert.strictEqual(r.exchange, "BSE");
+  assert.strictEqual(r.underlying, "SENSEX");
+  assert.strictEqual(r.expiry_type, "weekly");
+  assert.strictEqual(r.strike, 80000);
+  assert.strictEqual(r.option_type, "PE");
+  // This is the load-bearing assertion for this whole section: the
+  // caveat must be visible on the data itself, not just in a comment.
+  assert.strictEqual(r.expiryEncodingUnverified, true,
+    "BSE weekly must be flagged as unverified — the digit-encoding assumption has not been confirmed against a real (symbol, known expiry date) pair");
+});
+
+check("BSE weekly is restricted to SENSEX only, same enforcement pattern as NSE/NIFTY", () => {
+  const r = parseDerivativeSymbol("BSE:BANKEX2570755000CE");
+  assert.strictEqual(r, null, "non-SENSEX BSE weekly-shaped ticker must not parse — no other BSE underlying has confirmed weekly contracts here");
+});
+
 console.log("\n[symbolParser.test] ── PK-safety invariants (every parsed row) ──");
 
 const REAL_SYMBOLS = [
   "NSE:RELIANCE26JUNFUT", "NSE:NIFTY26JUL24000CE", "NSE:BANKNIFTY26JUL55000CE",
   "NSE:NIFTY2570724000PE", "NSE:NIFTY26N0512000CE",
   "MCX:CRUDEOILM26AUGFUT", "MCX:GOLDM26AUG68000CE", "MCX:SILVER26JUL75000CE",
+  "BSE:SENSEX26JUL80000CE", "BSE:SENSEX26JULFUT",
 ];
+// NOTE: BSE:SENSEX2570780000PE (weekly) is deliberately excluded from this
+// batch, same reasoning as the NIFTY weekly exclusion above — it's a real
+// shape but its date-encoding is flagged unverified, not a reason to skip
+// PK-safety checks in principle, just kept out of the "trusted real data"
+// batch until confirmed.
 // NOTE: NSE:NIFTY26712000CE is deliberately excluded from this batch — its
 // synthetic strike parses to 0 (see the dedicated weekly-option test above),
 // which would fail the "strike > 0" invariant below for a reason that has

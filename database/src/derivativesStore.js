@@ -1,28 +1,38 @@
 /**
  * database/src/derivativesStore.js
  *
- * Persistence layer for the 4 derivatives tables added in
- * migrations/003_derivatives_tables.sql:
- *   nse_options_candles, mcx_options_candles,
- *   nse_futures_candles, mcx_futures_candles
+ * Persistence layer for the 6 derivatives tables:
+ *   nse_options_candles, mcx_options_candles, bse_options_candles,
+ *   nse_futures_candles, mcx_futures_candles, bse_futures_candles
+ * (bse_* added in migrations/004_bse_tables_and_oi.sql, same migration
+ * that added the `oi` column to all 4 pre-existing tables.)
  *
  * Mirrors candleStore.js's style: imports query/transaction from pool.js,
  * batched multi-row INSERT ... ON CONFLICT upserts, same 500-row batch
  * size rationale (PG's 65535 bind-parameter limit).
  *
  * Row shape in/out of every function here is the object returned by
- * symbolParser.parseDerivativeSymbol(), plus OHLCV:
+ * symbolParser.parseDerivativeSymbol(), plus OHLCV + oi:
  *   { symbol, exchange, underlying, instrument_type, expiry_date,
- *     expiry_type, strike, option_type, time, open, high, low, close, volume }
- * `time` is epoch ms (same convention as candleStore.js).
+ *     expiry_type, strike, option_type, time, open, high, low, close,
+ *     volume, oi }
+ * `time` is epoch ms (same convention as candleStore.js). `oi` is
+ * optional on the way in — rows without it (e.g. anything written before
+ * OI capture existed) store NULL, same as any already-existing row.
+ *
+ * expiry_type column presence: NSE and BSE options both carry it (both
+ * can have weekly+monthly alive at once — NIFTY and SENSEX respectively).
+ * MCX options are the only ones without it (single active cycle, no
+ * weekly/monthly split) — the branch below keys off "MCX or not", not
+ * "NSE specifically", for exactly this reason.
  */
 
 const { query, transaction } = require("./pool");
 const { isValidCandle } = require("./candleValidation");
 
 const TABLES = {
-  option: { NSE: "nse_options_candles", MCX: "mcx_options_candles" },
-  future: { NSE: "nse_futures_candles", MCX: "mcx_futures_candles" },
+  option: { NSE: "nse_options_candles", MCX: "mcx_options_candles", BSE: "bse_options_candles" },
+  future: { NSE: "nse_futures_candles", MCX: "mcx_futures_candles", BSE: "bse_futures_candles" },
 };
 
 function optionsTable(exchange) {
@@ -72,51 +82,55 @@ function buildBatchInsert(batch, kind, exchange, table) {
   const params = [];
   let p = 1;
 
-  if (isOption && exchange === "NSE") {
+  // NSE and BSE options both carry expiry_type (both can have
+  // weekly+monthly alive at once). MCX is the only options exchange
+  // without it — keying off "not MCX", not "is NSE", so BSE options
+  // correctly take the expiry_type-bearing shape too.
+  if (isOption && exchange !== "MCX") {
     for (const c of batch) {
-      values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},to_timestamp($${p++}/1000.0),$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
-      params.push(c.underlying, c.expiry_date, c.expiry_type, c.strike, c.option_type, c.time, c.open, c.high, c.low, c.close, c.volume ?? 0, c.symbol);
+      values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},to_timestamp($${p++}/1000.0),$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+      params.push(c.underlying, c.expiry_date, c.expiry_type, c.strike, c.option_type, c.time, c.open, c.high, c.low, c.close, c.volume ?? 0, c.oi ?? null, c.symbol);
     }
     return {
       sql: `
-        INSERT INTO ${table} (underlying, expiry_date, expiry_type, strike, option_type, time, open, high, low, close, volume, symbol)
+        INSERT INTO ${table} (underlying, expiry_date, expiry_type, strike, option_type, time, open, high, low, close, volume, oi, symbol)
         VALUES ${values.join(",")}
         ON CONFLICT (underlying, expiry_date, strike, option_type, time) DO UPDATE SET
           open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-          close = EXCLUDED.close, volume = EXCLUDED.volume, symbol = EXCLUDED.symbol,
-          inserted_at = NOW()
+          close = EXCLUDED.close, volume = EXCLUDED.volume, oi = EXCLUDED.oi,
+          symbol = EXCLUDED.symbol, inserted_at = NOW()
       `,
       params,
     };
   } else if (isOption) { // MCX options — no expiry_type column
     for (const c of batch) {
-      values.push(`($${p++},$${p++},$${p++},$${p++},to_timestamp($${p++}/1000.0),$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
-      params.push(c.underlying, c.expiry_date, c.strike, c.option_type, c.time, c.open, c.high, c.low, c.close, c.volume ?? 0, c.symbol);
+      values.push(`($${p++},$${p++},$${p++},$${p++},to_timestamp($${p++}/1000.0),$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+      params.push(c.underlying, c.expiry_date, c.strike, c.option_type, c.time, c.open, c.high, c.low, c.close, c.volume ?? 0, c.oi ?? null, c.symbol);
     }
     return {
       sql: `
-        INSERT INTO ${table} (underlying, expiry_date, strike, option_type, time, open, high, low, close, volume, symbol)
+        INSERT INTO ${table} (underlying, expiry_date, strike, option_type, time, open, high, low, close, volume, oi, symbol)
         VALUES ${values.join(",")}
         ON CONFLICT (underlying, expiry_date, strike, option_type, time) DO UPDATE SET
           open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-          close = EXCLUDED.close, volume = EXCLUDED.volume, symbol = EXCLUDED.symbol,
-          inserted_at = NOW()
+          close = EXCLUDED.close, volume = EXCLUDED.volume, oi = EXCLUDED.oi,
+          symbol = EXCLUDED.symbol, inserted_at = NOW()
       `,
       params,
     };
-  } else { // futures — NSE or MCX, identical shape
+  } else { // futures — NSE, MCX, or BSE, identical shape
     for (const c of batch) {
-      values.push(`($${p++},$${p++},to_timestamp($${p++}/1000.0),$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
-      params.push(c.underlying, c.expiry_date, c.time, c.open, c.high, c.low, c.close, c.volume ?? 0, c.symbol);
+      values.push(`($${p++},$${p++},to_timestamp($${p++}/1000.0),$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+      params.push(c.underlying, c.expiry_date, c.time, c.open, c.high, c.low, c.close, c.volume ?? 0, c.oi ?? null, c.symbol);
     }
     return {
       sql: `
-        INSERT INTO ${table} (underlying, expiry_date, time, open, high, low, close, volume, symbol)
+        INSERT INTO ${table} (underlying, expiry_date, time, open, high, low, close, volume, oi, symbol)
         VALUES ${values.join(",")}
         ON CONFLICT (underlying, expiry_date, time) DO UPDATE SET
           open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-          close = EXCLUDED.close, volume = EXCLUDED.volume, symbol = EXCLUDED.symbol,
-          inserted_at = NOW()
+          close = EXCLUDED.close, volume = EXCLUDED.volume, oi = EXCLUDED.oi,
+          symbol = EXCLUDED.symbol, inserted_at = NOW()
       `,
       params,
     };
@@ -222,7 +236,7 @@ async function loadCandlesBySymbol(exchange, instrumentType, symbol, { limit = 1
   if (to) { where += ` AND time <= $${p++}`; params.push(new Date(to).toISOString()); }
 
   const rows = await query(
-    `SELECT extract(epoch from time)*1000 AS time, open, high, low, close, volume
+    `SELECT extract(epoch from time)*1000 AS time, open, high, low, close, volume, oi
      FROM ${table}
      WHERE ${where}
      ORDER BY time ASC
@@ -237,6 +251,7 @@ async function loadCandlesBySymbol(exchange, instrumentType, symbol, { limit = 1
     low: Number(r.low),
     close: Number(r.close),
     volume: Number(r.volume),
+    oi: r.oi == null ? null : Number(r.oi),
   }));
 }
 
@@ -244,7 +259,7 @@ async function loadCandlesBySymbol(exchange, instrumentType, symbol, { limit = 1
 async function getLatestCandleBySymbol(exchange, instrumentType, symbol) {
   const table = instrumentType === "option" ? optionsTable(exchange) : futuresTable(exchange);
   const rows = await query(
-    `SELECT extract(epoch from time)*1000 AS time, open, high, low, close, volume
+    `SELECT extract(epoch from time)*1000 AS time, open, high, low, close, volume, oi
      FROM ${table}
      WHERE symbol=$1
      ORDER BY time DESC LIMIT 1`,
@@ -259,6 +274,7 @@ async function getLatestCandleBySymbol(exchange, instrumentType, symbol) {
     low: Number(r.low),
     close: Number(r.close),
     volume: Number(r.volume),
+    oi: r.oi == null ? null : Number(r.oi),
   };
 }
 
@@ -278,6 +294,40 @@ async function listDerivativeSymbols(exchange, instrumentType) {
   return rows.map((r) => r.symbol);
 }
 
+/**
+ * Distinct (symbol, underlying, expiry_date) contracts currently stored in
+ * a table — the input expiryLifecycle.js needs to decide what's expired.
+ * Unlike listDerivativeSymbols(), this also returns expiry_date because
+ * that's a first-class stored column here (unlike the legacy `candles`
+ * table, which has no such column and has to regex-derive it from the
+ * symbol string in candleStore.js's extractContractExpiry() — we don't
+ * need that approach at all since expiry_date is already stored directly).
+ */
+async function listDistinctContracts(exchange, instrumentType) {
+  const table = instrumentType === "option" ? optionsTable(exchange) : futuresTable(exchange);
+  const rows = await query(
+    `SELECT DISTINCT symbol, underlying, expiry_date::text AS expiry_date FROM ${table} ORDER BY expiry_date, symbol`,
+    []
+  );
+  return rows;
+}
+
+/**
+ * Delete ALL stored rows for one exact contract symbol, from the correct
+ * derivatives table. Used only by pruneExpiredDerivatives.js, and only
+ * after a confirmed-successful archive write for that same symbol —
+ * never called standalone. This is intentionally separate from
+ * candleStore.js's pruneExpiredContracts()/deleteAllCandles(), which only
+ * ever touch the legacy `candles` table — no overlap, no duplicate logic,
+ * different tables entirely.
+ * @returns {Promise<number>} rows deleted
+ */
+async function deleteCandlesBySymbol(exchange, instrumentType, symbol) {
+  const table = instrumentType === "option" ? optionsTable(exchange) : futuresTable(exchange);
+  const rows = await query(`DELETE FROM ${table} WHERE symbol=$1 RETURNING 1`, [symbol]);
+  return rows.length;
+}
+
 module.exports = {
   upsertOptionCandles,
   upsertFutureCandles,
@@ -286,6 +336,8 @@ module.exports = {
   getLatestCandleBySymbol,
   countDerivativeCandles,
   listDerivativeSymbols,
+  listDistinctContracts,
+  deleteCandlesBySymbol,
   isValidCandle,
   optionsTable,
   futuresTable,

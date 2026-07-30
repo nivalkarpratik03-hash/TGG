@@ -16,6 +16,7 @@
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "express-rate-limit": "^7.1.5",
+    "parquetjs-lite": "^0.8.7",
     "fyers-api-v3": "^1.0.0",
     "socket.io": "^4.6.1",
     "xlsx": "^0.18.5",

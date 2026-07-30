@@ -419,3 +419,15 @@ router.post("/refresh", (req, res) => {
 getSymbols();
 
 module.exports = router;
+// Additive only — router is a function, and Express supports attaching
+// extra properties to it without changing its behavior as middleware at
+// all (app.use(symbolsRouter) still works identically). Exposed so
+// backend/src/derivatives/* can reuse this exact, already-tested
+// near-month resolution logic instead of re-implementing the same NSE
+// Tuesday / MCX per-root expiry-day rules a second time in a different
+// file, which is exactly the kind of silent-drift risk flagged
+// repeatedly during this project's design phase.
+module.exports.nseNearMonthOffset = nseNearMonthOffset;
+module.exports.mcxNearMonthOffset = mcxNearMonthOffset;
+module.exports.nextMonthCodes = nextMonthCodes;
+module.exports.monthCodesFromOffset = monthCodesFromOffset;
