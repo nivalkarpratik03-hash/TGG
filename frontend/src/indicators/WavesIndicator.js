@@ -26,6 +26,32 @@
  *  5. MULTI-INSTANCE — each chart instance gets its own independent state Map
  *     entry, keyed by the chart object itself. Dual-mode panels no longer
  *     share a singleton and therefore cannot overwrite each other's state.
+ *
+ * ── WAVE / PIVOT DETECTION — PORTED (28-Jul-2026) ─────────────────────────
+ * `updateWavesIndicatorPure`'s pivot-detection algorithm below is a direct
+ * port of the Python reference implementation
+ * (src/wave_detector.py's `StreamingWaveEngine._try_confirm` /
+ * `_confirm_pivot`), replacing the previous running-extreme EMA-touch state
+ * machine. Everything else in this file (chart rendering, canvas overlay,
+ * instance management, public API) is unchanged.
+ *
+ * Summary of the ported algorithm: the engine alternates between "awaiting
+ * a low" and "awaiting a high" (always starts awaiting a low). An EMA9
+ * crossing candle only SIGNALS that a turning point happened recently —
+ * it does not itself pin the pivot:
+ *   - Confirm LOW:  candle is green (close > open) AND close > EMA9(high),
+ *     AND enough bars have passed since the last signal candle
+ *     (`i - lastConfirmBar + 1 >= MIN_BARS_SINCE_PIVOT`, default 3).
+ *   - Confirm HIGH: candle's body midpoint (open+close)/2 is below
+ *     EMA9(low), same timing gate (color-blind by default).
+ * Once signalled, the engine searches BACKWARD over a bounded window (300
+ * candles for the very first pivot ever, else 480, never reaching into/past
+ * the previous confirmed pivot) for the single most extreme candle (ties
+ * favor the older candle), then checks its immediate neighbor(s) aren't
+ * more extreme — if they are, the candidate is rejected and a later signal
+ * gets another chance. See motherwave.js's module docstring for the fuller
+ * writeup (same algorithm, shared with the Mother Wave / Driver Wave
+ * detection there).
  */
 
 const MAX_WAVES = 50;
@@ -53,11 +79,76 @@ export function updateWavesIndicatorPure(candles, emaHighs, emaLows) {
   const eL = emaLows?.length === candles.length
     ? emaLows : calcEMA(candles.map((c) => c.low), 9);
 
-  let state = 0, bestPrice = null, bestBar = null, legTouchedEMA = false;
-  let lastPrice = null, lastBar = null, prevWaveType = "";
-  let prevHigh = null, prevLow = null, currWaveType = "";
+  // ── Wave / pivot detection (ported — see module docstring) ─────────────
+  const MIN_BARS_SINCE_PIVOT = 3;
+  const FIRST_PIVOT_LOOKBACK = 300;
+  const PIVOT_LOOKBACK = 480;
+  const NEIGHBOR_RADIUS = 1;
+  const STRICT_HIGH_REQUIRES_RED = false;
+
+  let awaiting = "low";
+  let lastPivotBar = null, lastPivotPrice = null, lastConfirmBar = null;
+  let prevHigh = null, prevLow = null, prevWaveType = "";
 
   const pivots = [], segments = [];
+
+  const extremeAt = (j, isLow) => (isLow ? candles[j].low : candles[j].high);
+
+  function tryConfirm(kind, signalBar) {
+    const isLow = kind === "low";
+    const span = lastPivotBar == null
+      ? Math.min(signalBar, FIRST_PIVOT_LOOKBACK)
+      : Math.max(Math.min(signalBar - lastPivotBar - 1, PIVOT_LOOKBACK), 1);
+
+    let bestPrice = extremeAt(signalBar, isLow);
+    let bestOffset = 0;
+    for (let off = 1; off <= span; off++) {
+      const v = extremeAt(signalBar - off, isLow);
+      if ((isLow && v <= bestPrice) || (!isLow && v >= bestPrice)) {
+        bestPrice = v; bestOffset = off;
+      }
+    }
+
+    // Neighbor check: reject if anything at best_offset +/- d is more extreme.
+    let valid = true;
+    for (let d = 1; d <= NEIGHBOR_RADIUS; d++) {
+      const nearOff = Math.max(bestOffset - d, 0);
+      const farOff = Math.min(bestOffset + d, span);
+      const nearV = extremeAt(signalBar - nearOff, isLow);
+      const farV = extremeAt(signalBar - farOff, isLow);
+      if (isLow && Math.min(nearV, farV) < bestPrice) valid = false;
+      if (!isLow && Math.max(nearV, farV) > bestPrice) valid = false;
+    }
+    if (!valid) return;
+
+    confirmPivot(kind, signalBar - bestOffset, bestPrice, signalBar);
+  }
+
+  function confirmPivot(kind, pivotBar, price, signalBar) {
+    let currWaveType;
+    if (kind === "high") {
+      currWaveType = prevHigh === null ? "HH" : price > prevHigh ? "HH" : "LH";
+      prevHigh = price;
+    } else {
+      currWaveType = prevLow === null ? "LL" : price < prevLow ? "LL" : "HL";
+      prevLow = price;
+    }
+    pivots.push({ barIndex: pivotBar, price, side: kind, waveType: currWaveType, time: candles[pivotBar].time });
+
+    if (lastPivotBar !== null) {
+      const mbi = Math.floor((lastPivotBar + pivotBar) / 2);
+      segments.push({
+        fromBarIndex: lastPivotBar, fromPrice: lastPivotPrice,
+        toBarIndex: pivotBar, toPrice: price,
+        midBarIndex: mbi, midPrice: (lastPivotPrice + price) / 2,
+        prevWaveType, currWaveType, toSide: kind,
+        fromTime: candles[lastPivotBar].time, toTime: candles[pivotBar].time, midTime: candles[mbi].time,
+      });
+    }
+    prevWaveType = currWaveType;
+    lastPivotBar = pivotBar; lastPivotPrice = price; lastConfirmBar = signalBar;
+    awaiting = kind === "low" ? "high" : "low";
+  }
 
   for (let i = 0; i < candles.length; i++) {
     const c = candles[i];
@@ -66,61 +157,14 @@ export function updateWavesIndicatorPure(candles, emaHighs, emaLows) {
 
     const isGreen = c.close > c.open;
     const isRed = c.close < c.open;
-    const touchHigh = (isGreen && c.close > emaH) || (isRed && c.open > emaH);
-    const touchLow = (isGreen && c.open < emaL) || (isRed && c.close < emaL);
+    const bodyMid = (c.open + c.close) / 2;
+    const enoughBars = lastConfirmBar === null || (i - lastConfirmBar + 1 >= MIN_BARS_SINCE_PIVOT);
 
-    if (state === 0) {
-      if (touchHigh) { state = 1; bestPrice = c.high; bestBar = i; legTouchedEMA = true; }
-      else if (touchLow) { state = -1; bestPrice = c.low; bestBar = i; legTouchedEMA = true; }
-      continue;
-    }
-
-    if (state === 1) {
-      if (bestPrice === null || c.high > bestPrice) { bestPrice = c.high; bestBar = i; }
-      if (touchHigh) legTouchedEMA = true;
-      if (touchLow && legTouchedEMA) {
-        const lp = bestPrice, lb = bestBar;
-        currWaveType = prevHigh === null ? "HH" : lp > prevHigh ? "HH" : "LH";
-        prevHigh = lp;
-        pivots.push({ barIndex: lb, price: lp, side: "high", waveType: currWaveType, time: candles[lb].time });
-        if (lastPrice !== null) {
-          const mbi = Math.floor((lastBar + lb) / 2);
-          segments.push({
-            fromBarIndex: lastBar, fromPrice: lastPrice,
-            toBarIndex: lb, toPrice: lp,
-            midBarIndex: mbi, midPrice: (lastPrice + lp) / 2,
-            prevWaveType, currWaveType, toSide: "high",
-            fromTime: candles[lastBar].time, toTime: candles[lb].time, midTime: candles[mbi].time,
-          });
-        }
-        prevWaveType = currWaveType; lastPrice = lp; lastBar = lb;
-        state = -1; bestPrice = c.low; bestBar = i; legTouchedEMA = touchLow;
-      }
-      continue;
-    }
-
-    if (state === -1) {
-      if (bestPrice === null || c.low < bestPrice) { bestPrice = c.low; bestBar = i; }
-      if (touchLow) legTouchedEMA = true;
-      if (touchHigh && legTouchedEMA) {
-        const lp = bestPrice, lb = bestBar;
-        currWaveType = prevLow === null ? "LL" : lp < prevLow ? "LL" : "HL";
-        prevLow = lp;
-        pivots.push({ barIndex: lb, price: lp, side: "low", waveType: currWaveType, time: candles[lb].time });
-        if (lastPrice !== null) {
-          const mbi = Math.floor((lastBar + lb) / 2);
-          segments.push({
-            fromBarIndex: lastBar, fromPrice: lastPrice,
-            toBarIndex: lb, toPrice: lp,
-            midBarIndex: mbi, midPrice: (lastPrice + lp) / 2,
-            prevWaveType, currWaveType, toSide: "low",
-            fromTime: candles[lastBar].time, toTime: candles[lb].time, midTime: candles[mbi].time,
-          });
-        }
-        prevWaveType = currWaveType; lastPrice = lp; lastBar = lb;
-        state = 1; bestPrice = c.high; bestBar = i; legTouchedEMA = touchHigh;
-      }
-      continue;
+    if (awaiting === "low") {
+      if (isGreen && c.close > emaH && enoughBars) tryConfirm("low", i);
+    } else {
+      const colorOk = STRICT_HIGH_REQUIRES_RED ? isRed : true;
+      if (bodyMid < emaL && colorOk && enoughBars) tryConfirm("high", i);
     }
   }
 
@@ -444,4 +488,4 @@ export function removeWavesIndicator(fullTeardown = false, chart) {
     if (inst.ctx && inst.canvas) inst.ctx.clearRect(0, 0, inst.canvas.clientWidth, inst.canvas.clientHeight);
   }
   if (inst.onWaveData) inst.onWaveData([], []);
-}
+} 
