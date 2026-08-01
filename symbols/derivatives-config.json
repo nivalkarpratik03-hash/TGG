@@ -83,6 +83,9 @@
   },
   "commodities": {
     "CRUDEOILM": {
+      "expiryTypes": [
+        "monthly"
+      ],
       "hasOptions": true,
       "hasFutures": true,
       "mcxAtmReference": "own_futures",
@@ -90,6 +93,9 @@
       "notes": "Fut+opt symbols confirmed via live Fyers screenshot (MCX:CRUDEOILM26AUGFUT, MCX:CRUDEOILM26AUG7900CE). Gap + ATM reference confirmed by commodities desk. No Saturday session, single cycle -- confirmed."
     },
     "NATGASMINI": {
+      "expiryTypes": [
+        "monthly"
+      ],
       "hasOptions": true,
       "hasFutures": true,
       "mcxAtmReference": "own_futures",
@@ -97,6 +103,9 @@
       "notes": "Fut+opt symbols + strike gap confirmed via live Fyers screenshot (MCX:NATGASMINI26JULFUT, MCX:NATGASMINI26JUL280CE / 285CE -- 5-point spacing visible directly). ATM reference confirmed by commodities desk. No Saturday session, single cycle -- confirmed."
     },
     "SILVERM": {
+      "expiryTypes": [
+        "monthly"
+      ],
       "hasOptions": true,
       "hasFutures": true,
       "mcxAtmReference": "own_futures",
@@ -104,6 +113,9 @@
       "notes": "OPTIONS-ONLY TRACKING TARGET -- Silver Micro (SILVERMIC, the contract actually traded for capital efficiency) has NO listed options; SILVERM's options are used instead, confirmed by commodities desk. Strike gap CORRECTED to 250 after live MCX option-chain screenshot showed consecutive strikes 224000/224250/224500/... -- an earlier '1000' figure (from desk + a flawed single-symbol-search check) was wrong and is superseded by this direct screenshot evidence. ATM reference confirmed via the same screenshot (SILVERMQ2026 marker sitting on the futures price line between strikes)."
     },
     "GOLDM": {
+      "expiryTypes": [
+        "monthly"
+      ],
       "hasOptions": true,
       "hasFutures": true,
       "mcxAtmReference": "own_futures",
@@ -111,6 +123,7 @@
       "notes": "OPTIONS-ONLY TRACKING TARGET -- Gold Petal (GOLDPETAL, the contract actually traded) has NO listed options; GOLDM's options are used instead, confirmed by commodities desk. Strike gap 500 confirmed 3 independent ways: desk figure, live Fyers search for the specific strike 148500, and a live MCX option-chain screenshot showing consecutive 500-spaced strikes. ATM reference confirmed via the same screenshot (GOLDMQ2026 marker on the futures price line)."
     },
     "SILVERMIC": {
+      "expiryTypes": [],
       "hasOptions": false,
       "hasFutures": true,
       "mcxAtmReference": null,
@@ -118,6 +131,7 @@
       "notes": "FUTURES-ONLY. No options exist for this contract -- confirmed by commodities desk and MCX's own product list (Options page lists Silver Mini, not Silver Micro). Not part of the ATM merge-check at all; only needs the separate current+next-month futures roll (not yet built)."
     },
     "GOLDPETAL": {
+      "expiryTypes": [],
       "hasOptions": false,
       "hasFutures": true,
       "mcxAtmReference": null,

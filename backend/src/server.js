@@ -1329,40 +1329,16 @@ server.listen(PORT, async () => {
   await initialRestFetch();
 
   // ─── Scanner + Backtest symbol loading ──────────────────────────────────────
+  // REPOINTED 2026-07-31 — this used to be its own duplicate loadScanSymbols(),
+  // re-parsing frontend/src/symbols.json, mcx.json, stocks.xlsx, and
+  // NIFTY.xlsx independently, with its own simpler dedup logic. Deleted —
+  // Scanner/backtest symbol loading now calls symbolsRouter.js's own
+  // getSymbols(), the exact same parser (and 1-hour cache) GET /api/symbols
+  // uses, so there is only ever one symbol parser in the codebase. That
+  // parser already reads the root symbols/ master (index.json, equity.json,
+  // commodity.json) instead of frontend/src/ — see symbolsRouter.js.
   setImmediate(() => {
-    const path = require("path");
-    const fs = require("fs");
-    const FRONTEND_SRC = path.resolve(__dirname, "../../frontend/src");
-
-    function loadScanSymbols() {
-      const symbols = new Set();
-
-      // symbols.json
-      try {
-        const arr = JSON.parse(fs.readFileSync(path.join(FRONTEND_SRC, "symbols.json"), "utf8"));
-        arr.forEach((s) => s.symbol && symbols.add(s.symbol.trim()));
-      } catch { }
-
-      // mcx.json
-      try {
-        const arr = JSON.parse(fs.readFileSync(path.join(FRONTEND_SRC, "mcx.json"), "utf8"));
-        arr.forEach((s) => s.symbol && symbols.add(s.symbol.trim()));
-      } catch { }
-
-      // stocks.xlsx and NIFTY.xlsx via xlsx
-      for (const xlFile of ["stocks.xlsx", "NIFTY.xlsx"]) {
-        try {
-          const XLSX = require("xlsx");
-          const wb = XLSX.readFile(path.join(FRONTEND_SRC, xlFile));
-          const ws = wb.Sheets[wb.SheetNames[0]];
-          XLSX.utils.sheet_to_json(ws).forEach((r) => r.symbol && symbols.add(String(r.symbol).trim()));
-        } catch { }
-      }
-
-      return [...symbols];
-    }
-
-    const allSymbols = loadScanSymbols();
+    const allSymbols = symbolsRouter.getSymbols().map((s) => s.symbol);
     console.log(`[Scanner] Loaded ${allSymbols.length} symbols for scanning`);
     scanner.setSymbols(allSymbols);
     backtestRunner.setSymbols(allSymbols);

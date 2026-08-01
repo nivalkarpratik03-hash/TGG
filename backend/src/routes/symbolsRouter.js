@@ -1,20 +1,51 @@
 /**
  * symbolsRouter.js
  * ─────────────────────────────────────────────────────────────────
- * Provides REST endpoints that merge symbols from:
- *   1. frontend/src/symbols.json  — curated indices + NSE equities
- *   2. frontend/src/stocks.xlsx   — 203 NSE equities (EQ sheet)
- *   3. frontend/src/NIFTY.xlsx    — Nifty-specific list
- *   4. frontend/src/mcx.json      — MCX commodity ROOTS (names only —
- *                                   the actual tradable symbols are
- *                                   generated, see "Futures generation")
+ * REPOINTED 2026-07-31 — provides REST endpoints that merge symbols from
+ * the root `symbols/` master (sibling to backend/, frontend/, database/)
+ * instead of reaching into frontend/src/:
+ *   1. symbols/index.json      — 5 curated indices (plain: name/symbol/exchange/type)
+ *   2. symbols/equity.json     — ~202 NSE equities (plain: name/symbol/exchange/type/displayName)
+ *   3. symbols/commodity.json  — 6 curated MCX commodity ROOTS (GapFill-curated
+ *                                list, NOT frontend/src/mcx.json's broader 18 —
+ *                                names only, the actual tradable symbols are
+ *                                generated, see "Futures generation")
+ *
+ * This replaces the previous 4-source read (frontend/src/symbols.json,
+ * stocks.xlsx, NIFTY.xlsx, mcx.json) — this is the fix for the confirmed
+ * backend→frontend coupling flagged earlier this session. frontend/src/
+ * symbols.json was confirmed byte-identical to noExpirySymbols.json (which
+ * equity.json is itself sourced from) plus 5 stale hardcoded dated MCX
+ * futures contracts, and stocks.xlsx/NIFTY.xlsx together produced the same
+ * ~202/205-equity set now already carried verbatim in equity.json — so no
+ * xlsx parsing is needed here any more either.
+ *
+ * DISPLAY-NAME NOTE (flagged, not silently patched): the old mcx.json had
+ * human-readable names for 5 of the 6 curated commodities (e.g. "Gold Mini
+ * (MCX)") but had NO entry at all for NATGASMINI (it only listed the
+ * non-mini "NATURALGAS-I"). Rather than invent prose for the one gap while
+ * keeping hand-written names for the other 5, symbol search below uses
+ * commodity.json's own `name` field (the bare ticker root, e.g.
+ * "CRUDEOILM") uniformly for all 6. This is a cosmetic display-text change
+ * from before — if a prettier label is wanted, add a `displayName` field to
+ * symbols/commodity.json (same pattern equity.json already uses) rather
+ * than reintroducing a second source of truth here.
+ *
+ * INDEX DISPLAY-NAME NOTE (also flagged): symbols.json used to show "NIFTY
+ * 50" / "NIFTY BANK" / "SENSEX" for the 3 indices it carried. index.json's
+ * own `name` field is the shorter "NIFTY" / "BANKNIFTY" / "SENSEX". To
+ * avoid silently changing established search-result text, the 3 legacy
+ * names are preserved via INDEX_DISPLAY_NAME_OVERRIDES below; FINNIFTY and
+ * MIDCPNIFTY are new to symbol search (symbols.json never carried them) so
+ * they use index.json's own `name` field as-is — there's no prior
+ * convention to preserve for those two.
  *
  * PLUS dynamically generated, always-current-month contracts:
  *   - NSE equity futures      e.g. NSE:RELIANCE26JUNFUT
  *   - NIFTY / BANKNIFTY futures
  *   - MCX commodity futures   e.g. MCX:CRUDEOIL26JULFUT
  * These are computed fresh from today's date on every cache rebuild
- * (see CACHE_TTL_MS below) so they never go stale.
+ * (see CACHE_TTL_MS below) so they never go stale. UNCHANGED from before.
  *
  * Every returned entry includes a `type` field:
  *   "index" | "equity" | "commodity" | "future" | "option" | "etf"
@@ -42,37 +73,29 @@ const { previousTradingDay } = require("../data/holidays");
 
 const router = express.Router();
 
-const FRONTEND_SRC = path.resolve(__dirname, "../../../frontend/src");
-const SYMBOLS_JSON = path.join(FRONTEND_SRC, "symbols.json");
-const MCX_JSON = path.join(FRONTEND_SRC, "mcx.json");
-const STOCKS_XLSX = path.join(FRONTEND_SRC, "stocks.xlsx");
-const NIFTY_XLSX = path.join(FRONTEND_SRC, "NIFTY.xlsx");
+// backend/src/routes -> backend/src -> backend -> repo root -> symbols
+const SYMBOLS_DIR = path.resolve(__dirname, "../../../symbols");
+const INDEX_JSON = path.join(SYMBOLS_DIR, "index.json");
+const EQUITY_JSON = path.join(SYMBOLS_DIR, "equity.json");
+const COMMODITY_JSON = path.join(SYMBOLS_DIR, "commodity.json");
+
+// See "INDEX DISPLAY-NAME NOTE" above.
+const INDEX_DISPLAY_NAME_OVERRIDES = {
+  NIFTY: "NIFTY 50",
+  BANKNIFTY: "NIFTY BANK",
+  SENSEX: "SENSEX",
+};
 
 let _cachedSymbols = null;
 let _cacheTime = 0;
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
-
-// ── Type inference ──────────────────────────────────────────────────────────
-function inferType(sym, existingType) {
-  if (existingType) return existingType;
-  const s = sym.toUpperCase();
-  // Options: ...26JUN3000CE / ...26JUN3000PE (checked before FUT/MCX so it
-  // never gets misclassified just because it also starts with an exchange).
-  if (/\d{2}[A-Z]{3}\d+(CE|PE)$/.test(s)) return "option";
-  // Futures: ...26JUNFUT / ...26JULFUT
-  if (/\d{2}[A-Z]{3}FUT$/.test(s)) return "future";
-  if (s.startsWith("MCX:")) return "commodity";
-  if (s.includes("INDEX") || s.includes("SENSEX")) return "index";
-  if (s.endsWith("-ETF") || s.endsWith("-EF")) return "etf";
-  return "equity";
-}
 
 // ── Futures generation ───────────────────────────────────────────────────────
 // Fyers symbols for futures are DATED contracts, e.g. "NSE:RELIANCE26JUNFUT"
 // or "MCX:CRUDEOIL26JULFUT" — there is no "-I" continuous-contract ticker in
 // Fyers' symbol master (that convention belongs to other data vendors). We
 // compute the live contract months from today's date so these never go
-// stale and never need manual monthly edits.
+// stale and never need manual monthly edits. UNCHANGED from before.
 const MONTH_CODES = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 const FUT_MONTHS_AHEAD = 3; // near / next / far contract months shown in search
 
@@ -91,6 +114,7 @@ const FUT_MONTHS_AHEAD = 3; // near / next / far contract months shown in search
 // that expires on (say) the 22nd still shows up through the 23rd, in case
 // MCX's actual circular date lands a day later than our approximation.
 // Source: MCX settlement/expiry circulars (rules vary by commodity).
+// UNCHANGED from before.
 const MCX_EXPIRY_DAY = {
   CRUDEOIL: 19, CRUDEOILM: 19,                 // ~19th–20th
   NATURALGAS: 23, NATGASMINI: 23,                  // ~23rd (NATGASMINI is Fyers root for Nat Gas Mini)
@@ -109,7 +133,7 @@ const EXPIRY_GRACE_DAYS = 1; // roll over this many days AFTER the approx expiry
 // it only lists contracts in a fixed cycle. Building "...26JULFUT" for these
 // roots produces a symbol that was never listed, which Fyers correctly
 // rejects with "Invalid symbol provided" — confirmed via MCX expiry
-// circulars: Feb, Apr, Jun, Aug, Nov, Dec.
+// circulars: Feb, Apr, Jun, Aug, Nov, Dec. UNCHANGED from before.
 const RESTRICTED_MONTH_CYCLE = {
   SILVER: [1, 3, 5, 7, 10, 11],     // 0-based: Feb, Apr, Jun, Aug, Nov, Dec
   SILVERM: [1, 3, 5, 7, 10, 11],
@@ -191,7 +215,7 @@ const INDEX_FUT_ROOTS = {
 // already-dead contract (e.g. still offering "...26JUNFUT" days after it
 // expired) — Fyers rejects those as invalid, and that's what was showing
 // up as a broken/invalid result in the search box. This mirrors the same
-// offset pattern already used for MCX commodities below.
+// offset pattern already used for MCX commodities below. UNCHANGED from before.
 const NSE_EXPIRY_DOW = 2; // Tuesday
 function nseNearMonthOffset(from = new Date()) {
   // Last Tuesday of the current month, at midnight.
@@ -208,15 +232,17 @@ function nseNearMonthOffset(from = new Date()) {
 }
 
 /**
- * mcx.json is treated as a list of commodity ROOTS + display names (not
- * literal tradable symbols) — its old "-I" suffixed symbols are not valid
- * Fyers tickers and would return no historical data. We strip the suffix
- * and build real dated contracts from the root instead.
+ * symbols/commodity.json already gives bare exchange:root strings (e.g.
+ * "MCX:CRUDEOILM", no "-I" suffix) — unlike the old mcx.json, which used
+ * "-I" continuous-contract tickers that aren't real Fyers symbols. The
+ * "-I" strip below is kept as a no-op safety net only, in case that file
+ * is ever hand-edited back to the old convention; it does nothing to the
+ * current data.
  */
 function loadCommodityRoots(filePath) {
   try {
-    const arr = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return arr
+    const { commodities } = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return commodities
       .filter((s) => s.symbol && s.name)
       .map((s) => {
         const ticker = String(s.symbol).trim();
@@ -232,12 +258,13 @@ function loadCommodityRoots(filePath) {
 /**
  * Builds live FUT contracts for:
  *   - NSE equities + the two liquid index futures (NIFTY, BANKNIFTY)
- *   - MCX commodities (roots taken from mcx.json)
+ *   - MCX commodities (roots taken from symbols/commodity.json)
  *
  * The nearest commodity month is tagged type "commodity" so it keeps
  * appearing (and working) under the existing Commodity tab using a real,
  * currently-tradable symbol. Every month (including that nearest one) is
  * also tagged "future" so it shows under the new Futures tab.
+ * UNCHANGED from before.
  */
 function buildFutures(equityAndIndexSymbols, commodityRoots) {
   const nseOffset = nseNearMonthOffset();
@@ -280,18 +307,17 @@ function buildFutures(equityAndIndexSymbols, commodityRoots) {
 }
 
 // ── Loaders ─────────────────────────────────────────────────────────────────
-function loadExcel(filePath) {
+
+/** symbols/index.json's 5 curated indices → flat {symbol, name, type}. */
+function loadIndices(filePath) {
   try {
-    const XLSX = require("xlsx");
-    const wb = XLSX.readFile(filePath);
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws);
-    return rows
-      .filter((r) => r.symbol && r.Name)
-      .map((r) => ({
-        symbol: String(r.symbol).trim(),
-        name: String(r.Name).trim(),
-        type: inferType(String(r.symbol).trim(), null),
+    const { indices } = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return indices
+      .filter((s) => s.symbol && s.name)
+      .map((s) => ({
+        symbol: String(s.symbol).trim(),
+        name: INDEX_DISPLAY_NAME_OVERRIDES[s.name] || String(s.name).trim(),
+        type: "index",
       }));
   } catch (err) {
     console.warn(`[Symbols] Could not read ${path.basename(filePath)}: ${err.message}`);
@@ -299,15 +325,22 @@ function loadExcel(filePath) {
   }
 }
 
-function loadJson(filePath) {
+/**
+ * symbols/equity.json's ~202 curated equities → flat {symbol, name, type}.
+ * Uses `displayName` (the full company name, e.g. "360 ONE WAM LIMITED"),
+ * confirmed byte-identical to what frontend/src/symbols.json's `name` field
+ * used to carry for these same symbols — not `name` (equity.json's short
+ * ticker-style field, e.g. "360ONE").
+ */
+function loadEquities(filePath) {
   try {
-    const arr = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return arr
-      .filter((s) => s.symbol && s.name)
+    const { equities } = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return equities
+      .filter((s) => s.symbol && (s.displayName || s.name))
       .map((s) => ({
         symbol: String(s.symbol).trim(),
-        name: String(s.name).trim(),
-        type: inferType(String(s.symbol).trim(), s.type || null),
+        name: String(s.displayName || s.name).trim(),
+        type: "equity",
       }));
   } catch (err) {
     console.warn(`[Symbols] Could not read ${path.basename(filePath)}: ${err.message}`);
@@ -320,9 +353,8 @@ function buildSymbolList() {
   const seen = new Map(); // symbol → entry
 
   const sources = [
-    ...loadJson(SYMBOLS_JSON),
-    ...loadExcel(STOCKS_XLSX),
-    ...loadExcel(NIFTY_XLSX),
+    ...loadIndices(INDEX_JSON),
+    ...loadEquities(EQUITY_JSON),
   ];
 
   for (const s of sources) {
@@ -335,7 +367,7 @@ function buildSymbolList() {
   const equityAndIndex = Array.from(seen.values()).filter(
     (s) => s.type === "equity" || s.type === "index"
   );
-  const commodityRoots = loadCommodityRoots(MCX_JSON);
+  const commodityRoots = loadCommodityRoots(COMMODITY_JSON);
   const generated = buildFutures(equityAndIndex, commodityRoots);
 
   for (const g of generated) {
@@ -431,3 +463,9 @@ module.exports.nseNearMonthOffset = nseNearMonthOffset;
 module.exports.mcxNearMonthOffset = mcxNearMonthOffset;
 module.exports.nextMonthCodes = nextMonthCodes;
 module.exports.monthCodesFromOffset = monthCodesFromOffset;
+// NEW 2026-07-31 — exposed so server.js's Scanner+Backtest symbol loading
+// (previously its own duplicate loadScanSymbols(), now deleted, see
+// server.js) can reuse this exact parser instead of re-reading the same
+// files with a second, simpler implementation. Returns the same cached/
+// refreshed list getSymbols() above uses — one parser, one cache, no drift.
+module.exports.getSymbols = getSymbols;
