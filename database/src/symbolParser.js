@@ -114,17 +114,57 @@ function lastCalendarDayOfMonth(year, month) {
   return new Date(year, month + 1, 0);
 }
 
-/** Last Tuesday of `month` (0-based) in `year`, at midnight local time. */
+/**
+ * Last Tuesday of `month` (0-based) in `year`, at midnight local time.
+ *
+ * ROOT-CAUSE FIX (2026-07-30, CRITICAL): this loop used to have zero guard
+ * against Invalid Date input. If year/month are NaN (e.g. an upstream
+ * caller parsed a non-ISO date string like "30-07-2026" with
+ * `new Date(str + "T00:00:00")`, which silently returns Invalid Date
+ * instead of throwing), `d.getDay()` returns NaN forever, `NaN !== 2` is
+ * always true, and `d.setDate(d.getDate() - 1)` on an Invalid Date never
+ * fixes it — an infinite synchronous loop that permanently blocks
+ * Node's single-threaded event loop, freezing the ENTIRE server
+ * (HTTP + WebSocket together, not just the caller), which is exactly
+ * the "whole app frozen, frontend can't even connect" symptom this was
+ * traced to. A calendar month can only ever need at most 7 decrements to
+ * reach a specific weekday, so a cap of 40 is generous headroom, not a
+ * tuned magic number — anything beyond it means the input was never a
+ * valid date to begin with, and this now fails loudly instead of hanging
+ * forever silently.
+ */
 function lastTuesdayOfMonth(year, month) {
   const d = lastCalendarDayOfMonth(year, month);
-  while (d.getDay() !== 2) d.setDate(d.getDate() - 1);
+  if (isNaN(d.getTime())) {
+    throw new Error(`lastTuesdayOfMonth: invalid year/month (year=${year}, month=${month}) — refusing to loop on Invalid Date`);
+  }
+  let guard = 0;
+  while (d.getDay() !== 2) {
+    d.setDate(d.getDate() - 1);
+    if (++guard > 40) {
+      throw new Error(`lastTuesdayOfMonth: exceeded 40 iterations for year=${year}, month=${month} — date became invalid mid-loop, refusing to hang`);
+    }
+  }
   return d;
 }
 
-/** Last Thursday of `month` (0-based) in `year`, at midnight local time. */
+/**
+ * Last Thursday of `month` (0-based) in `year`, at midnight local time.
+ * Same Invalid-Date guard as lastTuesdayOfMonth above — see that function's
+ * comment for the full root-cause explanation.
+ */
 function lastThursdayOfMonth(year, month) {
   const d = lastCalendarDayOfMonth(year, month);
-  while (d.getDay() !== 4) d.setDate(d.getDate() - 1);
+  if (isNaN(d.getTime())) {
+    throw new Error(`lastThursdayOfMonth: invalid year/month (year=${year}, month=${month}) — refusing to loop on Invalid Date`);
+  }
+  let guard = 0;
+  while (d.getDay() !== 4) {
+    d.setDate(d.getDate() - 1);
+    if (++guard > 40) {
+      throw new Error(`lastThursdayOfMonth: exceeded 40 iterations for year=${year}, month=${month} — date became invalid mid-loop, refusing to hang`);
+    }
+  }
   return d;
 }
 
@@ -295,15 +335,14 @@ module.exports = {
   computeMonthlyExpiry,
   computeWeeklyExpiry,
   lastThursdayOfMonth,
-  // ROOT-CAUSE FIX (2026-07-30): lastTuesdayOfMonth was defined above but
-  // never exported, while lastThursdayOfMonth was. derivativesGapFill.js's
-  // classifyMonthlyExpiry() destructures BOTH from this module and picks
-  // lastTuesdayOfMonth for every NSE dual-cycle underlying (in the curated
-  // list, that's NIFTY only — SENSEX is BSE and correctly used the already-
-  // exported lastThursdayOfMonth, which is why only NIFTY ever crashed).
-  // With it undefined, calling it threw `TypeError: lastDayFn is not a
-  // function` immediately after NIFTY's first fetchOptionChain call
-  // logged — the exact, reproducible point the checkpoint appeared to die.
+  // ROOT-CAUSE FIX (2026-07-30): lastTuesdayOfMonth was already defined
+  // above but never exported, while lastThursdayOfMonth was.
+  // derivativesGapFill.js's classifyMonthlyExpiry() destructures BOTH from
+  // this module and picks lastTuesdayOfMonth for NSE dual-cycle
+  // underlyings (in the curated list, that's NIFTY only). With it
+  // undefined, calling it threw "TypeError: lastDayFn is not a function"
+  // immediately after NIFTY's fetchOptionChain call — the exact point the
+  // checkpoint appeared to freeze.
   lastTuesdayOfMonth,
   MCX_EXPIRY_DAY,
 };
