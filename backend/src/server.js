@@ -32,6 +32,7 @@ const createChartRouter = require("./routes/chartRouter");
 const corsMiddleware = require("./middleware/cors");
 const rateLimiter = require("./middleware/rateLimiter");
 const { wireGapFillScheduler } = require("./derivatives/gapFillScheduler");
+const { loadIndexSpotSymbols, loadStockSpotSymbols } = require("./derivatives/curatedUnderlyingsLoader");
 
 // ─── Database ─────────────────────────────────────────────────────────────────
 // DB is optional — if DATABASE_URL / PGHOST is not set, TGG runs without DB
@@ -601,15 +602,21 @@ async function runCuratedSymbolCatchUp(trigger = "startup") {
   _catchUpInFlight = true;
 
   try {
-    const fs = require("fs");
-    const path = require("path");
-    const NO_EXPIRY_SYMBOLS_JSON = path.resolve(__dirname, "./data/noExpirySymbols.json");
+    // REPOINTED 2026-07-30 (confirmed, Option 1): used to read
+    // ./data/noExpirySymbols.json directly. Now builds the same flat
+    // 205-symbol list (3 indices + ~202 equities) from the new
+    // symbols/index.json + symbols/stocks.json files via
+    // curatedUnderlyingsLoader.js, so noExpirySymbols.json has no
+    // remaining readers anywhere in the codebase and can be safely
+    // deleted (curatedUnderlyingsLoader.js was the other former reader,
+    // also repointed).
     let curatedSymbols = [];
     try {
-      const all = JSON.parse(fs.readFileSync(NO_EXPIRY_SYMBOLS_JSON, "utf8"));
-      curatedSymbols = all.map((s) => s.symbol).filter(Boolean);
+      const indexSpot = loadIndexSpotSymbols();
+      const stockSpot = loadStockSpotSymbols();
+      curatedSymbols = [...indexSpot, ...stockSpot].map((s) => s.symbol).filter(Boolean);
     } catch (e) {
-      console.warn("[Recovery] Could not load noExpirySymbols.json for catch-up scan:", e.message);
+      console.warn("[Recovery] Could not load symbols/index.json + symbols/stocks.json for catch-up scan:", e.message);
       return;
     }
 
@@ -1269,11 +1276,10 @@ server.listen(PORT, async () => {
         }
 
         // ── Derivatives GapFill scheduler ───────────────────────────────────
-        // Wires ONLY the recurring NSE/BSE-close (15:30 IST) and MCX-close
-        // (23:30 IST / 14:00 IST Sat) checks right now — that's safe, it
-        // makes zero broker calls itself, it only starts a once-a-minute
-        // clock comparison (see gapFillScheduler.js). The startup checkpoint
-        // is fired explicitly below, chained after curated catch-up.
+        // Wires the recurring NSE/BSE-close and MCX-close checks now (cheap —
+        // just a once-a-minute clock comparison, see gapFillScheduler.js). The
+        // startup checkpoint is NOT fired here — it's chained below, onto the
+        // curated catch-up Promise, so it never races that boot-time work.
         let gapFillScheduler = null;
         try {
           gapFillScheduler = wireGapFillScheduler();
@@ -1285,22 +1291,21 @@ server.listen(PORT, async () => {
         // See runCuratedSymbolCatchUp() (hoisted function declaration,
         // defined further down this file) for the full implementation.
         //
-        // SEQUENCING FIX (2026-07-30 — root cause #3 of "everything
-        // overlaps"): runCuratedSymbolCatchUp("startup") used to be fired
-        // with its own bare setImmediate, and gapFillScheduler.js used to
-        // fire its OWN separate, completely independent setImmediate for the
-        // startup checkpoint — two unrelated boot-time broker sweeps racing
-        // each other with no ordering guarantee. Fixed by chaining: curated
-        // spot/index catch-up (Recovery gap-scan + Staleness sweep, ~205
-        // symbols) now runs first and must fully resolve before the GapFill
-        // startup checkpoint (indices + MCX commodities F&O — see
-        // derivativesGapFill.js) is even attempted. This matches the order
-        // you asked for: curated spot first, then index F&O, then MCX F&O.
+        // ROOT CAUSE FIXED HERE (2026-07-30, "everything overlaps"):
+        // runCuratedSymbolCatchUp("startup") used to be fired with its own
+        // bare setImmediate, and gapFillScheduler.js used to fire its own
+        // startup checkpoint independently via its own setImmediate — two
+        // unrelated boot-time tasks both hitting the broker at the same
+        // time. Fixed: curated catch-up (Recovery gap-scan + Staleness
+        // sweep across all 205 spot symbols) now runs first and must fully
+        // resolve before the GapFill checkpoint (index+commodity F&O, in
+        // derivativesGapFill.js) is even attempted.
         //
-        // The /api/auth/token route also calls runCuratedSymbolCatchUp again
-        // after a successful re-auth (fix 5 — see chartRouter.js); that path
-        // is untouched — it does not re-fire the GapFill checkpoint, since
-        // re-auth isn't a fresh boot.
+        // The /api/auth/token route also calls runCuratedSymbolCatchUp
+        // again after a successful re-auth (trigger="reauth" — see
+        // chartRouter.js) — that path is untouched, it does not re-fire the
+        // GapFill checkpoint, since fireStartupCheckpoint() is a one-time,
+        // idempotent no-op after its first successful call anyway.
         setImmediate(() => {
           runCuratedSymbolCatchUp("startup")
             .then(() => {

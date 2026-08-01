@@ -407,8 +407,20 @@ async function fetchOptionChain(underlyingSymbol, opts = {}) {
       .filter((e) => e.date);
     // optionsChain entries carry the real tradable symbol per strike -- this
     // is the whole point of calling this function instead of building one.
+    //
+    // ROOT-CAUSE FIX (2026-08-01): Fyers' optionsChain[] array ALSO includes
+    // the underlying's OWN row (its spot/ATM reference line) mixed in with
+    // the real CE/PE strikes -- confirmed directly from this run's log:
+    // "NSE:NIFTY50-INDEX ... no longer parses" was the underlying's own spot
+    // symbol being returned as if it were a strike, because option_type on
+    // that row is neither "CE" nor "PE" and the filter below never checked
+    // it. This is the exact same quirk frontend/src/components/AtmWorkspace.js
+    // already documents in its own comment ("option_type neither CE nor PE").
+    // That underlying row is now excluded here so every downstream caller
+    // (derivativesGapFill.js, chartRouter.js, etc.) only ever sees real
+    // tradable strikes.
     const strikes = (res.data.optionsChain || [])
-      .filter((s) => s && s.symbol)
+      .filter((s) => s && s.symbol && (s.option_type === "CE" || s.option_type === "PE"))
       .map((s) => ({
         symbol: s.symbol,
         strike_price: Number(s.strike_price),
