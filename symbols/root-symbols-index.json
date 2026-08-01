@@ -1,0 +1,35 @@
+{
+  "_readme": "5 index underlyings -- the single source of truth for indices across this app (Scanner, GapFill curated list, symbol search). Plain shape only: name/symbol/exchange/type. F&O-specific fields (expiryTypes, expiryDayRule, etc.) live separately in derivatives-config.json, keyed by 'name', so this file stays lean and usable by any consumer regardless of whether it cares about derivatives tracking. FINNIFTY's spot symbol (NSE:CNXFINANCE-INDEX) is confirmed correct and internally consistent with backend/src/server.js's own INDEX_ROOT_TO_SYMBOL mapping -- but live fetchOptionChain calls against it have been observed erroring 'Please provide a valid symbol' in real terminal logs. This is a known, unresolved, separate issue -- not a wrong symbol in this file. Flagged for investigation, not silently worked around.",
+  "indices": [
+    {
+      "name": "NIFTY",
+      "symbol": "NSE:NIFTY50-INDEX",
+      "exchange": "NSE",
+      "type": "index"
+    },
+    {
+      "name": "BANKNIFTY",
+      "symbol": "NSE:NIFTYBANK-INDEX",
+      "exchange": "NSE",
+      "type": "index"
+    },
+    {
+      "name": "FINNIFTY",
+      "symbol": "NSE:CNXFINANCE-INDEX",
+      "exchange": "NSE",
+      "type": "index"
+    },
+    {
+      "name": "MIDCPNIFTY",
+      "symbol": "NSE:MIDCPNIFTY-INDEX",
+      "exchange": "NSE",
+      "type": "index"
+    },
+    {
+      "name": "SENSEX",
+      "symbol": "BSE:SENSEX-INDEX",
+      "exchange": "BSE",
+      "type": "index"
+    }
+  ]
+}

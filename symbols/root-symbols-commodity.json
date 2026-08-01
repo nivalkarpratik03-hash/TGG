@@ -1,0 +1,41 @@
+{
+  "_readme": "6 commodity underlyings -- CONFIRMED as the correct, final list for this master (user explicitly chose this narrow curated set over frontend/src/mcx.json's broader 18-entry list, which includes non-micro contracts this app does not track). No fixed spot symbol exists for any commodity (confirmed earlier in this project) -- 'symbol' here is the bare exchange:root string used as the fetchOptionChain lookup key, ATM is computed off each commodity's own near-month futures price instead, not spot.",
+  "commodities": [
+    {
+      "name": "CRUDEOILM",
+      "symbol": "MCX:CRUDEOILM",
+      "exchange": "MCX",
+      "type": "commodity"
+    },
+    {
+      "name": "NATGASMINI",
+      "symbol": "MCX:NATGASMINI",
+      "exchange": "MCX",
+      "type": "commodity"
+    },
+    {
+      "name": "SILVERM",
+      "symbol": "MCX:SILVERM",
+      "exchange": "MCX",
+      "type": "commodity"
+    },
+    {
+      "name": "GOLDM",
+      "symbol": "MCX:GOLDM",
+      "exchange": "MCX",
+      "type": "commodity"
+    },
+    {
+      "name": "SILVERMIC",
+      "symbol": "MCX:SILVERMIC",
+      "exchange": "MCX",
+      "type": "commodity"
+    },
+    {
+      "name": "GOLDPETAL",
+      "symbol": "MCX:GOLDPETAL",
+      "exchange": "MCX",
+      "type": "commodity"
+    }
+  ]
+}
