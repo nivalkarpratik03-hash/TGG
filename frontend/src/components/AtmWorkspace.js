@@ -27,7 +27,7 @@ import "../styles/AtmWorkspace.css";
 
 // ─── AtmColumn — one independent mini chart with its own live data feed ──────
 const AtmColumn = React.memo(function AtmColumn({
-  colKey, kind, label, symbol, strike, focused, onFocus, onClose, resolution,
+  colKey, kind, label, symbol, strike, focused, onFocus, onClose, resolution, onLastClose,
 }) {
   const { chartData, loading, refresh } = useSocket();
   const lastRequestedRef = useRef(null);
@@ -44,6 +44,14 @@ const AtmColumn = React.memo(function AtmColumn({
 
   const candles = chartData?.candles || [];
   const lastClose = candles.length ? candles[candles.length - 1].close : null;
+
+  // Reports this column's own live price up to the parent — only wired for
+  // the "mid" (underlying) column below, so this is always the underlying's
+  // real price, never an option's premium (see the root-cause note at the
+  // top of this file on why that distinction matters).
+  useEffect(() => {
+    if (onLastClose && lastClose != null) onLastClose(lastClose);
+  }, [lastClose, onLastClose]);
 
   return (
     <div
@@ -103,14 +111,73 @@ export default function AtmWorkspace({ baseSymbol, resolution, focus, onClose })
   // instead — there's no longer a separate shortcut for that.
   useEffect(() => { if (focus) setFocused(focus); }, [focus]);
 
-  // Fetch the option chain ONCE per baseSymbol — this single response gives
-  // us the real live spot price (the underlying rides along in the same
-  // Fyers getOptionChain payload as its own row, option_type neither CE nor
-  // PE) plus the full real strike ladder for both kinds, so strike-switching
-  // never has to guess or hand-build a symbol.
+  // ── Initial-selection bookkeeping ──────────────────────────────────────
+  // hasSelected: has ANY initial CE/PE strike been picked at all yet
+  //   (real-spot-based OR the temporary middle-of-ladder fallback)?
+  // selectedWithRealSpot: was that pick made using a REAL underlying price?
+  //   If not (the ladder-middle fallback fired because strikes arrived
+  //   before spot did), we're allowed exactly one upgrade to the real
+  //   nearest-to-spot strike the moment real spot shows up.
+  // userMoved: true the instant the person manually steps a strike via
+  //   Ctrl+Shift+↑/↓ — once that happens we NEVER auto-reselect again,
+  //   real spot or not, so a manual choice is never silently overridden.
+  const hasSelected = useRef(false);
+  const selectedWithRealSpot = useRef(false);
+  const userMoved = useRef(false);
+  // Mirrors `spot` state synchronously (state updates are async/batched, so
+  // an effect's closure can't reliably read the latest value the instant
+  // it's set — this ref always has the true current value the moment it's
+  // needed, both for resets and for onMidLastClose).
+  const spotRef = useRef(null);
+
+  const trySelectInitial = useCallback((liveSpot, ceList, peList) => {
+    if (userMoved.current) return;
+    if (hasSelected.current && selectedWithRealSpot.current) return; // already correct, nothing to improve
+    if (!ceList.length && !peList.length) return; // nothing to select from yet
+
+    const nearest = (list) => (liveSpot != null
+      ? list.reduce((best, s) =>
+        Math.abs(s.strike_price - liveSpot) < Math.abs(best.strike_price - liveSpot) ? s : best)
+      : list[Math.floor(list.length / 2)]);
+
+    if (ceList.length) setCeSymbol(nearest(ceList).symbol);
+    if (peList.length) setPeSymbol(nearest(peList).symbol);
+
+    hasSelected.current = true;
+    selectedWithRealSpot.current = liveSpot != null;
+  }, []);
+
+  // Fetch the option chain ONCE per baseSymbol — for the real strike
+  // ladder only. Does NOT source spot price from this response.
+  //
+  // ROOT-CAUSE NOTE (2026-08-01): this used to also read the underlying's
+  // own row out of `strikes` (Fyers mixes it in alongside real CE/PE rows,
+  // with option_type neither "CE" nor "PE") to get a live spot LTP.
+  // fyers/client.js's fetchOptionChain() now correctly filters that row
+  // out before this array is ever built server-side (it was breaking the
+  // derivatives storage pipeline — a real symbol never parses as a dated
+  // option contract). That fix means this response can no longer supply a
+  // spot price at all. Spot now comes from the "mid" column's own live
+  // feed below instead (see onMidLastClose) — which is guaranteed to
+  // always be the underlying itself, never an option's premium, so the
+  // original safety property this file's header comment describes still
+  // holds; only the SOURCE of the live number changed.
   useEffect(() => {
     let cancelled = false;
     setLoadErr(null);
+    // Full reset for this baseSymbol — guards against stale state from a
+    // previous underlying carrying over if this component instance is ever
+    // reused across a symbol change rather than fully remounted.
+    setSpot(null);
+    spotRef.current = null;
+    setCeStrikes([]);
+    setPeStrikes([]);
+    setCeSymbol(null);
+    setPeSymbol(null);
+    hasSelected.current = false;
+    selectedWithRealSpot.current = false;
+    userMoved.current = false;
+
     const params = new URLSearchParams({ symbol: baseSymbol, strikeCount: "20" });
     fetch(`${BACKEND}/api/options/chain?${params.toString()}`)
       .then(async (res) => {
@@ -139,27 +206,30 @@ export default function AtmWorkspace({ baseSymbol, resolution, focus, onClose })
         const pe = strikes
           .filter((s) => s.option_type === "PE")
           .sort((a, b) => a.strike_price - b.strike_price);
-        const underlyingRow = strikes.find(
-          (s) => s.option_type !== "CE" && s.option_type !== "PE" && s.ltp
-        );
-        const spotPrice = underlyingRow?.ltp || null;
 
         setCeStrikes(ce);
         setPeStrikes(pe);
-        setSpot(spotPrice);
-
-        const nearest = (list) => (spotPrice != null
-          ? list.reduce((best, s) =>
-            Math.abs(s.strike_price - spotPrice) < Math.abs(best.strike_price - spotPrice) ? s : best)
-          : list[Math.floor(list.length / 2)]);
-
-        if (ce.length) setCeSymbol(nearest(ce).symbol);
-        if (pe.length) setPeSymbol(nearest(pe).symbol);
         if (!ce.length && !pe.length) setLoadErr(`Fyers returned no strikes for ${baseSymbol}.`);
+
+        // Reads spotRef (not the closed-over `spot` state) — correctly
+        // picks up a real spot if the mid column's feed already reported
+        // one before this fetch resolved, without ever seeing a stale
+        // previous-symbol value (spotRef was reset synchronously above).
+        trySelectInitial(spotRef.current, ce, pe);
       })
       .catch((err) => { if (!cancelled) setLoadErr(err.message); });
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseSymbol]);
+
+  // Called by the "mid" (underlying) AtmColumn every time its own live
+  // price updates. This is the real spot source now (see note above).
+  const onMidLastClose = useCallback((price) => {
+    spotRef.current = price;
+    setSpot(price);
+    trySelectInitial(price, ceStrikes, peStrikes);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ceStrikes, peStrikes, trySelectInitial]);
 
   // ── Ctrl+Shift+↑ / Ctrl+Shift+↓ — move the focused CE/PE column one real
   // strike up/down using the ladder fetched above. No-ops at the ends of the
@@ -176,6 +246,7 @@ export default function AtmWorkspace({ baseSymbol, resolution, focus, onClose })
       e.preventDefault();
       const nextIdx = e.key === "ArrowUp" ? idx + 1 : idx - 1;
       if (nextIdx < 0 || nextIdx >= list.length) return; // already at the end of the ladder
+      userMoved.current = true; // manual choice — never auto-reselect after this
       if (focused === "ce") setCeSymbol(list[nextIdx].symbol);
       else setPeSymbol(list[nextIdx].symbol);
     }
@@ -226,6 +297,7 @@ export default function AtmWorkspace({ baseSymbol, resolution, focus, onClose })
             colKey="mid" kind="mid" label="Underlying" symbol={baseSymbol} strike={null}
             focused={focused === "mid"} onFocus={() => setFocused("mid")}
             onClose={() => closeCol("mid")} resolution={resolution}
+            onLastClose={onMidLastClose}
           />
         )}
         {open.pe && (
