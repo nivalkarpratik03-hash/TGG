@@ -1,0 +1,28 @@
+{
+  "_readme": "F&O-eligibility exceptions for symbols/equity.json's 202 curated equities. equity.json is the general NSE board list (all stocks), NOT the smaller NSE F&O-eligible list -- generating a futures contract for every equity in equity.json produces invalid symbols for stocks that have no listed derivatives at all. This file is a live-verified EXCLUSION list, not a full eligibility table.",
+
+  "coverage": {
+    "verified": 9,
+    "totalEquities": 202,
+    "method": "Each symbol below was individually checked live in the Fyers mobile app on 2026-08-01: searched by name, confirmed whether Fut/Option results appeared in search, and confirmed whether the stock's Overview page shows an 'Option Chain' button.",
+    "warning": "IMPORTANT -- do NOT treat 'not listed below' as verified-eligible. Only these 9 have been checked. The remaining ~193 equities are UNVERIFIED, not confirmed-eligible -- current behavior (generate futures for them) is unchanged/unproven for those, same as before this file existed. Expand 'excluded' only from live-confirmed evidence (real search results, real absence of an Option Chain button) -- never guessed or inferred from a stock's size/sector/index membership."
+  },
+
+  "excluded": [
+    { "underlying": "EXIDEIND",   "reason": "Fyers search: 2 results (NSE/BSE stock only), no Fut/Option entries. No Option Chain button on stock page." },
+    { "underlying": "HUDCO",      "reason": "Fyers search: the '-F' tickers returned (e.g. BSE:838HUDCO29-F) are bond/FD instruments, not equity derivatives -- confirmed not real F&O." },
+    { "underlying": "PPLPHARMA",  "reason": "Now trades as Piramal Pharma on Fyers. Search: 2 results, stock only, no Option Chain button." },
+    { "underlying": "SAMMAANCAP", "reason": "Fyers search: the 'NSE:975SCL27-Z9' hit is a bond instrument, not equity F&O -- confirmed not real F&O." },
+    { "underlying": "SYNGENE",    "reason": "Fyers search: 2 results, stock only, no Option Chain button." },
+    { "underlying": "TATATECH",   "reason": "Fyers search: 2 results, stock only, no Option Chain button." },
+    { "underlying": "TORNTPOWER", "reason": "Fyers search: 2 results, stock only, no Option Chain button." },
+    { "underlying": "NUVAMA",     "reason": "Fyers search: 2 results, stock only, no Option Chain button." }
+  ],
+
+  "confirmedEligibleButPartiallyListed": [
+    {
+      "underlying": "DALBHARAT",
+      "note": "CONFIRMED real F&O (real futures price + real option chain with live strikes, verified live in Fyers app). NOT excluded here -- this is a listing-lead-time issue, not an eligibility issue: only the Aug26 contract was listed at verification time, Sep/Oct26 were not yet listed and correctly failed as invalid symbols. Same class of issue as MCX SILVERM/SILVERMIC's restricted month cycle, just with an unknown listing lead time for this stock rather than a known cycle -- do not guess a fix here, this needs to be handled the same way an unlisted month is handled elsewhere: attempt and let a genuine 'invalid symbol' response be the signal, not pre-filtered."
+    }
+  ]
+}

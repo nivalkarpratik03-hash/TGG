@@ -254,12 +254,28 @@ async function backfillOptionSymbol(entry, optionSymbol, deps = {}) {
  * Resolves current+next month futures symbols for one underlying, using
  * the already-tested near-month resolvers exposed from symbolsRouter.js
  * — not re-implemented here.
+ *
+ * ROOT-CAUSE FIX (2026-08-01): for MCX this used to call the unrestricted
+ * monthCodesFromOffset(), which generates every calendar month in
+ * sequence — wrong for SILVERM/SILVERMIC/SILVER, which only ever list
+ * Feb/Apr/Jun/Aug/Nov/Dec contracts (RESTRICTED_MONTH_CYCLE in
+ * symbolsRouter.js). That mismatch is the confirmed cause of
+ * "MCX:SILVERM26SEPFUT ... Invalid symbol provided" — September was never
+ * a real listed contract for this root. Now mirrors the exact same
+ * offset-then-restricted-walk pattern symbolsRouter.js's buildFutures()
+ * already uses for the identical purpose — not new logic, the same
+ * already-tested one, just reused here too.
  */
 function resolveFuturesSymbols(entry) {
-  const codes =
-    entry.exchange === "MCX"
-      ? symbolsRouter.monthCodesFromOffset(2, symbolsRouter.mcxNearMonthOffset(entry.underlying))
-      : symbolsRouter.monthCodesFromOffset(2, symbolsRouter.nseNearMonthOffset());
+  let codes;
+  if (entry.exchange === "MCX") {
+    const offset = symbolsRouter.mcxNearMonthOffset(entry.underlying);
+    const fromMonth = new Date();
+    fromMonth.setMonth(fromMonth.getMonth() + offset);
+    codes = symbolsRouter.nextValidMonthCodes(entry.underlying, 2, fromMonth);
+  } else {
+    codes = symbolsRouter.monthCodesFromOffset(2, symbolsRouter.nseNearMonthOffset());
+  }
   return codes.map((code) => `${entry.exchange}:${entry.underlying}${code}FUT`);
 }
 
@@ -287,22 +303,43 @@ async function backfillFuturesSymbol(entry, futSymbol, deps = {}) {
  * silent, zero-delay sequential loop. This is what actually stops a
  * dual-cycle underlying (NIFTY) with 30-40+ strikes from producing minutes
  * of total silence that looks exactly like a hang.
- * @returns {Promise<{found: number, stored: number}>}
+ *
+ * ROOT CAUSE #3 FIX (2026-08-02): each strike's backfillOptionSymbol call
+ * is now wrapped in its own try/catch. Previously, one strike throwing
+ * (most commonly fetchCandles's "no candles" error for a genuinely
+ * illiquid strike — not a real problem) aborted this entire loop before
+ * its `return` ran, discarding storedRows/symbolsBackfilled already
+ * accumulated for every strike processed before it — even though those
+ * rows were already durably written to the DB via upsertOptionCandles.
+ * Confirmed against real logs: MIDCPNIFTY's 18th/last strike threw this
+ * way and the "done" summary line reported 0 stored despite 17 real
+ * successful strikes logged individually just above it; same pattern for
+ * SENSEX (1 real success, then a throw on strike 2). Now: one strike
+ * failing is logged and skipped, the loop continues through the
+ * remaining strikes, and the final count reflects every strike that
+ * actually succeeded — never zeroed out by the one that didn't.
+ * @returns {Promise<{found: number, storedRows: number, symbolsBackfilled: number, strikesFailed: number}>}
  */
 async function backfillStrikesForEntry(entry, strikes, label, log, delayFn, deps) {
   let storedRows = 0;
   let symbolsBackfilled = 0;
+  let strikesFailed = 0;
   for (let i = 0; i < strikes.length; i++) {
     const s = strikes[i];
-    const r = await backfillOptionSymbol(entry, s.symbol, deps);
-    if (r.stored > 0) {
-      storedRows += r.stored;
-      symbolsBackfilled++;
+    try {
+      const r = await backfillOptionSymbol(entry, s.symbol, deps);
+      if (r.stored > 0) {
+        storedRows += r.stored;
+        symbolsBackfilled++;
+      }
+      log(`[GapFill] ${label}: ${entry.underlying} — strike (${i + 1}/${strikes.length}) ${s.symbol}: ${r.isNew ? "new, retroactive backfill" : "existing, gap catch-up"}, ${r.stored} candle row(s) stored`);
+    } catch (err) {
+      strikesFailed++;
+      log(`[GapFill] ${label}: ${entry.underlying} — strike (${i + 1}/${strikes.length}) ${s.symbol}: FAILED (${err.message}) — skipping, continuing to remaining strikes`);
     }
-    log(`[GapFill] ${label}: ${entry.underlying} — strike (${i + 1}/${strikes.length}) ${s.symbol}: ${r.isNew ? "new, retroactive backfill" : "existing, gap catch-up"}, ${r.stored} candle row(s) stored`);
     if (i < strikes.length - 1) await delayFn(INTER_STRIKE_DELAY_MS);
   }
-  return { found: strikes.length, storedRows, symbolsBackfilled };
+  return { found: strikes.length, storedRows, symbolsBackfilled, strikesFailed };
 }
 
 /**
@@ -337,7 +374,7 @@ async function runGapFillCheckpoint(label, deps = {}) {
   for (let idx = 0; idx < scoped.length; idx++) {
     const entry = scoped[idx];
     log(`[GapFill] ${label}: (${idx + 1}/${scoped.length}) ${entry.underlying} — starting`);
-    let entryOptionsFound = 0, entryOptionsStored = 0, entryFuturesStored = 0;
+    let entryOptionsFound = 0, entryOptionsStored = 0, entryFuturesStored = 0, entryStrikesFailed = 0;
 
     // Futures — respected for EVERY remaining asset class (index, commodity).
     if (entry.hasFutures !== false) {
@@ -363,6 +400,7 @@ async function runGapFillCheckpoint(label, deps = {}) {
         log(`[GapFill] ${label}: ${entry.underlying} — ${strikes.length} real strike(s) discovered, backfilling one at a time (${INTER_STRIKE_DELAY_MS}ms apart)`);
         const result = await backfillStrikesForEntry(entry, strikes, label, log, delayFn, deps);
         entryOptionsStored = result.storedRows;
+        entryStrikesFailed = result.strikesFailed;
         optionsBackfilled += result.symbolsBackfilled;
       } catch (err) {
         // resolveChainLookupSymbol's deliberate throw for unconfirmed MCX
@@ -378,7 +416,7 @@ async function runGapFillCheckpoint(label, deps = {}) {
       }
     }
 
-    log(`[GapFill] ${label}: (${idx + 1}/${scoped.length}) ${entry.underlying} — done (futures candle-rows stored ${entryFuturesStored}, strikes discovered ${entryOptionsFound}, option candle-rows stored ${entryOptionsStored})`);
+    log(`[GapFill] ${label}: (${idx + 1}/${scoped.length}) ${entry.underlying} — done (futures candle-rows stored ${entryFuturesStored}, strikes discovered ${entryOptionsFound}, option candle-rows stored ${entryOptionsStored}${entryStrikesFailed > 0 ? `, ${entryStrikesFailed} strike(s) failed and skipped` : ""})`);
 
     if (idx < scoped.length - 1) await delayFn(INTER_UNDERLYING_DELAY_MS);
   }

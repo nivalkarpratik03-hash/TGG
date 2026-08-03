@@ -54,6 +54,34 @@
   flex: 1 1 auto;
 }
 
+/* Symbol / category scope dropdown — NEW 2026-08-02 */
+.scanner-assetclass-group {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.scanner-assetclass-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text2);
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+}
+
+.scanner-assetclass-select:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.scanner-assetclass-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* Timeframe group */
 .scanner-tf-group {
   display: flex;

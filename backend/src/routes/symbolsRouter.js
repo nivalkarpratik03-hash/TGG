@@ -78,6 +78,28 @@ const SYMBOLS_DIR = path.resolve(__dirname, "../../../symbols");
 const INDEX_JSON = path.join(SYMBOLS_DIR, "index.json");
 const EQUITY_JSON = path.join(SYMBOLS_DIR, "equity.json");
 const COMMODITY_JSON = path.join(SYMBOLS_DIR, "commodity.json");
+const EQUITY_FO_EXCLUSIONS_JSON = path.join(SYMBOLS_DIR, "equity-fo-exclusions.json");
+
+/**
+ * equity.json is the general NSE board list, NOT the (smaller) NSE
+ * F&O-eligible list -- most equities in it have no listed derivatives at
+ * all. Loads the live-verified exclusion set (see
+ * symbols/equity-fo-exclusions.json's own _readme/coverage block for
+ * exactly what's been checked and what hasn't -- only 9 of 202 as of
+ * 2026-08-01, NOT a complete eligibility table). Returns a Set of
+ * excluded underlyings, or an empty Set if the file is missing/unreadable
+ * (fails open to current behavior rather than silently blocking futures
+ * generation for everything).
+ */
+function loadEquityFoExclusions() {
+  try {
+    const { excluded } = JSON.parse(fs.readFileSync(EQUITY_FO_EXCLUSIONS_JSON, "utf8"));
+    return new Set((excluded || []).map((e) => e.underlying));
+  } catch (err) {
+    console.warn(`[Symbols] Could not read equity-fo-exclusions.json: ${err.message} — proceeding with zero exclusions`);
+    return new Set();
+  }
+}
 
 // See "INDEX DISPLAY-NAME NOTE" above.
 const INDEX_DISPLAY_NAME_OVERRIDES = {
@@ -260,15 +282,27 @@ function loadCommodityRoots(filePath) {
  *   - NSE equities + the two liquid index futures (NIFTY, BANKNIFTY)
  *   - MCX commodities (roots taken from symbols/commodity.json)
  *
+ * ROOT-CAUSE FIX (2026-08-01): equity.json is the general NSE board list,
+ * not the F&O-eligible subset — most equities in it have no listed
+ * derivatives at all. This used to generate a futures contract for every
+ * single one, producing confirmed-invalid symbols for stocks with no real
+ * F&O (EXIDEIND, HUDCO, PPLPHARMA, SAMMAANCAP, SYNGENE, TATATECH,
+ * TORNTPOWER, NUVAMA — each individually live-verified in the Fyers app,
+ * see symbols/equity-fo-exclusions.json). Those 8 are now skipped.
+ * IMPORTANT: only 9 of 202 equities have been checked this way — this is
+ * a partial, honestly-scoped exclusion list, not a complete eligibility
+ * table. See that file's own coverage/warning block before assuming any
+ * other equity is confirmed either way.
+ *
  * The nearest commodity month is tagged type "commodity" so it keeps
  * appearing (and working) under the existing Commodity tab using a real,
  * currently-tradable symbol. Every month (including that nearest one) is
  * also tagged "future" so it shows under the new Futures tab.
- * UNCHANGED from before.
  */
 function buildFutures(equityAndIndexSymbols, commodityRoots) {
   const nseOffset = nseNearMonthOffset();
   const monthCodes = monthCodesFromOffset(FUT_MONTHS_AHEAD, nseOffset);
+  const foExclusions = loadEquityFoExclusions();
   const out = [];
 
   for (const s of equityAndIndexSymbols) {
@@ -279,6 +313,7 @@ function buildFutures(equityAndIndexSymbols, commodityRoots) {
     if (s.type === "equity") base = rawTicker.replace(/-EQ$/i, "");
     else if (s.type === "index" && INDEX_FUT_ROOTS[rawTicker]) base = INDEX_FUT_ROOTS[rawTicker];
     if (!base) continue;
+    if (s.type === "equity" && foExclusions.has(base)) continue; // live-verified: no real F&O for this one
 
     for (const mc of monthCodes) {
       out.push({ symbol: `NSE:${base}${mc}FUT`, name: `${s.name} FUT (${mc})`, type: "future" });
@@ -404,12 +439,19 @@ function exchangeOf(sym) {
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 
-/** GET /api/symbols[?exchange=NSE|MCX|BSE] */
+/** GET /api/symbols[?exchange=NSE|MCX|BSE][&type=index|equity|commodity|future] */
 router.get("/", (req, res) => {
   try {
     let symbols = getSymbols();
     const exch = (req.query.exchange || "").toUpperCase();
     if (exch) symbols = symbols.filter(s => exchangeOf(s) === exch);
+    // NEW 2026-08-02 — category filter for the Scanner UI's symbol/category
+    // dropdown (All/Index/Commodity/Equity). "commodity" here means the
+    // near-month tradable contract buildFutures() already tags type
+    // "commodity" (not "future") specifically so this filter works without
+    // any extra logic — see buildFutures()'s own comment on why.
+    const type = (req.query.type || "").toLowerCase();
+    if (type) symbols = symbols.filter(s => s.type === type);
     res.json(symbols);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -463,6 +505,14 @@ module.exports.nseNearMonthOffset = nseNearMonthOffset;
 module.exports.mcxNearMonthOffset = mcxNearMonthOffset;
 module.exports.nextMonthCodes = nextMonthCodes;
 module.exports.monthCodesFromOffset = monthCodesFromOffset;
+// NEW 2026-08-01 — exported so derivativesGapFill.js's resolveFuturesSymbols()
+// can respect RESTRICTED_MONTH_CYCLE (SILVERM/SILVERMIC only list Feb/Apr/
+// Jun/Aug/Nov/Dec) instead of generating calendar-sequential months that
+// were never listed. Previously this function existed but was never
+// exported, so GapFill had no way to reach it and used the unrestricted
+// monthCodesFromOffset() for every MCX root — root cause of the confirmed
+// "MCX:SILVERM26SEPFUT ... Invalid symbol provided" failure.
+module.exports.nextValidMonthCodes = nextValidMonthCodes;
 // NEW 2026-07-31 — exposed so server.js's Scanner+Backtest symbol loading
 // (previously its own duplicate loadScanSymbols(), now deleted, see
 // server.js) can reuse this exact parser instead of re-reading the same

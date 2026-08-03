@@ -10,7 +10,7 @@
  * GET  /api/scanner/signals/:strategyId        — signals for one strategy
  * GET  /api/scanner/results/:strategyId        — all results for one strategy (paginated)
  * GET  /api/scanner/result/:strategyId/:symbol — single symbol result
- * POST /api/scanner/trigger                    — run scan now (body: { resolution? })
+ * POST /api/scanner/trigger                    — run scan now (body: { resolution?, assetClass? })
  * POST /api/scanner/stop                       — abort running scan
  * GET  /api/scanner/symbols                    — current symbol list
  * POST /api/scanner/symbols                    — replace symbol list
@@ -22,6 +22,18 @@
 const express = require("express");
 const router = express.Router();
 const { scanner } = require("../services/scannerRunner");
+const symbolsRouter = require("./symbolsRouter");
+
+// Maps the Scanner UI's category dropdown value to the `type` field
+// getSymbols() already tags every symbol with. "commodity" intentionally
+// maps to type "commodity" (the near-month tradable contract), not
+// "future" — see symbolsRouter.js buildFutures()'s own comment on why
+// that distinction exists. "all"/anything else → no filter, full list.
+const ASSET_CLASS_TO_TYPE = {
+  index: "index",
+  equity: "equity",
+  commodity: "commodity",
+};
 
 // GET /api/scanner/status
 router.get("/status", (req, res) => {
@@ -88,11 +100,29 @@ router.get("/result/:strategyId/:symbol", (req, res) => {
 });
 
 // POST /api/scanner/trigger
-// Body (optional): { resolution: number }
+// Body (optional): { resolution: number, assetClass: "all"|"index"|"equity"|"commodity" }
+// NEW 2026-08-02 — assetClass scopes the scan to one category instead of
+// the full symbol list, without changing the persistent list any other
+// trigger (or the next full scan) uses. "all"/omitted → unchanged
+// existing full-scan behavior.
 router.post("/trigger", async (req, res) => {
   try {
     const resolution = req.body?.resolution;
-    const out = await scanner.triggerNow(resolution);
+    const assetClass = (req.body?.assetClass || "all").toLowerCase();
+
+    let scopedSymbols;
+    if (assetClass !== "all") {
+      const type = ASSET_CLASS_TO_TYPE[assetClass];
+      if (!type) {
+        return res.status(400).json({ error: `Unknown assetClass "${assetClass}" — expected one of: all, index, equity, commodity` });
+      }
+      scopedSymbols = symbolsRouter.getSymbols().filter((s) => s.type === type).map((s) => s.symbol);
+      if (scopedSymbols.length === 0) {
+        return res.status(400).json({ error: `No symbols found for assetClass "${assetClass}"` });
+      }
+    }
+
+    const out = await scanner.triggerNow(resolution, scopedSymbols);
     res.json(out);
   } catch (err) {
     res.status(500).json({ error: err.message });

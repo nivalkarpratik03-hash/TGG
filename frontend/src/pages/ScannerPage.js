@@ -30,6 +30,17 @@ const TIMEFRAMES = [
   { value: 10080, label: "1W" },
 ];
 
+// NEW 2026-08-02 — Scanner UI symbol/category scope (matches
+// scannerRouter.js's ASSET_CLASS_TO_TYPE and symbolsRouter.js's `type`
+// field on every symbol: "index" | "commodity" | "equity"; "all" sends no
+// assetClass at all, unchanged full-scan behavior).
+const ASSET_CLASSES = [
+  { value: "all", label: "All" },
+  { value: "index", label: "Index" },
+  { value: "commodity", label: "Commodity" },
+  { value: "equity", label: "Equity" },
+];
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function fmt(n, d = 2) {
   if (n == null || !isFinite(n)) return "—";
@@ -242,6 +253,14 @@ export default function ScannerPage() {
     try { const v = localStorage.getItem("tgg_scanner_tf"); return v ? JSON.parse(v) : 15; }
     catch { return 15; }
   });
+  // NEW 2026-08-02 — Symbol/category scope for the scan. "all" (default)
+  // is the existing full-813-symbol behavior, unchanged. The other 3
+  // values scope the scan to just that category via /api/scanner/trigger's
+  // new assetClass param — see scannerRouter.js.
+  const [assetClass, setAssetClass] = useState(() => {
+    try { const v = localStorage.getItem("tgg_scanner_assetclass"); return v || "all"; }
+    catch { return "all"; }
+  });
 
   // ── Fetch ─────────────────────────────────────────────────────────────────
   const fetchStatus = useCallback(async () => {
@@ -296,6 +315,12 @@ export default function ScannerPage() {
     localStorage.setItem("tgg_scanner_tf", JSON.stringify(val));
   }
 
+  // ── Asset class (symbol category) ────────────────────────────────────────
+  function handleAssetClassChange(val) {
+    setAssetClass(val);
+    localStorage.setItem("tgg_scanner_assetclass", val);
+  }
+
   // ── Trigger / Stop ────────────────────────────────────────────────────────
   async function handleTrigger() {
     if (loading || isRunning) return;
@@ -304,7 +329,7 @@ export default function ScannerPage() {
       await fetch(`${BACKEND}/api/scanner/trigger`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resolution: timeframe }),
+        body: JSON.stringify({ resolution: timeframe, assetClass }),
       });
       setProgress({ total: status?.symbolCount || 0, done: 0 });
     } catch { }
@@ -352,6 +377,21 @@ export default function ScannerPage() {
       <div className="scanner-header">
         <button className="scanner-header-back" onClick={() => navigate("/")}>← Back</button>
         <span className="scanner-header-title">Pattern Scanner</span>
+
+        {/* Symbol / category scope */}
+        <div className="scanner-assetclass-group">
+          <select
+            className="scanner-assetclass-select"
+            value={assetClass}
+            onChange={(e) => handleAssetClassChange(e.target.value)}
+            disabled={isRunning}
+            title="Scope the scan to one symbol category"
+          >
+            {ASSET_CLASSES.map(ac => (
+              <option key={ac.value} value={ac.value}>{ac.label}</option>
+            ))}
+          </select>
+        </div>
 
         {/* Timeframe */}
         <div className="scanner-tf-group">
