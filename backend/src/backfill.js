@@ -32,20 +32,21 @@ try {
 }
 
 // ── Curated symbols (mirrors isCuratedSymbol logic) ───────────────────────────
-const SYMBOLS_JSON = path.join(__dirname, "../../frontend/src/symbols.json");
-const MCX_EXCLUDED = [
-  "CRUDEOIL26JUNFUT",
-  "ALUMINIUM26MAYFUT",
-  "NATGASMINI26MAYFUT",
-  "SILVER26JULFUT",
-  "GOLD26JUNFUT",
-];
+// REPOINTED 2026-08-03 — was `frontend/src/symbols.json` (a bundled,
+// build-time-frozen file with 5 stale hardcoded dated MCX futures mixed in,
+// which MCX_EXCLUDED then filtered back out — meaning this script never
+// actually backfilled any MCX commodity, only index+equity spot symbols).
+// Now reads the same 207 (5 index + 202 equity) directly from the real
+// source of truth — same count this file's own header comment already
+// stated, confirming index+equity was always the actual intended scope.
+// MCX_EXCLUDED is gone: there's no MCX entry in this source at all anymore,
+// so it has nothing left to filter.
+const SYMBOLS_ROOT = path.join(__dirname, "../../symbols");
 
 function loadCuratedSymbols() {
-  const all = require(SYMBOLS_JSON);
-  return all
-    .map((s) => s.symbol)
-    .filter((sym) => !MCX_EXCLUDED.some((ex) => sym.includes(ex)));
+  const { indices } = require(path.join(SYMBOLS_ROOT, "index.json"));
+  const { equities } = require(path.join(SYMBOLS_ROOT, "equity.json"));
+  return [...indices, ...equities].map((s) => s.symbol);
 }
 
 // ── Throttle config ───────────────────────────────────────────────────────────

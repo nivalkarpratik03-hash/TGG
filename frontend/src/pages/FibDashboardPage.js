@@ -2,8 +2,24 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { BACKEND } from "../config";
 import { useTheme } from "../App";
-import SYMBOLS from "../symbols.json";
 import "../styles/FibDashboardPage.css";
+
+// ── Symbols — live from the root symbols/ master via /api/symbols ──────────
+// REPOINTED 2026-08-03 — was `import SYMBOLS from "../symbols.json"` (a
+// bundled, build-time-frozen file). Now fetched live, same
+// module-level-cache pattern already proven in components/SymbolSearch.js —
+// not a new approach, the same one already running elsewhere in this app.
+let _symbolsCache = [];
+let _symbolsLoaded = false;
+async function loadSymbols() {
+  if (_symbolsLoaded) return _symbolsCache;
+  try {
+    const r = await fetch(`${BACKEND}/api/symbols`);
+    if (r.ok) _symbolsCache = await r.json();
+  } catch { }
+  _symbolsLoaded = true;
+  return _symbolsCache;
+}
 
 // ── Timeframe definitions ────────────────────────────────────────────────────
 
@@ -441,9 +457,11 @@ function SymbolSearch({ symbol, onSelect }) {
   const [query, setQuery] = useState(symbol);
   const [suggestions, setSuggestions] = useState([]);
   const [showDrop, setShowDrop] = useState(false);
+  const [symbols, setSymbols] = useState([]);
   const inputRef = useRef(null);
   const dropRef = useRef(null);
 
+  useEffect(() => { loadSymbols().then(setSymbols); }, []);
   useEffect(() => { setQuery(symbol); }, [symbol]);
 
   function handleChange(e) {
@@ -451,7 +469,7 @@ function SymbolSearch({ symbol, onSelect }) {
     setQuery(val);
     if (!val) { setSuggestions([]); setShowDrop(false); return; }
     const q = val.toLowerCase();
-    const hits = SYMBOLS
+    const hits = symbols
       .filter((s) => {
         const nm = s.name.toLowerCase();
         const colonIdx = s.symbol.indexOf(":");
