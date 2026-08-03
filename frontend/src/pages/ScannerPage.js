@@ -41,6 +41,36 @@ const ASSET_CLASSES = [
   { value: "equity", label: "Equity" },
 ];
 
+// NEW 2026-08-03 — Instrument Type dropdown, gated by Asset Class. Matches
+// backend/src/services/instrumentTypeResolver.js's
+// VALID_INSTRUMENT_TYPES_FOR_ASSET_CLASS exactly — Commodity has no Spot
+// option (no fixed spot symbol exists for an MCX root).
+const ASSET_TO_INSTRUMENT_TYPES = {
+  equity: [
+    { value: "spot", label: "Spot" },
+    { value: "fut", label: "Fut" },
+    { value: "opt", label: "Opt" },
+    { value: "all", label: "All" },
+  ],
+  index: [
+    { value: "spot", label: "Spot" },
+    { value: "fut", label: "Fut" },
+    { value: "opt", label: "Opt" },
+    { value: "all", label: "All" },
+  ],
+  commodity: [
+    { value: "fut", label: "Fut" },
+    { value: "opt", label: "Opt" },
+    { value: "all", label: "All" },
+  ],
+  all: [
+    { value: "spot", label: "Spot" },
+    { value: "fut", label: "Fut" },
+    { value: "opt", label: "Opt" },
+    { value: "all", label: "All" },
+  ],
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function fmt(n, d = 2) {
   if (n == null || !isFinite(n)) return "—";
@@ -319,6 +349,13 @@ export default function ScannerPage() {
     try { const v = localStorage.getItem("tgg_scanner_assetclass"); return v || "all"; }
     catch { return "all"; }
   });
+  // NEW 2026-08-03 — Instrument Type scope (Spot/Fut/Opt/All), gated by
+  // assetClass — see ASSET_TO_INSTRUMENT_TYPES above. Sent alongside
+  // assetClass to /api/scanner/trigger's new instrumentType field.
+  const [instrumentType, setInstrumentType] = useState(() => {
+    try { const v = localStorage.getItem("tgg_scanner_instrumenttype"); return v || "all"; }
+    catch { return "all"; }
+  });
 
   // ── Fetch ─────────────────────────────────────────────────────────────────
   const fetchStatus = useCallback(async () => {
@@ -379,6 +416,24 @@ export default function ScannerPage() {
     localStorage.setItem("tgg_scanner_assetclass", val);
   }
 
+  // ── Instrument type ───────────────────────────────────────────────────────
+  function handleInstrumentTypeChange(val) {
+    setInstrumentType(val);
+    localStorage.setItem("tgg_scanner_instrumenttype", val);
+  }
+
+  // Guard — if assetClass changes to one that doesn't offer the currently
+  // selected instrumentType (e.g. switching to Commodity while Spot is
+  // selected — Commodity has no Spot), reset to "all" rather than silently
+  // sending an invalid combo to /trigger.
+  useEffect(() => {
+    const allowed = ASSET_TO_INSTRUMENT_TYPES[assetClass] || ASSET_TO_INSTRUMENT_TYPES.all;
+    if (!allowed.some(o => o.value === instrumentType)) {
+      handleInstrumentTypeChange("all");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assetClass]);
+
   // ── Strategy selection ────────────────────────────────────────────────────
   function handleStrategyChange(val) {
     setActiveStrategy(val);
@@ -392,7 +447,7 @@ export default function ScannerPage() {
       await fetch(`${BACKEND}/api/scanner/trigger`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resolution: timeframe, assetClass }),
+        body: JSON.stringify({ resolution: timeframe, assetClass, instrumentType }),
       });
       setProgress({ total: status?.symbolCount || 0, done: 0 });
     } catch { }
@@ -410,6 +465,7 @@ export default function ScannerPage() {
   const isRunning = status?.running || !!progress;
   const pct = progress ? Math.round((progress.done / Math.max(1, progress.total)) * 100) : 0;
   const tfLabel = TIMEFRAMES.find(t => t.value === timeframe)?.label || `${timeframe}m`;
+  const instrumentTypeOptions = ASSET_TO_INSTRUMENT_TYPES[assetClass] || ASSET_TO_INSTRUMENT_TYPES.all;
 
   // All results with a motherwave wave object
   const withMW = useMemo(() =>
@@ -455,54 +511,12 @@ export default function ScannerPage() {
     <div className="scanner-page">
 
       {/* ══ HEADER ══════════════════════════════════════════════════════════ */}
+      {/* NEW 2026-08-03 — stripped down to Back / title / theme / status only.
+          Strategy, Asset Class, Instrument Type, Timeframe, and Scan Now/Stop
+          all relocated to the new .scanner-control-bar below the stats bar. */}
       <div className="scanner-header">
         <button className="scanner-header-back" onClick={() => navigate("/")}>← Back</button>
         <span className="scanner-header-title">Pattern Scanner</span>
-
-        {/* Strategy */}
-        {strategies.length > 0 && (
-          <div className="scanner-strategy-group">
-            <select
-              className="scanner-strategy-select"
-              value={activeStrategy || ""}
-              onChange={(e) => handleStrategyChange(e.target.value)}
-              title="Select strategy"
-            >
-              {strategies.map(s => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {/* Symbol / category scope */}
-        <div className="scanner-assetclass-group">
-          <select
-            className="scanner-assetclass-select"
-            value={assetClass}
-            onChange={(e) => handleAssetClassChange(e.target.value)}
-            disabled={isRunning}
-            title="Scope the scan to one symbol category"
-          >
-            {ASSET_CLASSES.map(ac => (
-              <option key={ac.value} value={ac.value}>{ac.label}</option>
-            ))}
-          </select>
-        </div>
-
-        {/* Timeframe */}
-        <div className="scanner-tf-group">
-          {TIMEFRAMES.map(tf => (
-            <button
-              key={tf.value}
-              className={`scanner-tf-btn ${timeframe === tf.value ? "active" : ""}`}
-              onClick={() => handleTfChange(tf.value)}
-              disabled={isRunning}
-            >
-              {tf.label}
-            </button>
-          ))}
-        </div>
 
         <div className="scanner-header-spacer" />
 
@@ -518,17 +532,6 @@ export default function ScannerPage() {
             ? `${progress?.done || 0} / ${progress?.total || status?.symbolCount || "?"}`
             : `${status?.symbolCount || 0} symbols · ${strategies.length} strategies`}
         </div>
-
-        {isRunning && (
-          <button className="scanner-stop-btn" onClick={handleStop}>⏹ Stop</button>
-        )}
-        <button
-          className="scanner-trigger-btn"
-          onClick={handleTrigger}
-          disabled={isRunning || loading}
-        >
-          {isRunning ? `Scanning… ${pct}%` : "▶ Scan Now"}
-        </button>
       </div>
 
       {/* Progress bar */}
@@ -548,6 +551,86 @@ export default function ScannerPage() {
         <div className="stat-chip"><span className="stat-chip-label">Resolution</span> <span className="stat-chip-val accent">{tfLabel}</span></div>
         <div className="stat-chip"><span className="stat-chip-label">Last Scan</span>  <span className="stat-chip-val" style={{ fontSize: 11 }}>{lastScan ? fmtTime(lastScan) : "—"}</span></div>
         <div className="stat-chip"><span className="stat-chip-label">Duration</span>   <span className="stat-chip-val">{status?.lastScanDurationMs ? `${(status.lastScanDurationMs / 1000).toFixed(0)}s` : "—"}</span></div>
+      </div>
+
+      {/* ══ CONTROL BAR ═══════════════════════════════════════════════════════ */}
+      {/* NEW 2026-08-03 — All ▾ (asset class) → Strategy ▾ → Instrument Type ▾
+          (new, gated by asset class) → Timeframe ▾ (7 buttons → 1 dropdown)
+          → Scan Now. */}
+      <div className="scanner-control-bar">
+        {/* Asset class */}
+        <div className="scanner-assetclass-group">
+          <select
+            className="scanner-assetclass-select"
+            value={assetClass}
+            onChange={(e) => handleAssetClassChange(e.target.value)}
+            disabled={isRunning}
+            title="Scope the scan to one symbol category"
+          >
+            {ASSET_CLASSES.map(ac => (
+              <option key={ac.value} value={ac.value}>{ac.label}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Strategy */}
+        {strategies.length > 0 && (
+          <div className="scanner-strategy-group">
+            <select
+              className="scanner-strategy-select"
+              value={activeStrategy || ""}
+              onChange={(e) => handleStrategyChange(e.target.value)}
+              title="Select strategy"
+            >
+              {strategies.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Instrument type — NEW, gated by asset class */}
+        <div className="scanner-instrumenttype-group">
+          <select
+            className="scanner-instrumenttype-select"
+            value={instrumentType}
+            onChange={(e) => handleInstrumentTypeChange(e.target.value)}
+            disabled={isRunning}
+            title="Scope the scan to one instrument type"
+          >
+            {instrumentTypeOptions.map(it => (
+              <option key={it.value} value={it.value}>{it.label}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Timeframe — converted from 7 buttons to one dropdown */}
+        <div className="scanner-tf-group">
+          <select
+            className="scanner-tf-select"
+            value={timeframe}
+            onChange={(e) => handleTfChange(Number(e.target.value))}
+            disabled={isRunning}
+            title="Timeframe"
+          >
+            {TIMEFRAMES.map(tf => (
+              <option key={tf.value} value={tf.value}>{tf.label}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="scanner-control-bar-spacer" />
+
+        {isRunning && (
+          <button className="scanner-stop-btn" onClick={handleStop}>⏹ Stop</button>
+        )}
+        <button
+          className="scanner-trigger-btn"
+          onClick={handleTrigger}
+          disabled={isRunning || loading}
+        >
+          {isRunning ? `Scanning… ${pct}%` : "▶ Scan Now"}
+        </button>
       </div>
 
       {/* ══ BODY ════════════════════════════════════════════════════════════ */}

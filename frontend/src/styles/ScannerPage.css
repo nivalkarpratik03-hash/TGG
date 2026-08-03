@@ -82,41 +82,59 @@
   cursor: not-allowed;
 }
 
-/* Timeframe group */
-.scanner-tf-group {
+/* Instrument type scope dropdown — NEW 2026-08-03, gated by asset class */
+.scanner-instrumenttype-group {
   display: flex;
-  gap: 2px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 2px;
   flex-shrink: 0;
 }
 
-.scanner-tf-btn {
-  background: none;
-  border: none;
-  border-radius: 4px;
+.scanner-instrumenttype-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
   color: var(--text2);
-  padding: 3px 9px;
+  padding: 4px 8px;
   font-size: 11px;
   font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
   letter-spacing: 0.3px;
+  cursor: pointer;
 }
 
-.scanner-tf-btn:hover:not(:disabled) {
-  background: var(--bg2);
+.scanner-instrumenttype-select:hover:not(:disabled) {
   color: var(--text);
+  border-color: var(--accent);
 }
 
-.scanner-tf-btn.active {
-  background: var(--accent);
-  color: #fff;
+.scanner-instrumenttype-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
-.scanner-tf-btn:disabled {
+/* Timeframe — NEW 2026-08-03: converted from a 7-button group to a single
+   dropdown, styled to match the other control-bar selects. */
+.scanner-tf-group {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.scanner-tf-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text2);
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+}
+
+.scanner-tf-select:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.scanner-tf-select:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
@@ -396,6 +414,27 @@
 
 .stat-chip-val.red {
   color: #ef4444;
+}
+
+/* ─── Control bar — NEW 2026-08-03 ──────────────────────────────────────── */
+/* Relocated here from .scanner-header: Asset Class → Strategy →
+   Instrument Type → Timeframe → Scan Now/Stop. Sits between the stats bar
+   and the Motherwave Dashboard section. */
+.scanner-control-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  flex-shrink: 0;
+  min-height: 44px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+
+.scanner-control-bar-spacer {
+  flex: 1 1 auto;
 }
 
 /* ─── Scrollable body ───────────────────────────────────────────────────── */

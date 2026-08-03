@@ -253,6 +253,28 @@ function nseNearMonthOffset(from = new Date()) {
   return from.getTime() > expiryClose.getTime() ? 1 : 0;
 }
 
+// ── BSE F&O expiry rollover ──────────────────────────────────────────────────
+// NEW 2026-08-03 — BSE (SENSEX/BANKEX) monthly F&O contracts expire on the
+// LAST THURSDAY of the month, NOT NSE's last-Tuesday rule — this mirrors
+// exactly the same last-Thursday convention already relied on elsewhere in
+// this codebase (database/src/symbolParser.js's lastThursdayOfMonth(), used
+// by derivativesGapFill.js's classifyMonthlyExpiry() with
+// `exchange === "BSE" ? lastThursdayOfMonth : lastTuesdayOfMonth`). Added
+// because derivativesGapFill.js's resolveFuturesSymbols() previously called
+// nseNearMonthOffset() unconditionally for every non-MCX exchange, including
+// BSE — silently assuming SENSEX rolls on NSE's Tuesday schedule. Follows
+// the identical structure to nseNearMonthOffset() below, including the same
+// holiday-adjustment step, just with Thursday as the target weekday.
+const BSE_EXPIRY_DOW = 4; // Thursday
+function bseNearMonthOffset(from = new Date()) {
+  let lastThu = new Date(from.getFullYear(), from.getMonth() + 1, 0); // last calendar day of month
+  while (lastThu.getDay() !== BSE_EXPIRY_DOW) lastThu.setDate(lastThu.getDate() - 1);
+  lastThu = previousTradingDay(lastThu, "BSE");
+  const expiryClose = new Date(lastThu);
+  expiryClose.setHours(15, 30, 0, 0);
+  return from.getTime() > expiryClose.getTime() ? 1 : 0;
+}
+
 /**
  * symbols/commodity.json already gives bare exchange:root strings (e.g.
  * "MCX:CRUDEOILM", no "-I" suffix) — unlike the old mcx.json, which used
@@ -502,6 +524,10 @@ module.exports = router;
 // file, which is exactly the kind of silent-drift risk flagged
 // repeatedly during this project's design phase.
 module.exports.nseNearMonthOffset = nseNearMonthOffset;
+// NEW 2026-08-03 — see the function's own comment above for the bug this
+// fixes (derivativesGapFill.js's resolveFuturesSymbols() defaulting every
+// non-MCX exchange, including BSE, to NSE's Tuesday rule).
+module.exports.bseNearMonthOffset = bseNearMonthOffset;
 module.exports.mcxNearMonthOffset = mcxNearMonthOffset;
 module.exports.nextMonthCodes = nextMonthCodes;
 module.exports.monthCodesFromOffset = monthCodesFromOffset;

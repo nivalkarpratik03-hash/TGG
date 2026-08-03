@@ -265,6 +265,17 @@ async function backfillOptionSymbol(entry, optionSymbol, deps = {}) {
  * offset-then-restricted-walk pattern symbolsRouter.js's buildFutures()
  * already uses for the identical purpose — not new logic, the same
  * already-tested one, just reused here too.
+ *
+ * ROOT-CAUSE FIX (2026-08-03): the non-MCX branch used to call
+ * nseNearMonthOffset() unconditionally for every remaining exchange,
+ * including BSE — silently assuming SENSEX/BANKEX roll on NSE's last-Tuesday
+ * schedule. BSE F&O actually expires on the last THURSDAY of the month (the
+ * same convention this file's own classifyMonthlyExpiry() already applies
+ * via lastThursdayOfMonth() for BSE). Near the end of a month this could
+ * roll SENSEX's "current" future a day or two early/late relative to its
+ * real expiry. Now branches on entry.exchange === "BSE" and uses the new
+ * symbolsRouter.bseNearMonthOffset() (same structure as nseNearMonthOffset,
+ * Thursday instead of Tuesday) for that case specifically.
  */
 function resolveFuturesSymbols(entry) {
   let codes;
@@ -273,6 +284,8 @@ function resolveFuturesSymbols(entry) {
     const fromMonth = new Date();
     fromMonth.setMonth(fromMonth.getMonth() + offset);
     codes = symbolsRouter.nextValidMonthCodes(entry.underlying, 2, fromMonth);
+  } else if (entry.exchange === "BSE") {
+    codes = symbolsRouter.monthCodesFromOffset(2, symbolsRouter.bseNearMonthOffset());
   } else {
     codes = symbolsRouter.monthCodesFromOffset(2, symbolsRouter.nseNearMonthOffset());
   }

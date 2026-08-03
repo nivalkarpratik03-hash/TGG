@@ -23,6 +23,7 @@ const express = require("express");
 const router = express.Router();
 const { scanner } = require("../services/scannerRunner");
 const symbolsRouter = require("./symbolsRouter");
+const instrumentTypeResolver = require("../services/instrumentTypeResolver");
 
 // Maps the Scanner UI's category dropdown value to the `type` field
 // getSymbols() already tags every symbol with. "commodity" intentionally
@@ -100,18 +101,56 @@ router.get("/result/:strategyId/:symbol", (req, res) => {
 });
 
 // POST /api/scanner/trigger
-// Body (optional): { resolution: number, assetClass: "all"|"index"|"equity"|"commodity" }
+// Body (optional): {
+//   resolution: number,
+//   assetClass: "all"|"index"|"equity"|"commodity",
+//   instrumentType: "all"|"spot"|"fut"|"opt"   (NEW 2026-08-03)
+// }
 // NEW 2026-08-02 — assetClass scopes the scan to one category instead of
 // the full symbol list, without changing the persistent list any other
 // trigger (or the next full scan) uses. "all"/omitted → unchanged
 // existing full-scan behavior.
+//
+// NEW 2026-08-03 — instrumentType additionally scopes WHICH instrument
+// type(s) within that asset class to resolve symbols for (Spot/Fut/Opt/All),
+// via instrumentTypeResolver.js. BACKWARD COMPATIBLE: when instrumentType is
+// omitted entirely (old callers), behavior is byte-identical to before —
+// the original assetClass-only symbolsRouter.getSymbols() filter path below
+// still runs, unchanged. instrumentType is only consulted when the caller
+// actually sends one.
 router.post("/trigger", async (req, res) => {
   try {
     const resolution = req.body?.resolution;
     const assetClass = (req.body?.assetClass || "all").toLowerCase();
+    const instrumentTypeRaw = req.body?.instrumentType;
 
     let scopedSymbols;
-    if (assetClass !== "all") {
+
+    if (instrumentTypeRaw != null) {
+      // ── New path: instrumentType explicitly provided ──────────────────
+      const instrumentType = String(instrumentTypeRaw).toLowerCase();
+
+      if (!instrumentTypeResolver.ASSET_CLASSES.includes(assetClass)) {
+        return res.status(400).json({ error: `Unknown assetClass "${assetClass}" — expected one of: ${instrumentTypeResolver.ASSET_CLASSES.join(", ")}` });
+      }
+      if (!instrumentTypeResolver.INSTRUMENT_TYPES.includes(instrumentType)) {
+        return res.status(400).json({ error: `Unknown instrumentType "${instrumentType}" — expected one of: ${instrumentTypeResolver.INSTRUMENT_TYPES.join(", ")}` });
+      }
+      const allowedTypes = instrumentTypeResolver.VALID_INSTRUMENT_TYPES_FOR_ASSET_CLASS[assetClass];
+      if (!allowedTypes.includes(instrumentType)) {
+        return res.status(400).json({ error: `Invalid combination: assetClass "${assetClass}" + instrumentType "${instrumentType}" — allowed instrumentType(s) for "${assetClass}": ${allowedTypes.join(", ")}` });
+      }
+
+      try {
+        scopedSymbols = await instrumentTypeResolver.resolveInstrumentSymbols(assetClass, instrumentType);
+      } catch (resolveErr) {
+        return res.status(400).json({ error: resolveErr.message });
+      }
+      if (scopedSymbols.length === 0) {
+        return res.status(400).json({ error: `No symbols resolved for assetClass "${assetClass}" + instrumentType "${instrumentType}"` });
+      }
+    } else if (assetClass !== "all") {
+      // ── Original path: assetClass-only scoping, UNCHANGED ──────────────
       const type = ASSET_CLASS_TO_TYPE[assetClass];
       if (!type) {
         return res.status(400).json({ error: `Unknown assetClass "${assetClass}" — expected one of: all, index, equity, commodity` });
@@ -121,6 +160,9 @@ router.post("/trigger", async (req, res) => {
         return res.status(400).json({ error: `No symbols found for assetClass "${assetClass}"` });
       }
     }
+    // assetClass === "all" && instrumentTypeRaw == null → scopedSymbols
+    // stays undefined → scanner.triggerNow's original full-scan behavior,
+    // byte-identical to before this feature existed.
 
     const out = await scanner.triggerNow(resolution, scopedSymbols);
     res.json(out);
