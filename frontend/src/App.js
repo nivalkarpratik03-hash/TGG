@@ -6,7 +6,6 @@ import ChartsPage from "./pages/ChartsPage";
 import ReportsPage from "./pages/ReportsPage";
 import FibDashboardPage from "./pages/FibDashboardPage";
 import ScannerPage from "./pages/ScannerPage";
-import StrategiesPage from "./pages/StrategiesPage";
 import BacktestPage from "./pages/BacktestPage";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { loadPref, savePref } from "./utils/prefs";
@@ -43,8 +42,6 @@ export default function App() {
           <Route path="/reports" element={<ErrorBoundary label="Reports"><ReportsPage /></ErrorBoundary>} />
           <Route path="/fib-dashboard" element={<ErrorBoundary label="Fib Dashboard"><FibDashboardPage /></ErrorBoundary>} />
           <Route path="/scanner" element={<ErrorBoundary label="Scanner"><ScannerPage /></ErrorBoundary>} />
-          <Route path="/strategies" element={<ErrorBoundary label="Strategies"><StrategiesPage /></ErrorBoundary>} />
-          <Route path="/strategies/:id" element={<ErrorBoundary label="Strategies"><StrategiesPage /></ErrorBoundary>} />
           <Route path="/backtest" element={<ErrorBoundary label="Backtest"><BacktestPage /></ErrorBoundary>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

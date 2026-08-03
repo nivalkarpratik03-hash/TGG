@@ -235,6 +235,64 @@ function ZoneTray({ label, subLabel, items, colorClass, timeframe }) {
   );
 }
 
+// ─── SignalsTable — shared by Results (S3 shown) and Upcoming (S3 omitted) ────
+function SignalsTable({ title, sub, rows, showS3, emptyLabel, timeframe }) {
+  return (
+    <div className="scanner-signals-col">
+      <div className="scanner-signals-col-header">
+        <span className="scanner-signals-col-title">{title}</span>
+        <span className="scanner-signals-col-sub">{sub}</span>
+      </div>
+      {rows.length === 0 ? (
+        <div className="scanner-signals-empty">{emptyLabel}</div>
+      ) : (
+        <div className="scanner-signals-table-wrap">
+          <table className="scanner-signals-table">
+            <thead>
+              <tr>
+                <th>Sr.No</th>
+                <th>Symbol</th>
+                <th>S1</th>
+                <th>S2</th>
+                {showS3 && <th>S3</th>}
+                <th>MW</th>
+                <th>Timestamp</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const bull = isMWBull(r);
+                return (
+                  <tr
+                    key={r.symbol}
+                    className="scanner-signals-row"
+                    onClick={() => openChart(r.symbol, timeframe, r.motherwave)}
+                    title="Open chart with Fib drawn"
+                  >
+                    <td>{i + 1}</td>
+                    <td className="scanner-signals-sym">{tickerOf(r.symbol)}</td>
+                    <td className={`scanner-signals-flag ${r.s1 ? "on" : ""}`}>{r.s1 ? "✓" : "—"}</td>
+                    <td className={`scanner-signals-flag ${r.s2 ? "on" : ""}`}>{r.s2 ? "✓" : "—"}</td>
+                    {showS3 && (
+                      <td className={`scanner-signals-flag ${r.s3 ? "on" : ""}`}>{r.s3 ? "✓" : "—"}</td>
+                    )}
+                    <td>
+                      <span className={`scanner-signals-mw ${bull ? "bull" : "bear"}`}>
+                        {bull ? "▲ Bull" : "▼ Bear"}
+                      </span>
+                    </td>
+                    <td className="scanner-signals-ts">{fmtTime(r.scannedAt)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function ScannerPage() {
   const navigate = useNavigate();
@@ -321,6 +379,11 @@ export default function ScannerPage() {
     localStorage.setItem("tgg_scanner_assetclass", val);
   }
 
+  // ── Strategy selection ────────────────────────────────────────────────────
+  function handleStrategyChange(val) {
+    setActiveStrategy(val);
+  }
+
   // ── Trigger / Stop ────────────────────────────────────────────────────────
   async function handleTrigger() {
     if (loading || isRunning) return;
@@ -369,6 +432,24 @@ export default function ScannerPage() {
     s1: results.filter(r => r.patternStage === "s1").length,
   }), [results]);
 
+  // Results table — fully confirmed (S1→S2→S3) signals, latest 10
+  const resultsTable = useMemo(() =>
+    results
+      .filter(r => r.patternStage === "s3_complete")
+      .sort((a, b) => new Date(b.scannedAt) - new Date(a.scannedAt))
+      .slice(0, 10),
+    [results]
+  );
+
+  // Upcoming table — S1→S2 confirmed, S3 not yet triggered, latest 10
+  const upcomingTable = useMemo(() =>
+    results
+      .filter(r => r.patternStage === "s2")
+      .sort((a, b) => new Date(b.scannedAt) - new Date(a.scannedAt))
+      .slice(0, 10),
+    [results]
+  );
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="scanner-page">
@@ -377,6 +458,22 @@ export default function ScannerPage() {
       <div className="scanner-header">
         <button className="scanner-header-back" onClick={() => navigate("/")}>← Back</button>
         <span className="scanner-header-title">Pattern Scanner</span>
+
+        {/* Strategy */}
+        {strategies.length > 0 && (
+          <div className="scanner-strategy-group">
+            <select
+              className="scanner-strategy-select"
+              value={activeStrategy || ""}
+              onChange={(e) => handleStrategyChange(e.target.value)}
+              title="Select strategy"
+            >
+              {strategies.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {/* Symbol / category scope */}
         <div className="scanner-assetclass-group">
@@ -453,25 +550,31 @@ export default function ScannerPage() {
         <div className="stat-chip"><span className="stat-chip-label">Duration</span>   <span className="stat-chip-val">{status?.lastScanDurationMs ? `${(status.lastScanDurationMs / 1000).toFixed(0)}s` : "—"}</span></div>
       </div>
 
-      {/* ══ STRATEGIES REDIRECT ═════════════════════════════════════════════ */}
-      <div className="scanner-page-nav">
-        <div className="scanner-page-nav-spacer" />
-        <button
-          className="scanner-page-nav-redirect"
-          onClick={() => navigate("/strategies")}
-          title="Open Strategy Dashboards — full page"
-        >
-          <span className="scanner-page-nav-redirect-label">Strategies</span>
-          <svg viewBox="0 0 20 20" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <line x1="4" y1="10" x2="16" y2="10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-            <polyline points="11,5 16,10 11,15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-          </svg>
-        </button>
-      </div>
-
       {/* ══ BODY ════════════════════════════════════════════════════════════ */}
       <div className="scanner-pages-wrap">
         <div className="scanner-body">
+
+          {/* ── RESULTS / UPCOMING ──────────────────────────────────────────── */}
+          <div className="scanner-section scanner-signals-section">
+            <div className="scanner-signals-columns">
+              <SignalsTable
+                title="Results"
+                sub="S1 → S2 → S3 confirmed — latest 10"
+                rows={resultsTable}
+                showS3={true}
+                emptyLabel="No completed signals yet"
+                timeframe={timeframe}
+              />
+              <SignalsTable
+                title="Upcoming"
+                sub="S1 → S2 confirmed, S3 pending — latest 10"
+                rows={upcomingTable}
+                showS3={false}
+                emptyLabel="No forming signals yet"
+                timeframe={timeframe}
+              />
+            </div>
+          </div>
 
           {/* ── PANEL A: MOTHERWAVE DASHBOARD ───────────────────────────────── */}
           <div className="scanner-section mw-section">
