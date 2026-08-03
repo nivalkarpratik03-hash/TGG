@@ -8,6 +8,7 @@ import { useNavigate } from "react-router-dom";
 import { updateWavesIndicatorPure } from "../indicators/WavesIndicator";
 import { useTheme } from "../App";
 import "../styles/ReportsPage.css";
+import { fmt } from "../utils/format";
 
 import { BACKEND } from "../config";
 
@@ -39,9 +40,6 @@ const TIMEFRAMES = [
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-const numFmt = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-function fmt(n) { return n == null ? "—" : numFmt.format(Number(n)); }
-
 function toISTStr(tsMs) {
   if (!tsMs) return "—";
   const ist = new Date(tsMs + 5.5 * 60 * 60 * 1000);

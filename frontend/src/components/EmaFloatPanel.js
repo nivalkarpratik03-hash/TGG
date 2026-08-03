@@ -3,6 +3,7 @@
 // update(bar) imperatively — no React state in ChartPanel fires on crosshair move.
 import React, { useState, useMemo, useRef, useImperativeHandle, forwardRef } from "react";
 import "../styles/EmaFloatPanel.css";
+import { fmt } from "../utils/format";
 
 const EmaFloatPanel = forwardRef(function EmaFloatPanel({ emaHighs, emaLows, candles }, ref) {
   const [crosshairBar, setCrosshairBar] = useState(null);
@@ -49,11 +50,6 @@ const EmaFloatPanel = forwardRef(function EmaFloatPanel({ emaHighs, emaLows, can
   }, [emaLows, crosshairIndex]);
 
   if (ema9High == null && ema9Low == null) return null;
-
-  function fmt(v) {
-    if (v == null) return "—";
-    return v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
 
   return (
     <div className="ema-float-panel">

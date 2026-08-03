@@ -20,6 +20,7 @@ import { BACKEND } from "../config";
 import { useTheme } from "../App";
 import "../styles/BacktestPage.css";
 import * as XLSX from "xlsx";
+import { tickerOf } from "../utils/symbolMeta";
 
 // ── Timeframes ────────────────────────────────────────────────────────────────
 const TIMEFRAMES = [
@@ -68,11 +69,6 @@ function slotKey(tsMs) {
   const hh = String(d.getUTCHours()).padStart(2, "0");
   const mm = String(d.getUTCMinutes()).padStart(2, "0");
   return `${dd}-${mon}\n${hh}:${mm}`;
-}
-
-function tickerOf(sym) {
-  const idx = (sym || "").indexOf(":");
-  return idx >= 0 ? sym.slice(idx + 1) : sym;
 }
 
 function openChart(hit, resolution) {

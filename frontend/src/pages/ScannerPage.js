@@ -18,6 +18,8 @@ import { createBackendSocket } from "../utils/backendSocket";
 import { formatDateTimeIST } from "../utils/istUtils";
 import { BACKEND } from "../config";
 import { useTheme } from "../App";
+import { fmt } from "../utils/format";
+import { tickerOf, exchangeOf } from "../utils/symbolMeta";
 import "../styles/ScannerPage.css";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -73,21 +75,9 @@ const ASSET_TO_INSTRUMENT_TYPES = {
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function fmt(n, d = 2) {
-  if (n == null || !isFinite(n)) return "—";
-  return Number(n).toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d });
-}
 function fmtTime(iso) {
   if (!iso) return "—";
   return new Date(iso).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-function tickerOf(sym) {
-  const idx = (sym || "").indexOf(":");
-  return idx >= 0 ? sym.slice(idx + 1) : sym;
-}
-function exchangeOf(sym) {
-  const idx = (sym || "").indexOf(":");
-  return idx >= 0 ? sym.slice(0, idx) : "";
 }
 function stageLabel(r) {
   if (r.error) return { cls: "error", text: "Error" };

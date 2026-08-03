@@ -5,12 +5,7 @@ import { useTheme } from "../App";
 import { LayoutPicker } from "./layout/LayoutPicker";
 import IndicatorPanel from "./IndicatorPanel";
 import { TIMEFRAMES } from "../utils/formatResolution";
-
-const numFmt = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
-function fmt(n) {
-  if (n == null) return "—";
-  return numFmt.format(Number(n));
-}
+import { fmt } from "../utils/format";
 
 // ─── StatusBar ─────────────────────────────────────────────────────────────────
 // Props:

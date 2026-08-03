@@ -7,6 +7,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import "../styles/SymbolSearch.css";
 import { BACKEND } from "../config";
+import { getTicker, getExchange } from "../utils/symbolMeta";
 
 // ── Module-level cache shared across all instances ─────────────────────────
 let _symbolsCache = [];
@@ -50,16 +51,6 @@ function getType(sym) {
   if (s.includes("INDEX") || s.includes("SENSEX")) return "index";
   if (s.endsWith("-ETF") || s.endsWith("-EF")) return "etf";
   return "equity";
-}
-
-function getExchange(sym) {
-  const idx = sym.symbol.indexOf(":");
-  return idx >= 0 ? sym.symbol.slice(0, idx) : "NSE";
-}
-
-function getTicker(sym) {
-  const idx = sym.symbol.indexOf(":");
-  return idx >= 0 ? sym.symbol.slice(idx + 1) : sym.symbol;
 }
 
 // ── Display name for a symbol ─────────────────────────────────────────────

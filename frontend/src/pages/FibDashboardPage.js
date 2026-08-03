@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { BACKEND } from "../config";
 import { useTheme } from "../App";
+import { fmt } from "../utils/format";
 import "../styles/FibDashboardPage.css";
 
 // ── Symbols — live from the root symbols/ master via /api/symbols ──────────
@@ -56,14 +57,6 @@ const TRAP_ZONE_TOP = -0.236;
 const TRAP_ZONE_BOT = 0.236;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-const numFmt = new Intl.NumberFormat("en-IN", {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
-function fmt(n) {
-  return n == null ? "—" : numFmt.format(Number(n));
-}
 
 // Compute fib levels per document:
 // Bullish Mother Wave → Fib Bottom to Top (1=Low, 0=High)

@@ -6,6 +6,7 @@
 //   • Bubble markers: ZERO setMarkers calls during price ticks — only on signal/todayMode/bubble changes
 import React, { useEffect, useRef, useCallback, useState } from "react";
 import { createChart, CrosshairMode, LineStyle } from "lightweight-charts";
+import { numFmt } from "../utils/format";
 import {
   createWavesIndicator,
   updateWavesIndicator,
@@ -229,8 +230,6 @@ class RulerOverlay {
       const mm = String(d.getUTCMinutes()).padStart(2, "0");
       return `${dd} ${mon} ${hh}:${mm}`;
     }
-
-    const numFmt = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
     const lines = [
       { label: "Δ Price", value: `${sign}${numFmt.format(dPrice)}`, color: clrLine },
