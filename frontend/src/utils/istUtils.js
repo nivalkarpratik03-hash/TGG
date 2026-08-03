@@ -42,3 +42,20 @@ export function formatTimeIST(tsMs) {
     hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Kolkata",
   });
 }
+
+/**
+ * Format a timestamp (ms or ISO string) as a combined IST date+time string.
+ * Use this anywhere a bare time-of-day (formatTimeIST) is ambiguous without
+ * the calendar date — e.g. per-stage (S1/S2/S3) candle timestamps and
+ * motherwave timestamps in the Scanner tables, which can span multiple days.
+ * @param {number|string} ts - Unix timestamp in ms, or an ISO date string
+ * @returns {string} e.g. "06/06/2026, 09:15:00" or "—" if falsy
+ */
+export function formatDateTimeIST(ts) {
+  if (!ts) return "—";
+  return new Date(ts).toLocaleString("en-IN", {
+    day: "2-digit", month: "2-digit", year: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false, timeZone: "Asia/Kolkata",
+  });
+}

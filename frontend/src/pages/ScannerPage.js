@@ -15,6 +15,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { createBackendSocket } from "../utils/backendSocket";
+import { formatDateTimeIST } from "../utils/istUtils";
 import { BACKEND } from "../config";
 import { useTheme } from "../App";
 import "../styles/ScannerPage.css";
@@ -103,6 +104,15 @@ function stageLabel(r) {
 // Use these helpers everywhere to avoid scattered null checks.
 function mwWave(r) { return r.motherwave?.wave || null; }
 function isMWBull(r) { return mwWave(r)?.dir === "bull"; }
+// r.s1 / r.s2 / r.s3 are the raw candle objects for each stage (set in
+// scannerS1.S2.S3.js's findS1S2S3 via `{ ...c, index: i }`), so each already
+// carries its own candle `.time` (epoch ms) — the moment that stage's
+// candle closed. mwTime uses the wave's toTime — the bar where the
+// motherwave tip landed (same reference point buildChartUrl already uses).
+function s1Time(r) { return r.s1?.time || null; }
+function s2Time(r) { return r.s2?.time || null; }
+function s3Time(r) { return r.s3?.time || null; }
+function mwTime(r) { return mwWave(r)?.toTime || null; }
 function waveSize(r) {
   const w = mwWave(r);
   if (!w) return 0;
@@ -301,17 +311,38 @@ function SignalsTable({ title, sub, rows, showS3, emptyLabel, timeframe }) {
                   >
                     <td>{i + 1}</td>
                     <td className="scanner-signals-sym">{tickerOf(r.symbol)}</td>
-                    <td className={`scanner-signals-flag ${r.s1 ? "on" : ""}`}>{r.s1 ? "✓" : "—"}</td>
-                    <td className={`scanner-signals-flag ${r.s2 ? "on" : ""}`}>{r.s2 ? "✓" : "—"}</td>
+                    <td className={`scanner-signals-flag ${r.s1 ? "on" : ""}`}>
+                      {r.s1 ? (
+                        <div className="scanner-signals-stage">
+                          <span className="scanner-signals-stage-check">✓</span>
+                          <span className="scanner-signals-stage-ts">{formatDateTimeIST(s1Time(r))}</span>
+                        </div>
+                      ) : "—"}
+                    </td>
+                    <td className={`scanner-signals-flag ${r.s2 ? "on" : ""}`}>
+                      {r.s2 ? (
+                        <div className="scanner-signals-stage">
+                          <span className="scanner-signals-stage-check">✓</span>
+                          <span className="scanner-signals-stage-ts">{formatDateTimeIST(s2Time(r))}</span>
+                        </div>
+                      ) : "—"}
+                    </td>
                     {showS3 && (
-                      <td className={`scanner-signals-flag ${r.s3 ? "on" : ""}`}>{r.s3 ? "✓" : "—"}</td>
+                      <td className={`scanner-signals-flag ${r.s3 ? "on" : ""}`}>
+                        {r.s3 ? (
+                          <div className="scanner-signals-stage">
+                            <span className="scanner-signals-stage-check">✓</span>
+                            <span className="scanner-signals-stage-ts">{formatDateTimeIST(s3Time(r))}</span>
+                          </div>
+                        ) : "—"}
+                      </td>
                     )}
                     <td>
                       <span className={`scanner-signals-mw ${bull ? "bull" : "bear"}`}>
                         {bull ? "▲ Bull" : "▼ Bear"}
                       </span>
                     </td>
-                    <td className="scanner-signals-ts">{fmtTime(r.scannedAt)}</td>
+                    <td className="scanner-signals-ts">{formatDateTimeIST(mwTime(r) || r.scannedAt)}</td>
                   </tr>
                 );
               })}
@@ -356,6 +387,18 @@ export default function ScannerPage() {
     try { const v = localStorage.getItem("tgg_scanner_instrumenttype"); return v || "all"; }
     catch { return "all"; }
   });
+  // NEW — Results/Upcoming tab switch. Previously both tables rendered
+  // side-by-side at half width each, which crowded the S1/S2/S3/MW/
+  // Timestamp columns (especially once per-stage date+time was added).
+  // Now only one renders at a time, at full section width.
+  const [signalsTab, setSignalsTab] = useState(() => {
+    try { const v = localStorage.getItem("tgg_scanner_signalstab"); return v || "results"; }
+    catch { return "results"; }
+  });
+  function handleSignalsTabChange(val) {
+    setSignalsTab(val);
+    localStorage.setItem("tgg_scanner_signalstab", val);
+  }
 
   // ── Fetch ─────────────────────────────────────────────────────────────────
   const fetchStatus = useCallback(async () => {
@@ -373,7 +416,11 @@ export default function ScannerPage() {
   const fetchResults = useCallback(async (stratId) => {
     if (!stratId) return;
     try {
-      const r = await fetch(`${BACKEND}/api/scanner/results/${stratId}?per_page=500`).then(r => r.json());
+      // per_page matches scannerRouter.js's raised cap (5000) — see the
+      // fix note there. Requesting fewer than the full accumulated
+      // multi-category result set would reintroduce the same truncation
+      // bug from the frontend side.
+      const r = await fetch(`${BACKEND}/api/scanner/results/${stratId}?per_page=5000`).then(r => r.json());
       setResults(r.results || []);
     } catch { }
   }, []);
@@ -639,7 +686,22 @@ export default function ScannerPage() {
 
           {/* ── RESULTS / UPCOMING ──────────────────────────────────────────── */}
           <div className="scanner-section scanner-signals-section">
-            <div className="scanner-signals-columns">
+            <div className="scanner-signals-tabs">
+              <button
+                className={`scanner-signals-tab ${signalsTab === "results" ? "active" : ""}`}
+                onClick={() => handleSignalsTabChange("results")}
+              >
+                Results
+              </button>
+              <button
+                className={`scanner-signals-tab ${signalsTab === "upcoming" ? "active" : ""}`}
+                onClick={() => handleSignalsTabChange("upcoming")}
+              >
+                Upcoming
+              </button>
+            </div>
+
+            {signalsTab === "results" ? (
               <SignalsTable
                 title="Results"
                 sub="S1 → S2 → S3 confirmed — latest 10"
@@ -648,6 +710,7 @@ export default function ScannerPage() {
                 emptyLabel="No completed signals yet"
                 timeframe={timeframe}
               />
+            ) : (
               <SignalsTable
                 title="Upcoming"
                 sub="S1 → S2 confirmed, S3 pending — latest 10"
@@ -656,7 +719,7 @@ export default function ScannerPage() {
                 emptyLabel="No forming signals yet"
                 timeframe={timeframe}
               />
-            </div>
+            )}
           </div>
 
           {/* ── PANEL A: MOTHERWAVE DASHBOARD ───────────────────────────────── */}

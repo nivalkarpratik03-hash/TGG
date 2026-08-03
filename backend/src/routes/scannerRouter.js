@@ -74,15 +74,39 @@ router.get("/signals/:strategyId", (req, res) => {
 });
 
 // GET /api/scanner/results/:strategyId  — paginated full result list
+//
+// FIX (2026-08-03) — this previously capped perPage at 200 and returned
+// scanner.getResultsByStrategy()'s array as-is. That array comes from a
+// Map<symbol, result> that is never cleared and is iterated in INSERTION
+// order (a JS Map does not reorder a key on re-`set()`). Symbols from
+// whichever category was scanned FIRST after server start therefore
+// permanently occupied the first ~200 slots, so page=1 (the only page the
+// UI ever requests) could never surface a later-scanned category (e.g.
+// Futures scanned after Equity Spot) — the rows existed in memory but were
+// sliced away before the response was built.
+//
+// Fix: (a) sort the full result set by scannedAt DESC — most recently
+// scanned symbols first — before any filtering/pagination, so recency
+// (not insertion order) determines what page=1 contains; (b) raise the
+// perPage ceiling well above the accumulated multi-category symbol
+// universe (813 base symbols × spot/fut/opt, plus discovered option
+// strikes) so a caller that actually wants the whole set — like the
+// Scanner UI's stats bar and Results/Upcoming tables, which need every
+// symbol's current result to compute totals — isn't silently truncated.
 router.get("/results/:strategyId", (req, res) => {
   const { strategyId } = req.params;
   const page = Math.max(1, parseInt(req.query.page || "1"));
-  const perPage = Math.min(200, Math.max(1, parseInt(req.query.per_page || "100")));
+  const perPage = Math.min(5000, Math.max(1, parseInt(req.query.per_page || "100")));
   const stage = req.query.stage || null;
   const found = req.query.found;
 
   let all = scanner.getResultsByStrategy(strategyId);
   if (!all) return res.status(404).json({ error: `Unknown strategy: ${strategyId}` });
+
+  // Recency first — see fix note above. Falls back to 0 for any legacy
+  // result missing scannedAt so it sorts last rather than throwing.
+  all = [...all].sort((a, b) => new Date(b.scannedAt || 0) - new Date(a.scannedAt || 0));
+
   if (stage) all = all.filter((r) => r.patternStage === stage);
   if (found === "true") all = all.filter((r) => r.found);
 
