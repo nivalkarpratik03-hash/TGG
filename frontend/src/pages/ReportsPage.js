@@ -6,7 +6,7 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { updateWavesIndicatorPure } from "../indicators/WavesIndicator";
-import { toISTDate } from "../utils/istUtils";
+import { toISTDate, formatShortDateIST, formatTimeIST } from "../utils/istUtils";
 import { useTheme } from "../App";
 import "../styles/ReportsPage.css";
 import { fmt } from "../utils/format";
@@ -27,14 +27,14 @@ import { BACKEND } from "../config";
 
 // ── Timeframes ────────────────────────────────────────────────────────────────
 // ── Helpers ───────────────────────────────────────────────────────────────────
+// toISTStr previously did its own manual IST offset math (tsMs + 5.5h, then
+// read UTC date parts) — a duplicate of what istUtils.js already handles
+// properly via Intl timeZone: "Asia/Kolkata". Same "dd/Mon HH:MM" output,
+// now composed from the two real istUtils exports instead of hand-rolled.
+// See TGG-project-plan.md Section 4c/4g.
 function toISTStr(tsMs) {
   if (!tsMs) return "—";
-  const ist = new Date(tsMs + 5.5 * 60 * 60 * 1000);
-  const dd = String(ist.getUTCDate()).padStart(2, "0");
-  const mon = ist.toLocaleString("en", { month: "short", timeZone: "UTC" });
-  const hh = String(ist.getUTCHours()).padStart(2, "0");
-  const mm = String(ist.getUTCMinutes()).padStart(2, "0");
-  return `${dd}/${mon} ${hh}:${mm}`;
+  return `${formatShortDateIST(tsMs)} ${formatTimeIST(tsMs)}`;
 }
 
 

@@ -22,6 +22,7 @@ import "../styles/BacktestPage.css";
 import * as XLSX from "xlsx";
 import { tickerOf } from "../utils/symbolMeta";
 import { TIMEFRAMES } from "../utils/formatResolution";
+import { formatShortDateIST, formatTimeIST } from "../utils/istUtils";
 
 // ── Timeframes ────────────────────────────────────────────────────────────────
 // ── Date range presets ────────────────────────────────────────────────────────
@@ -42,24 +43,18 @@ const STOCK_COLORS = [
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+// toIST/slotKey previously did their own manual IST offset math (tsMs + 5.5h,
+// then read UTC parts) — the same duplicate pattern found and fixed in
+// ReportsPage.js's toISTStr. Same visible output, now composed from the real
+// istUtils exports instead of hand-rolled. See TGG-project-plan.md Section 4g.
 function toIST(tsMs) {
   if (!tsMs) return "—";
-  const d = new Date(tsMs + 5.5 * 60 * 60 * 1000);
-  const dd = String(d.getUTCDate()).padStart(2, "0");
-  const mon = d.toLocaleString("en", { month: "short", timeZone: "UTC" });
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  return `${dd}-${mon} ${hh}:${mm}`;
+  return `${formatShortDateIST(tsMs, "-")} ${formatTimeIST(tsMs)}`;
 }
 
 function slotKey(tsMs) {
   if (!tsMs) return "";
-  const d = new Date(tsMs + 5.5 * 60 * 60 * 1000);
-  const dd = String(d.getUTCDate()).padStart(2, "0");
-  const mon = d.toLocaleString("en", { month: "short", timeZone: "UTC" });
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  return `${dd}-${mon}\n${hh}:${mm}`;
+  return `${formatShortDateIST(tsMs, "-")}\n${formatTimeIST(tsMs)}`;
 }
 
 function openChart(hit, resolution) {

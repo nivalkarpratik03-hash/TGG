@@ -9,6 +9,13 @@
  *   BubbleIndicator, ChartsPage, ReportsPage
  *
  * Now all files import from here. To change timezone logic, change it once.
+ *
+ * UPDATE (2026-08-04): ReportsPage.js was still carrying one more local
+ * leftover under a different name — toISTStr(dd/Mon HH:MM) — using manual
+ * "tsMs + 5.5h, read UTC parts" math instead of a real Asia/Kolkata timezone
+ * conversion. Missed by earlier name-based duplicate sweeps because the name
+ * didn't match anything else. Replaced with formatShortDateIST() + the
+ * existing formatTimeIST(), same visible output, real timezone-safe math.
  */
 
 /**
@@ -29,6 +36,33 @@ export function toISTDate(tsMs) {
  */
 export function getTodayIST() {
   return new Date().toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+}
+
+/**
+ * Format a timestamp (ms) as a short IST calendar date (day + short month).
+ * Used where a compact date is needed alongside a time value, e.g. table
+ * cells showing wave start/end timestamps that can span multiple days but
+ * don't need the full year (see formatDateTimeIST for the full version).
+ * @param {number} tsMs - Unix timestamp in milliseconds
+ * @returns {string} e.g. "06/Aug" or "—" if falsy
+ */
+/**
+ * Format a timestamp (ms) as a short IST calendar date (day + short month).
+ * Used where a compact date is needed alongside a time value, e.g. table
+ * cells showing wave start/end timestamps that can span multiple days but
+ * don't need the full year (see formatDateTimeIST for the full version).
+ * @param {number} tsMs - Unix timestamp in milliseconds
+ * @param {string} [separator="/"] - character(s) between day and month
+ * @returns {string} e.g. "06/Aug" (default) or "06-Aug" with separator="-"; "—" if falsy
+ */
+export function formatShortDateIST(tsMs, separator = "/") {
+  if (!tsMs) return "—";
+  const parts = new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit", month: "short", timeZone: "Asia/Kolkata",
+  }).formatToParts(new Date(tsMs));
+  const day = parts.find(p => p.type === "day")?.value ?? "";
+  const month = parts.find(p => p.type === "month")?.value ?? "";
+  return `${day}${separator}${month}`;
 }
 
 /**

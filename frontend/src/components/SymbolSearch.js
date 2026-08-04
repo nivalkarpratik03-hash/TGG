@@ -282,11 +282,6 @@ export default function SymbolSearch({ isOpen, onClose, onSelect, onOpenOptionsC
               autoComplete="off"
               spellCheck={false}
             />
-            {query && (
-              <button className="ss-icon-btn" onClick={() => setQuery("")} title="Clear">
-                <ClearIcon />
-              </button>
-            )}
             <button className="ss-icon-btn ss-close-btn" onClick={onClose} title="Close (Esc)">
               <CloseIcon />
             </button>
@@ -441,13 +436,6 @@ function SearchIcon() {
     <svg width="16" height="16" viewBox="0 0 20 20" fill="none" className="ss-search-icon">
       <circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" strokeWidth="1.6" />
       <path d="M13.5 13.5L17 17" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
-  );
-}
-function ClearIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-      <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
   );
 }
