@@ -698,7 +698,6 @@ function computeSRLevels(candles, emaHighs, emaLows) {
     strongestSup: strongest(supClusters),
     copRes: copRes ? { avg: copRes.price, count: countTouches(copRes.price, "res"), time: copRes.time } : null,
     copSup: copSup ? { avg: copSup.price, count: countTouches(copSup.price, "sup"), time: copSup.time } : null,
-    swingPivots: [],        // not used by new logic — kept for interface compat
     allResClusters: resClusters,
     allSupClusters: supClusters,
   };
@@ -757,7 +756,7 @@ function SRPanel({ sr, status, motherSegment, fibLevels }) {
   if (status === "loading") return <div className="fdb-state"><div className="fdb-spinner" /></div>;
   if (!sr) return <div className="fdb-no-wave">No pivot data available</div>;
 
-  const { r3, r2, r1, current, s1, s2, s3, strongestRes, strongestSup, copRes, copSup, swingPivots } = sr;
+  const { r3, r2, r1, current, s1, s2, s3, strongestRes, strongestSup, copRes, copSup } = sr;
 
   // Mother wave condition
   const mwCondition = getMotherWaveCondition(motherSegment, current);
@@ -771,12 +770,6 @@ function SRPanel({ sr, status, motherSegment, fibLevels }) {
 
   // Trap zone analysis
   const trapStatus = getTrapZoneStatus(fibLevels, current);
-
-  // Wave pivot lines: group into resistance (highs above) and support (lows below)
-  const highPivots = swingPivots.filter((p) => p.side === "high" && p.price > current)
-    .sort((a, b) => a.price - b.price);
-  const lowPivots = swingPivots.filter((p) => p.side === "low" && p.price < current)
-    .sort((a, b) => b.price - a.price);
 
   // Determine distance bar width (visual)
   const allLevels = [r1, r2, s1, s2].filter(Boolean).map((c) => c.avg);

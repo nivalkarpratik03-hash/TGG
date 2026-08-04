@@ -20,19 +20,13 @@ import { BACKEND } from "../config";
 import { useTheme } from "../App";
 import { fmt } from "../utils/format";
 import { tickerOf, exchangeOf } from "../utils/symbolMeta";
+import { TIMEFRAMES } from "../utils/formatResolution";
+import {
+  fmtTime, stageLabel, mwWave, isMWBull, waveSize, getZoneTray, buildChartUrl,
+} from "../utils/mwScanHelpers";
 import "../styles/ScannerPage.css";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const TIMEFRAMES = [
-  { value: 1, label: "1m" },
-  { value: 3, label: "3m" },
-  { value: 5, label: "5m" },
-  { value: 15, label: "15m" },
-  { value: 60, label: "1h" },
-  { value: 1440, label: "1D" },
-  { value: 10080, label: "1W" },
-];
-
 // NEW 2026-08-02 — Scanner UI symbol/category scope (matches
 // scannerRouter.js's ASSET_CLASS_TO_TYPE and symbolsRouter.js's `type`
 // field on every symbol: "index" | "commodity" | "equity"; "all" sends no
@@ -75,119 +69,16 @@ const ASSET_TO_INSTRUMENT_TYPES = {
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function fmtTime(iso) {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-function stageLabel(r) {
-  if (r.error) return { cls: "error", text: "Error" };
-  if (r.patternStage === "s3_complete") return { cls: "s3", text: "S3 ✓" };
-  if (r.patternStage === "s2") return { cls: "s2", text: "S2 →" };
-  if (r.patternStage === "s1") return { cls: "s1", text: "S1" };
-  if (r.patternStage === "trapzone") return { cls: "mw", text: "TrapZone" };
-  if (r.patternStage === "motherwave") return { cls: "mw", text: "Motherwave" };
-  return { cls: "none", text: "—" };
-}
-
-// ─── MW field accessors ───────────────────────────────────────────────────────
-// r.motherwave is now { wave, fibLevels, invalidation }
-// Use these helpers everywhere to avoid scattered null checks.
-function mwWave(r) { return r.motherwave?.wave || null; }
-function isMWBull(r) { return mwWave(r)?.dir === "bull"; }
 // r.s1 / r.s2 / r.s3 are the raw candle objects for each stage (set in
 // scannerS1.S2.S3.js's findS1S2S3 via `{ ...c, index: i }`), so each already
 // carries its own candle `.time` (epoch ms) — the moment that stage's
 // candle closed. mwTime uses the wave's toTime — the bar where the
 // motherwave tip landed (same reference point buildChartUrl already uses).
+// (This block is Scanner-only — not part of the shared cluster below.)
 function s1Time(r) { return r.s1?.time || null; }
 function s2Time(r) { return r.s2?.time || null; }
 function s3Time(r) { return r.s3?.time || null; }
 function mwTime(r) { return mwWave(r)?.toTime || null; }
-function waveSize(r) {
-  const w = mwWave(r);
-  if (!w) return 0;
-  return Math.abs((w.fromPrice || 0) - (w.toPrice || 0));
-}
-
-// ─── Fib price ────────────────────────────────────────────────────────────────
-// price = toPrice + ratio*(fromPrice-toPrice)
-// ratio=0 → tip, ratio=1 → origin
-function fibPrice(wave, ratio) {
-  const to = wave.toPrice;
-  const from = wave.fromPrice;
-  return to + ratio * (from - to);
-}
-
-// ─── Zone tray classification ─────────────────────────────────────────────────
-//
-// Priority (first match wins):
-//   1. NEAR 0.618 (HOT) — last price inside ±0.5% of span around fp(0.618)
-//   2. NEAR 0.382       — last price inside ±0.5% of span around fp(0.382)
-//   3. TRAP ZONE        — last price between fp(-0.236) and fp(0.236)
-//                         (the band straddling the wave tip on both sides)
-//   4. other            — not shown in any tray
-//
-// fp(ratio) = toPrice + ratio * (fromPrice - toPrice)
-//   ratio=0    → wave tip (toPrice)
-//   ratio=0.236 → first retracement into wave
-//   ratio=-0.236 → extension beyond tip (opposite direction)
-//
-function getZoneTray(r) {
-  const w = mwWave(r);
-  if (!w) return "other";
-  const last = r.lastCandle?.close;
-  if (!last) return "other";
-
-  const span = Math.abs(w.fromPrice - w.toPrice);
-  const tol = span * 0.005; // ±0.5% of wave span
-
-  // 1. NEAR 0.618 — tight ±0.5% band
-  const f618 = fibPrice(w, 0.618);
-  if (last >= f618 - tol && last <= f618 + tol) return "hot618";
-
-  // 2. NEAR 0.382 — tight ±0.5% band
-  const f382 = fibPrice(w, 0.382);
-  if (last >= f382 - tol && last <= f382 + tol) return "near382";
-
-  // 3. TRAP ZONE — between fp(-0.236) and fp(0.236)
-  //    fp(-0.236) is the extension beyond the tip (above tip for bear, below for bull)
-  //    fp(0.236) is the first retracement back into the wave
-  const trapEdge1 = fibPrice(w, -0.236); // extension side
-  const trapEdge2 = fibPrice(w, 0.236);  // retracement side
-  const trapHigh = Math.max(trapEdge1, trapEdge2);
-  const trapLow = Math.min(trapEdge1, trapEdge2);
-  if (last >= trapLow && last <= trapHigh) return "trap";
-
-  return "other";
-}
-
-// ─── Build chart URL ──────────────────────────────────────────────────────────
-// mw here is the full { wave, fibLevels, invalidation } object
-function buildChartUrl(symbol, timeframe, mw) {
-  if (!mw || !mw.wave) {
-    const params = new URLSearchParams({ symbol, resolution: String(timeframe) });
-    return `/charts?${params.toString()}`;
-  }
-  const w = mw.wave;
-  const fromMs = w.fromTime;
-  const toMs = w.toTime;
-
-  const fibDrawing = encodeURIComponent(JSON.stringify({
-    p1Price: w.toPrice,                     // wave TIP → ratio 0
-    p1Time: Math.round(toMs / 1000),
-    p2Price: w.fromPrice,                   // wave ORIGIN → ratio 1
-    p2Time: Math.round(fromMs / 1000),
-  }));
-
-  const params = new URLSearchParams({
-    symbol,
-    resolution: String(timeframe),
-    waveFrom: String(fromMs),
-    waveTo: String(toMs),
-    fibDrawing,
-  });
-  return `/charts?${params.toString()}`;
-}
 
 function openChart(symbol, timeframe, mw) {
   window.open(buildChartUrl(symbol, timeframe, mw), "_blank");

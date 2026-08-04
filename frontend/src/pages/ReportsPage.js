@@ -6,9 +6,11 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { updateWavesIndicatorPure } from "../indicators/WavesIndicator";
+import { toISTDate } from "../utils/istUtils";
 import { useTheme } from "../App";
 import "../styles/ReportsPage.css";
 import { fmt } from "../utils/format";
+import { TIMEFRAMES } from "../utils/formatResolution";
 import SymbolSearch from "../components/SymbolSearch";
 
 import { BACKEND } from "../config";
@@ -24,16 +26,6 @@ import { BACKEND } from "../config";
 // usage is gone too.
 
 // ── Timeframes ────────────────────────────────────────────────────────────────
-const TIMEFRAMES = [
-  { label: "1m", value: 1 },
-  { label: "3m", value: 3 },
-  { label: "5m", value: 5 },
-  { label: "15m", value: 15 },
-  { label: "1h", value: 60 },
-  { label: "1D", value: 1440 },
-  { label: "1W", value: 10080 },
-];
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function toISTStr(tsMs) {
   if (!tsMs) return "—";
@@ -45,10 +37,6 @@ function toISTStr(tsMs) {
   return `${dd}/${mon} ${hh}:${mm}`;
 }
 
-function toISTDate(tsMs) {
-  const ist = new Date(tsMs + 5.5 * 60 * 60 * 1000);
-  return `${String(ist.getUTCDate()).padStart(2, "0")}/${ist.toLocaleString("en", { month: "short", timeZone: "UTC" })}`;
-}
 
 // ── Build table rows ──────────────────────────────────────────────────────────
 // col1 = wave START (fromTime/fromPrice), col2 = wave END (toTime/toPrice)

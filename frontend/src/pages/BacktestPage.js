@@ -21,18 +21,9 @@ import { useTheme } from "../App";
 import "../styles/BacktestPage.css";
 import * as XLSX from "xlsx";
 import { tickerOf } from "../utils/symbolMeta";
+import { TIMEFRAMES } from "../utils/formatResolution";
 
 // ── Timeframes ────────────────────────────────────────────────────────────────
-const TIMEFRAMES = [
-  { value: 1, label: "1m" },
-  { value: 3, label: "3m" },
-  { value: 5, label: "5m" },
-  { value: 15, label: "15m" },
-  { value: 60, label: "1h" },
-  { value: 1440, label: "1D" },
-  { value: 10080, label: "1W" },
-];
-
 // ── Date range presets ────────────────────────────────────────────────────────
 const DATE_PRESETS = [
   { label: "Last 7 days", days: 7 },

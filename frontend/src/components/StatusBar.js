@@ -17,7 +17,6 @@ import { fmt } from "../utils/format";
 //   crosshairBar (initial value, ref read)       — OHLC display seed
 //   onCrosshairBarUpdate                         — registers an imperative update fn so StatusBar
 //                                                  manages its own crosshair state (no ChartPanel re-render)
-//   tickStreamActive                             — (unused, kept for back-compat)
 //   layoutId, onLayoutChange                     — layout picker (primary panel only)
 //   indicators, onIndicatorChange                — indicator panel
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,7 +28,6 @@ function StatusBar({
   todayMode, onTodayToggle,
   crosshairBar: crosshairBarProp,
   onCrosshairBarUpdate,
-  tickStreamActive,
   ticksFlowing,
   layoutId,
   onLayoutChange,

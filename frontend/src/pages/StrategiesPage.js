@@ -23,74 +23,31 @@ import { BACKEND } from "../config";
 import { useTheme } from "../App";
 import { fmt } from "../utils/format";
 import { tickerOf, exchangeOf } from "../utils/symbolMeta";
+import { TIMEFRAMES } from "../utils/formatResolution";
+import {
+  fmtTime, stageLabel, mwWave, isMWBull, waveSize, buildChartUrl,
+  getZoneTray as getZoneTrayCore,
+} from "../utils/mwScanHelpers";
 import "../styles/StrategiesPage.css";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function fmtTime(iso) {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleTimeString("en-IN", {
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-  });
-}
-function stageLabel(r) {
-  if (r.error) return { cls: "error", text: "Error" };
-  if (r.patternStage === "s3_complete") return { cls: "s3", text: "S3 ✓" };
-  if (r.patternStage === "s2") return { cls: "s2", text: "S2 →" };
-  if (r.patternStage === "s1") return { cls: "s1", text: "S1" };
-  if (r.patternStage === "trapzone") return { cls: "mw", text: "TrapZone" };
-  if (r.patternStage === "motherwave") return { cls: "mw", text: "Motherwave" };
-  return { cls: "none", text: "—" };
-}
-
-// ─── MW field accessors ───────────────────────────────────────────────────────
-// r.motherwave is { wave, fibLevels, invalidation }
-function mwWave(r) { return r.motherwave?.wave || null; }
-function isMWBull(r) { return mwWave(r)?.dir === "bull"; }
-function waveSize(r) {
-  const w = mwWave(r);
-  if (!w) return 0;
-  return Math.abs((w.fromPrice || 0) - (w.toPrice || 0));
-}
-
-// Fib price: to + ratio*(from-to)
-function fibPrice(wave, ratio) {
-  return wave.toPrice + ratio * (wave.fromPrice - wave.toPrice);
-}
-
+// fmtTime/stageLabel/mwWave/isMWBull/waveSize/buildChartUrl and the core
+// getZoneTray classification now live in utils/mwScanHelpers.js — this page's
+// copies were byte-identical (or functionally identical) to ScannerPage.js's,
+// confirmed by diff before consolidating. See TGG-project-plan.md Section 4c.
+//
+// getZoneTray below is a thin local wrapper, not a re-implementation: this
+// page's original local getZoneTray had one extra guard ScannerPage's never
+// had — `if (!r.trapZone) return "other"`. That guard is preserved exactly as
+// it was; only the classification logic underneath it (tolerance % and
+// trap-zone reference points) now matches ScannerPage's, per your explicit
+// "keep it 0.5%" instruction. This is a real behavior change on this page —
+// stricter tolerance, different trap-zone edges than before.
 function getZoneTray(r) {
-  const w = mwWave(r);
-  if (!r.trapZone || !w) return "other";
-  const last = r.lastCandle?.close;
-  if (!last) return "other";
-  const span = Math.abs(w.fromPrice - w.toPrice);
-  const tol = span * 0.05;
-  if (Math.abs(last - fibPrice(w, 0.618)) <= tol) return "hot618";
-  if (Math.abs(last - fibPrice(w, 0.382)) <= tol) return "near382";
-  const tip = fibPrice(w, 0);
-  const ret = fibPrice(w, 0.236);
-  const trapHigh = Math.max(tip, ret);
-  const trapLow = Math.min(tip, ret);
-  if (last >= trapLow && last <= trapHigh) return "trap";
-  return "other";
+  if (!r.trapZone) return "other";
+  return getZoneTrayCore(r);
 }
 
-// Build chart URL — mw is the full { wave, fibLevels, invalidation } object
-function buildChartUrl(symbol, timeframe, mw) {
-  if (!mw || !mw.wave) {
-    return `/charts?${new URLSearchParams({ symbol, resolution: String(timeframe) })}`;
-  }
-  const w = mw.wave;
-  const fromMs = w.fromTime;
-  const toMs = w.toTime;
-  const fibDrawing = encodeURIComponent(JSON.stringify({
-    p1Price: w.toPrice, p1Time: Math.round(toMs / 1000),
-    p2Price: w.fromPrice, p2Time: Math.round(fromMs / 1000),
-  }));
-  return `/charts?${new URLSearchParams({
-    symbol, resolution: String(timeframe),
-    waveFrom: String(fromMs), waveTo: String(toMs), fibDrawing,
-  })}`;
-}
 function openChart(symbol, timeframe, mw) {
   window.open(buildChartUrl(symbol, timeframe, mw), "_blank");
 }
@@ -113,17 +70,6 @@ const ASSIGN_OPTIONS = [
   { value: "s2", label: "S2", title: "S1 formed, watching for S2" },
   { value: "s3", label: "S3", title: "S2 confirmed, waiting for S3 entry" },
   { value: "skip", label: "✕ Skip", title: "Skip this stock" },
-];
-
-// ─── TIMEFRAMES ───────────────────────────────────────────────────────────────
-const TIMEFRAMES = [
-  { value: 1, label: "1m" },
-  { value: 3, label: "3m" },
-  { value: 5, label: "5m" },
-  { value: 15, label: "15m" },
-  { value: 60, label: "1h" },
-  { value: 1440, label: "1D" },
-  { value: 10080, label: "1W" },
 ];
 
 const STAGE_FILTERS = [
