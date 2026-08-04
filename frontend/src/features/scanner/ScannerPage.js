@@ -14,17 +14,17 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { createBackendSocket } from "../utils/backendSocket";
-import { formatDateTimeIST } from "../utils/istUtils";
-import { BACKEND } from "../config";
-import { useTheme } from "../App";
-import { fmt } from "../utils/format";
-import { tickerOf, exchangeOf } from "../utils/symbolMeta";
-import { TIMEFRAMES } from "../utils/formatResolution";
+import { createBackendSocket } from "../../utils/backendSocket";
+import { formatDateTimeIST } from "../../utils/istUtils";
+import { BACKEND } from "../../config";
+import { useTheme } from "../../App";
+import { fmt } from "../../utils/format";
+import { tickerOf, exchangeOf } from "../../utils/symbolMeta";
+import { TIMEFRAMES } from "../../utils/formatResolution";
 import {
   fmtTime, stageLabel, mwWave, isMWBull, waveSize, getZoneTray, buildChartUrl,
-} from "../utils/mwScanHelpers";
-import "../styles/ScannerPage.css";
+} from "./mwScanHelpers";
+import "./ScannerPage.css";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 // NEW 2026-08-02 — Scanner UI symbol/category scope (matches

@@ -1,13 +1,13 @@
 // App.js
 import React, { useState, useEffect, createContext, useContext } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import HomePage from "./pages/HomePage";
-import ChartsPage from "./pages/ChartsPage";
-import ReportsPage from "./pages/ReportsPage";
-import FibDashboardPage from "./pages/FibDashboardPage";
-import ScannerPage from "./pages/ScannerPage";
-import BacktestPage from "./pages/BacktestPage";
-import ErrorBoundary from "./components/ErrorBoundary";
+import HomePage from "./features/home/HomePage";
+import ChartsPage from "./features/charts/ChartsPage";
+import ReportsPage from "./features/reports/ReportsPage";
+import FibDashboardPage from "./features/fib-dashboard/FibDashboardPage";
+import ScannerPage from "./features/scanner/ScannerPage";
+import BacktestPage from "./features/backtest/BacktestPage";
+import ErrorBoundary from "./shared/components/ErrorBoundary";
 import { loadPref, savePref } from "./utils/prefs";
 import "./styles/App.css";
 

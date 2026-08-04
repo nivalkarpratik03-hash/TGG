@@ -5,9 +5,9 @@
 // ───────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useRef } from "react";
-import "../styles/SymbolSearch.css";
-import { getTicker, getExchange } from "../utils/symbolMeta";
-import { loadSymbols } from "../utils/symbolsApi";
+import "./SymbolSearch.css";
+import { getTicker, getExchange } from "../../utils/symbolMeta";
+import { loadSymbols } from "../../utils/symbolsApi";
 
 // ── Recent searches — localStorage ────────────────────────────────────────
 const RECENT_KEY = "tgg_recent_symbols";

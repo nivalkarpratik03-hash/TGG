@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { BACKEND } from "../config";
-import { useTheme } from "../App";
-import "../styles/HomePage.css";
+import { BACKEND } from "../../config";
+import { useTheme } from "../../App";
+import "./HomePage.css";
 
 const NAV_ITEMS = [
   {

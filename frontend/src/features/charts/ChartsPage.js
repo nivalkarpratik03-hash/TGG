@@ -17,24 +17,24 @@ import React, {
   useState, useCallback, useEffect, useRef, useMemo, memo,
 } from "react";
 import { useLocation } from "react-router-dom"; // eslint-disable-line no-unused-vars
-import StatusBar from "../components/StatusBar";
-import SymbolSearch from "../components/SymbolSearch";
-import OptionsChainModal from "../components/OptionsChainModal";
-import CandleChart from "../components/CandleChart";
-import EmaFloatPanel from "../components/EmaFloatPanel";
-import TradingToolbar from "../components/TradingToolbar";
-import AtmWorkspace from "../components/AtmWorkspace";
-import { DrawingProvider, usePanelLink, setAllLinked } from "../components/DrawingContext";
-import { useSocket } from "../hooks/useSocket";
-import { buildDefaultIndicators } from "../indicators/indicatorRegistry";
-import { loadPref, savePref } from "../utils/prefs";
-import { formatResolution, TIMEFRAMES } from "../utils/formatResolution";
-import { parseOptionSymbol, isOptionSymbol, getOptionRoot, getStrikeStep, nearestStrikeWithHysteresis, NSE_INDEX_TICKERS } from "../utils/optionsChain";
-import { BACKEND } from "../config";
-import { LAYOUTS } from "../components/layout/LayoutPicker";
-import ErrorBoundary from "../components/ErrorBoundary";
+import StatusBar from "./StatusBar";
+import SymbolSearch from "../../shared/components/SymbolSearch";
+import OptionsChainModal from "./OptionsChainModal";
+import CandleChart from "./CandleChart";
+import EmaFloatPanel from "./EmaFloatPanel";
+import TradingToolbar from "./TradingToolbar";
+import AtmWorkspace from "./AtmWorkspace";
+import { DrawingProvider, usePanelLink, setAllLinked } from "./DrawingContext";
+import { useSocket } from "../../hooks/useSocket";
+import { buildDefaultIndicators } from "../../indicators/indicatorRegistry";
+import { loadPref, savePref } from "../../utils/prefs";
+import { formatResolution, TIMEFRAMES } from "../../utils/formatResolution";
+import { parseOptionSymbol, isOptionSymbol, getOptionRoot, getStrikeStep, nearestStrikeWithHysteresis, NSE_INDEX_TICKERS } from "../../utils/optionsChain";
+import { BACKEND } from "../../config";
+import { LAYOUTS } from "./layout/LayoutPicker";
+import ErrorBoundary from "../../shared/components/ErrorBoundary";
 import { ChartPanelPropTypes } from "./ChartPanelPropTypes";
-import "../styles/ChartsPage.css";
+import "./ChartsPage.css";
 
 // Symbols for which options can be opened via Ctrl+Q and the Options
 // button — equities, NSE/BSE indices, MCX dated futures. Both the button

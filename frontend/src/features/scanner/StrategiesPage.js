@@ -18,17 +18,17 @@ import React, {
   useState, useEffect, useCallback, useRef, useMemo
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { createBackendSocket } from "../utils/backendSocket";
-import { BACKEND } from "../config";
-import { useTheme } from "../App";
-import { fmt } from "../utils/format";
-import { tickerOf, exchangeOf } from "../utils/symbolMeta";
-import { TIMEFRAMES } from "../utils/formatResolution";
+import { createBackendSocket } from "../../utils/backendSocket";
+import { BACKEND } from "../../config";
+import { useTheme } from "../../App";
+import { fmt } from "../../utils/format";
+import { tickerOf, exchangeOf } from "../../utils/symbolMeta";
+import { TIMEFRAMES } from "../../utils/formatResolution";
 import {
   fmtTime, stageLabel, mwWave, isMWBull, waveSize, buildChartUrl,
   getZoneTray as getZoneTrayCore,
-} from "../utils/mwScanHelpers";
-import "../styles/StrategiesPage.css";
+} from "./mwScanHelpers";
+import "./StrategiesPage.css";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 // fmtTime/stageLabel/mwWave/isMWBull/waveSize/buildChartUrl and the core

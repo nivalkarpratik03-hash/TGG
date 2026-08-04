@@ -15,14 +15,14 @@ import React, {
   useState, useEffect, useRef, useCallback, useMemo,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { createBackendSocket } from "../utils/backendSocket";
-import { BACKEND } from "../config";
-import { useTheme } from "../App";
-import "../styles/BacktestPage.css";
+import { createBackendSocket } from "../../utils/backendSocket";
+import { BACKEND } from "../../config";
+import { useTheme } from "../../App";
+import "./BacktestPage.css";
 import * as XLSX from "xlsx";
-import { tickerOf } from "../utils/symbolMeta";
-import { TIMEFRAMES } from "../utils/formatResolution";
-import { formatShortDateIST, formatTimeIST } from "../utils/istUtils";
+import { tickerOf } from "../../utils/symbolMeta";
+import { TIMEFRAMES } from "../../utils/formatResolution";
+import { formatShortDateIST, formatTimeIST } from "../../utils/istUtils";
 
 // ── Timeframes ────────────────────────────────────────────────────────────────
 // ── Date range presets ────────────────────────────────────────────────────────

@@ -5,15 +5,15 @@
 
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { updateWavesIndicatorPure } from "../indicators/WavesIndicator";
-import { toISTDate, formatShortDateIST, formatTimeIST } from "../utils/istUtils";
-import { useTheme } from "../App";
-import "../styles/ReportsPage.css";
-import { fmt } from "../utils/format";
-import { TIMEFRAMES } from "../utils/formatResolution";
-import SymbolSearch from "../components/SymbolSearch";
+import { updateWavesIndicatorPure } from "../../indicators/WavesIndicator";
+import { toISTDate, formatShortDateIST, formatTimeIST } from "../../utils/istUtils";
+import { useTheme } from "../../App";
+import "./ReportsPage.css";
+import { fmt } from "../../utils/format";
+import { TIMEFRAMES } from "../../utils/formatResolution";
+import SymbolSearch from "../../shared/components/SymbolSearch";
 
-import { BACKEND } from "../config";
+import { BACKEND } from "../../config";
 
 // ── Symbols — live from the root symbols/ master via /api/symbols ──────────
 // REPOINTED 2026-08-03 — was `import SYMBOLS from "../symbols.json"` (a

@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { BACKEND } from "../config";
-import { useTheme } from "../App";
-import { fmt } from "../utils/format";
-import SymbolSearch from "../components/SymbolSearch";
-import "../styles/FibDashboardPage.css";
+import { BACKEND } from "../../config";
+import { useTheme } from "../../App";
+import { fmt } from "../../utils/format";
+import SymbolSearch from "../../shared/components/SymbolSearch";
+import "./FibDashboardPage.css";
 
 // ── Symbols — live from the root symbols/ master via /api/symbols ──────────
 // REPOINTED 2026-08-03 — was `import SYMBOLS from "../symbols.json"` (a

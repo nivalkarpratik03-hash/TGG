@@ -1,7 +1,7 @@
 // IndicatorPanel.js
 import React, { useState, useEffect, useRef } from "react";
-import { INDICATOR_REGISTRY } from "../indicators/indicatorRegistry";
-import "../styles/IndicatorPanel.css";
+import { INDICATOR_REGISTRY } from "../../indicators/indicatorRegistry";
+import "./IndicatorPanel.css";
 
 export default function IndicatorPanel({ indicators, onChange }) {
   const [open, setOpen] = useState(false);

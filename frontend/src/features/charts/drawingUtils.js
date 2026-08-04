@@ -6,10 +6,10 @@
  *
  * Consumers: DrawingOverlay.js, DrawingShapes.js, buildDrawing.js
  */
-import { getTimeframeColor } from "../utils/timeframeColors";
+import { getTimeframeColor } from "../../utils/timeframeColors";
 // numFmt re-exported here (not just imported) so DrawingShapes.js's existing
 // `import { numFmt } from "./drawingUtils"` keeps working unmodified.
-export { numFmt } from "../utils/format";
+export { numFmt } from "../../utils/format";
 
 // ─── Visual constants ─────────────────────────────────────────────────────────
 export const DRAW_COLOR = "#2962ff";

@@ -2,8 +2,8 @@
 // Uses forwardRef + useImperativeHandle so the parent (ChartPanel) can call
 // update(bar) imperatively — no React state in ChartPanel fires on crosshair move.
 import React, { useState, useMemo, useRef, useImperativeHandle, forwardRef } from "react";
-import "../styles/EmaFloatPanel.css";
-import { fmt } from "../utils/format";
+import "./EmaFloatPanel.css";
+import { fmt } from "../../utils/format";
 
 const EmaFloatPanel = forwardRef(function EmaFloatPanel({ emaHighs, emaLows, candles }, ref) {
   const [crosshairBar, setCrosshairBar] = useState(null);

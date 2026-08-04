@@ -1,11 +1,11 @@
 // StatusBar.js
 import React, { memo, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useTheme } from "../App";
+import { useTheme } from "../../App";
 import { LayoutPicker } from "./layout/LayoutPicker";
 import IndicatorPanel from "./IndicatorPanel";
-import { TIMEFRAMES } from "../utils/formatResolution";
-import { fmt } from "../utils/format";
+import { TIMEFRAMES } from "../../utils/formatResolution";
+import { fmt } from "../../utils/format";
 
 // ─── StatusBar ─────────────────────────────────────────────────────────────────
 // Props:

@@ -8,7 +8,7 @@
 // ─────────────────────────────────────────────────────────────────────────
 
 import React, { useMemo, useState, useEffect } from "react";
-import "../styles/OptionsChainModal.css";
+import "./OptionsChainModal.css";
 import {
   nextMonthlyExpiries,
   buildStrikeLadder,
@@ -16,7 +16,7 @@ import {
   optionSymbol,
   MCX_COMMODITIES,
   WEEKLY_EXPIRY_COMMODITIES,
-} from "../utils/optionsChain";
+} from "../../utils/optionsChain";
 
 // Props:
 //   isOpen      — boolean

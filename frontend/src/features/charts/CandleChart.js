@@ -6,29 +6,29 @@
 //   • Bubble markers: ZERO setMarkers calls during price ticks — only on signal/todayMode/bubble changes
 import React, { useEffect, useRef, useCallback, useState } from "react";
 import { createChart, CrosshairMode, LineStyle } from "lightweight-charts";
-import { numFmt } from "../utils/format";
+import { numFmt } from "../../utils/format";
 import {
   createWavesIndicator,
   updateWavesIndicator,
   removeWavesIndicator,
-} from "../indicators/WavesIndicator";
+} from "../../indicators/WavesIndicator";
 import {
   createConsolidationIndicator,
   updateConsolidationIndicator,
   removeConsolidationIndicator,
-} from "../indicators/ConsolidationIndicator";
+} from "../../indicators/ConsolidationIndicator";
 import {
   createSRZonesIndicator,
   updateSRZonesIndicator,
   removeSRZonesIndicator,
-} from "../indicators/SRZonesIndicator";
+} from "../../indicators/SRZonesIndicator";
 import {
   buildBubbleMarkers,
   setMarkersIfChanged,
-} from "../indicators/BubbleIndicator";
-import { toISTDate } from "../utils/istUtils";
+} from "../../indicators/BubbleIndicator";
+import { toISTDate } from "../../utils/istUtils";
 import DrawingOverlay from "./DrawingOverlay";
-import { useTheme } from "../App";
+import { useTheme } from "../../App";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

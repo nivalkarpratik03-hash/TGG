@@ -19,7 +19,7 @@ import React, {
   useCallback,
 } from "react";
 import { DRAW_COLORS } from "./TradingToolbar";
-import { getTimeframeColor } from "../utils/timeframeColors";
+import { getTimeframeColor } from "../../utils/timeframeColors";
 import {
   HIT_SLOP, FIB_LEVELS,
   distToSegment, uid,

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import "../styles/TradingToolbar.css";
+import "./TradingToolbar.css";
 
 // ─── SVG Icon Components ───────────────────────────────────────────────────────
 const icons = {

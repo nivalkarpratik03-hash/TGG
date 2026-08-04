@@ -21,9 +21,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import CandleChart from "./CandleChart";
-import { useSocket } from "../hooks/useSocket";
-import { BACKEND } from "../config";
-import "../styles/AtmWorkspace.css";
+import { useSocket } from "../../hooks/useSocket";
+import { BACKEND } from "../../config";
+import "./AtmWorkspace.css";
 
 // ─── AtmColumn — one independent mini chart with its own live data feed ──────
 const AtmColumn = React.memo(function AtmColumn({
