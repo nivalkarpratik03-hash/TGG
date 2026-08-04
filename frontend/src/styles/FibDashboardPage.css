@@ -113,20 +113,26 @@
   flex-shrink: 0;
 }
 
-.fdb-sym-select {
+/* CHUNK 4 (2026-08-03): .fdb-sym-select removed — was the old always-visible
+   inline input+dropdown, replaced by the icon-only modal trigger below. */
+.fdb-symbol-search-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: var(--bg3);
-  color: var(--text);
   border: 1px solid var(--border2);
-  border-radius: 4px;
-  padding: 5px 12px;
-  font-size: 13px;
-  font-family: inherit;
+  border-radius: 5px;
+  color: var(--text2);
+  padding: 5px 8px;
   cursor: pointer;
-  outline: none;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
-.fdb-sym-select:hover {
+.fdb-symbol-search-btn:hover {
+  background: var(--accent-dim);
   border-color: var(--accent);
+  color: var(--text);
 }
 
 .fdb-get-btn {

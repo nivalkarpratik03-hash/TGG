@@ -6,21 +6,8 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import "../styles/SymbolSearch.css";
-import { BACKEND } from "../config";
 import { getTicker, getExchange } from "../utils/symbolMeta";
-
-// ── Module-level cache shared across all instances ─────────────────────────
-let _symbolsCache = [];
-let _symbolsLoaded = false;
-async function loadSymbols() {
-  if (_symbolsLoaded) return _symbolsCache;
-  try {
-    const r = await fetch(`${BACKEND}/api/symbols`);
-    if (r.ok) _symbolsCache = await r.json();
-  } catch { }
-  _symbolsLoaded = true;
-  return _symbolsCache;
-}
+import { loadSymbols } from "../utils/symbolsApi";
 
 // ── Recent searches — localStorage ────────────────────────────────────────
 const RECENT_KEY = "tgg_recent_symbols";

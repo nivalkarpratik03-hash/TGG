@@ -100,77 +100,35 @@
   flex-shrink: 0;
 }
 
-.cr-sym-wrap {
-  position: relative;
-}
-
-.cr-sym-input {
+/* CHUNK 4 (2026-08-03): .cr-sym-wrap/.cr-sym-input/.cr-sym-dropdown/
+   .cr-sym-item/.cr-sym-ticker/.cr-sym-name removed — were the old
+   always-visible inline input+dropdown, replaced by the icon+text modal
+   trigger below (components/SymbolSearch.js is now used instead, same as
+   the chart page). */
+.cr-symbol-search-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   background: var(--bg3);
   border: 1px solid var(--border2);
   border-radius: 5px;
   color: var(--text);
   font-family: var(--font-mono);
   font-size: 11px;
-  padding: 4px 8px;
-  width: 200px;
-  outline: none;
-  transition: border-color 0.15s, width 0.2s;
-}
-
-.cr-sym-input:focus {
-  border-color: var(--accent);
-  width: 230px;
-}
-
-.cr-sym-input::placeholder {
-  color: var(--text3);
-}
-
-.cr-sym-dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  background: var(--bg3);
-  border: 1px solid var(--border2);
-  border-radius: 6px;
-  z-index: 9999;
-  min-width: 340px;
-  max-height: 260px;
-  overflow-y: auto;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
-}
-
-.cr-sym-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  font-weight: 700;
+  padding: 4px 10px;
   cursor: pointer;
-  border-bottom: 1px solid var(--border);
-  background: transparent;
-  transition: background 0.1s;
+  transition: border-color 0.15s, background 0.15s;
 }
 
-.cr-sym-item:last-child {
-  border-bottom: none;
-}
-
-.cr-sym-item:hover {
+.cr-symbol-search-btn:hover {
+  border-color: var(--accent);
   background: var(--bg2);
 }
 
-.cr-sym-ticker {
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  min-width: 130px;
-  font-family: var(--font-mono);
-}
-
-.cr-sym-name {
+.cr-symbol-search-btn svg {
+  flex-shrink: 0;
   color: var(--text2);
-  font-size: 10px;
-  font-family: var(--font-mono);
 }
 
 /* ─── Timeframe selector ─────────────────────────────────────────────────── */

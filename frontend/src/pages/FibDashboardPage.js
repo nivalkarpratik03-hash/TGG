@@ -3,24 +3,17 @@ import { useNavigate } from "react-router-dom";
 import { BACKEND } from "../config";
 import { useTheme } from "../App";
 import { fmt } from "../utils/format";
+import SymbolSearch from "../components/SymbolSearch";
 import "../styles/FibDashboardPage.css";
 
 // ── Symbols — live from the root symbols/ master via /api/symbols ──────────
 // REPOINTED 2026-08-03 — was `import SYMBOLS from "../symbols.json"` (a
-// bundled, build-time-frozen file). Now fetched live, same
-// module-level-cache pattern already proven in components/SymbolSearch.js —
-// not a new approach, the same one already running elsewhere in this app.
-let _symbolsCache = [];
-let _symbolsLoaded = false;
-async function loadSymbols() {
-  if (_symbolsLoaded) return _symbolsCache;
-  try {
-    const r = await fetch(`${BACKEND}/api/symbols`);
-    if (r.ok) _symbolsCache = await r.json();
-  } catch { }
-  _symbolsLoaded = true;
-  return _symbolsCache;
-}
+// bundled, build-time-frozen file). CONSOLIDATED 2026-08-03 — the fetch+cache
+// logic lived in utils/symbolsApi.js (Chunk 3), shared with
+// components/SymbolSearch.js and pages/ReportsPage.js. CHUNK 4 (2026-08-03):
+// this page no longer has its own symbol-fetching code at all — it now uses
+// the real components/SymbolSearch.js modal directly (see the search-trigger
+// button in the topbar below), so the local loadSymbols() usage is gone too.
 
 // ── Timeframe definitions ────────────────────────────────────────────────────
 
@@ -444,105 +437,6 @@ function useColData(symbol, tfValue) {
   return { ...state, refetch: () => fetchCol(symbol, tfValue) };
 }
 
-// ── Symbol search ────────────────────────────────────────────────────────────
-
-function SymbolSearch({ symbol, onSelect }) {
-  const [query, setQuery] = useState(symbol);
-  const [suggestions, setSuggestions] = useState([]);
-  const [showDrop, setShowDrop] = useState(false);
-  const [symbols, setSymbols] = useState([]);
-  const inputRef = useRef(null);
-  const dropRef = useRef(null);
-
-  useEffect(() => { loadSymbols().then(setSymbols); }, []);
-  useEffect(() => { setQuery(symbol); }, [symbol]);
-
-  function handleChange(e) {
-    const val = e.target.value;
-    setQuery(val);
-    if (!val) { setSuggestions([]); setShowDrop(false); return; }
-    const q = val.toLowerCase();
-    const hits = symbols
-      .filter((s) => {
-        const nm = s.name.toLowerCase();
-        const colonIdx = s.symbol.indexOf(":");
-        const ticker = (colonIdx >= 0 ? s.symbol.slice(colonIdx + 1) : s.symbol).toLowerCase();
-        return nm.startsWith(q) || ticker.startsWith(q);
-      })
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .slice(0, 10);
-    setSuggestions(hits);
-    setShowDrop(hits.length > 0);
-  }
-
-  function handleSelect(sym) {
-    setQuery(sym.symbol);
-    setSuggestions([]);
-    setShowDrop(false);
-    onSelect(sym.symbol);
-  }
-
-  function handleKeyDown(e) {
-    if (e.key === "Enter") { setShowDrop(false); onSelect(query); }
-    if (e.key === "Escape") setShowDrop(false);
-  }
-
-  useEffect(() => {
-    function handler(e) {
-      if (
-        dropRef.current && !dropRef.current.contains(e.target) &&
-        inputRef.current && !inputRef.current.contains(e.target)
-      ) setShowDrop(false);
-    }
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  return (
-    <div style={{ position: "relative" }}>
-      <input
-        ref={inputRef}
-        value={query}
-        onChange={handleChange}
-        onKeyDown={handleKeyDown}
-        onFocus={() => query && setShowDrop(suggestions.length > 0)}
-        className="fdb-sym-select"
-        placeholder="Search symbol…"
-        autoComplete="off"
-        spellCheck={false}
-        style={{ width: 180 }}
-      />
-      {showDrop && (
-        <div
-          ref={dropRef}
-          style={{
-            position: "absolute", top: "100%", left: 0, zIndex: 200,
-            background: "#1a1a34", border: "1px solid #3a3a6a", borderRadius: 4,
-            minWidth: 220, maxHeight: 240, overflowY: "auto",
-          }}
-        >
-          {suggestions.map((s, i) => (
-            <div
-              key={i}
-              onMouseDown={() => handleSelect(s)}
-              style={{
-                padding: "6px 10px", cursor: "pointer", fontSize: 11,
-                borderBottom: "1px solid #2a2a4a", display: "flex", gap: 8,
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "#22224a"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-            >
-              <span style={{ color: "#60aaff", fontWeight: 700 }}>{s.symbol}</span>
-              <span style={{ color: "#5a5a8a" }}>
-                {s.name.length > 30 ? s.name.slice(0, 30) + "…" : s.name}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ── Column 1 — High Timeframe ────────────────────────────────────────────────
 
@@ -1229,11 +1123,41 @@ export default function FibDashboardPage() {
       return v ? JSON.parse(v) : "NSE:NIFTY50-INDEX";
     } catch { return "NSE:NIFTY50-INDEX"; }
   });
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [initialSearchQuery, setInitialSearchQuery] = useState("");
+  // Mirror of searchOpen in a ref — same reasoning as ChartsPage.js's
+  // openSearchWithQuery: lets fast typing append correctly even in the
+  // ~60ms gap between setSearchOpen(true) and the modal's input gaining
+  // focus, instead of using the (one-render-behind) searchOpen state.
+  const searchOpenRef = useRef(false);
+  useEffect(() => { searchOpenRef.current = searchOpen; }, [searchOpen]);
 
   function handleSymbolSelect(sym) {
     setSymbol(sym);
     localStorage.setItem("tgg_symbol", JSON.stringify(sym));
   }
+
+  // Type-to-search — CHUNK 4 follow-up (2026-08-04): matches the chart
+  // page's behavior (pages/ChartsPage.js) — typing a plain letter anywhere
+  // on the page (not inside an input/textarea, no modifier keys, digits
+  // excluded) opens the symbol search modal pre-filled with that letter.
+  // Simpler than ChartsPage.js's version: this page only ever has ONE
+  // search instance, so there's no panelActionsRef indirection needed —
+  // this listener talks directly to this page's own searchOpen state.
+  useEffect(() => {
+    function onKey(e) {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+      if (e.key.length !== 1 || e.key === " ") return;
+      if (e.key >= "0" && e.key <= "9") return;
+      e.preventDefault();
+      setInitialSearchQuery((prev) => (searchOpenRef.current ? prev + e.key : e.key));
+      searchOpenRef.current = true;
+      setSearchOpen(true);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <div className="fdb-page">
@@ -1255,7 +1179,23 @@ export default function FibDashboardPage() {
         </div>
 
         <div className="fdb-topbar-right">
-          <SymbolSearch symbol={symbol} onSelect={handleSymbolSelect} />
+          {/* Symbol search — CHUNK 4 (2026-08-03): was a local always-visible
+              inline input+dropdown; now opens the same full-screen search
+              modal used on the chart page (components/SymbolSearch.js),
+              so symbol search is one consistent experience everywhere.
+              Icon-only, no text: the current symbol is already visible via
+              fdb-symbol-label above, same as the "title tooltip only" pattern
+              StatusBar.js uses next to the live chart. */}
+          <button
+            className="fdb-symbol-search-btn"
+            onClick={() => setSearchOpen(true)}
+            title={symbol || "Search symbol"}
+          >
+            <svg width="13" height="13" viewBox="0 0 20 20" fill="none">
+              <circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" strokeWidth="2" />
+              <path d="M13.5 13.5L17 17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </button>
           <button
             className="fdb-theme-btn"
             onClick={toggleTheme}
@@ -1265,6 +1205,13 @@ export default function FibDashboardPage() {
           </button>
         </div>
       </div>
+
+      <SymbolSearch
+        isOpen={searchOpen}
+        onClose={() => { setSearchOpen(false); setInitialSearchQuery(""); }}
+        initialQuery={initialSearchQuery}
+        onSelect={handleSymbolSelect}
+      />
 
       {/* Three-column grid */}
       <div className="fdb-dash">
