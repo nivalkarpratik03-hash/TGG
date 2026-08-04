@@ -65,21 +65,26 @@ export function calcSRZonesPure(
   emaHighs,
   emaLows,
   strongTouches = 3,
-  lookbackBars  = 300
+  lookbackBars = 300
 ) {
   if (!candles?.length) return { resistanceZones: [], supportZones: [] };
 
+  // CHUNK 6 investigation (2026-08-04): this fallback is NOT dead code —
+  // see the identical note in indicators/WavesIndicator.js for the full
+  // trace. Short version: on the live socket-driven chart, candles update
+  // on every tick but emaHighs/emaLows only update on a full refresh, so
+  // this local _calcEMA runs routinely during a live session, not rarely.
   const eH = emaHighs?.length === candles.length
     ? emaHighs : _calcEMA(candles.map((c) => c.high), 9);
   const eL = emaLows?.length === candles.length
-    ? emaLows  : _calcEMA(candles.map((c) => c.low),  9);
+    ? emaLows : _calcEMA(candles.map((c) => c.low), 9);
 
   let state = 0;
   let bestPrice = null, bestBar = null, bestOpen = null, bestClose = null;
 
   // Live (unbroken) zones  — we accumulate and also delete broken ones as we go
   const resistanceZones = [];
-  const supportZones    = [];
+  const supportZones = [];
 
   for (let i = 0; i < candles.length; i++) {
     const c = candles[i];
@@ -87,7 +92,7 @@ export function calcSRZonesPure(
     if (emaH == null || emaL == null) continue;
 
     const touchHigh = c.high >= emaH;
-    const touchLow  = c.low  <= emaL;
+    const touchLow = c.low <= emaL;
 
     // ── State 0: idle ────────────────────────────────────────────────────────
     if (state === 0) {
@@ -110,17 +115,17 @@ export function calcSRZonesPure(
         }
       } else if (touchLow) {
         // Confirm resistance zone
-        const zoneTop    = bestPrice;
+        const zoneTop = bestPrice;
         const zoneBottom = Math.max(bestOpen, bestClose); // body top
 
         resistanceZones.push({
-          side          : "resistance",
-          startBarIndex : bestBar,
-          startTime     : candles[bestBar].time,
-          top           : zoneTop,
-          bottom        : zoneBottom,
-          broken        : false,
-          strong        : false,   // filled in after touch count
+          side: "resistance",
+          startBarIndex: bestBar,
+          startTime: candles[bestBar].time,
+          top: zoneTop,
+          bottom: zoneBottom,
+          broken: false,
+          strong: false,   // filled in after touch count
         });
 
         // Trim to MAX
@@ -150,17 +155,17 @@ export function calcSRZonesPure(
         }
       } else if (touchHigh) {
         // Confirm support zone
-        const zoneTop    = Math.min(bestOpen, bestClose); // body bottom
+        const zoneTop = Math.min(bestOpen, bestClose); // body bottom
         const zoneBottom = bestPrice;
 
         supportZones.push({
-          side          : "support",
-          startBarIndex : bestBar,
-          startTime     : candles[bestBar].time,
-          top           : zoneTop,
-          bottom        : zoneBottom,
-          broken        : false,
-          strong        : false,
+          side: "support",
+          startBarIndex: bestBar,
+          startTime: candles[bestBar].time,
+          top: zoneTop,
+          bottom: zoneBottom,
+          broken: false,
+          strong: false,
         });
 
         if (supportZones.length > MAX_ZONES) supportZones.shift();
@@ -193,14 +198,14 @@ export function calcSRZonesPure(
       if (zone.side === "resistance") {
         if (c.high >= zone.bottom && c.high <= zone.top) count++;
       } else {
-        if (c.low  <= zone.top   && c.low  >= zone.bottom) count++;
+        if (c.low <= zone.top && c.low >= zone.bottom) count++;
       }
     }
     return count;
   }
 
   for (const z of resistanceZones) z.strong = countTouches(z) >= strongTouches;
-  for (const z of supportZones)    z.strong = countTouches(z) >= strongTouches;
+  for (const z of supportZones) z.strong = countTouches(z) >= strongTouches;
 
   return { resistanceZones, supportZones };
 }
@@ -208,8 +213,8 @@ export function calcSRZonesPure(
 // ─── Per-instance state ───────────────────────────────────────────────────────
 
 const _instances = new Map();
-const _idMap     = new WeakMap();
-let   _idCounter = 0;
+const _idMap = new WeakMap();
+let _idCounter = 0;
 
 function _instId(inst) {
   if (!_idMap.has(inst.chart)) _idMap.set(inst.chart, ++_idCounter);
@@ -247,8 +252,8 @@ function _syncSize(inst) {
   if (!inst.canvas || !inst.container) return;
   const dpr = window.devicePixelRatio || 1;
   const w = inst.container.clientWidth, h = inst.container.clientHeight;
-  inst.canvas.width  = w * dpr;  inst.canvas.height  = h * dpr;
-  inst.canvas.style.width  = `${w}px`; inst.canvas.style.height = `${h}px`;
+  inst.canvas.width = w * dpr; inst.canvas.height = h * dpr;
+  inst.canvas.style.width = `${w}px`; inst.canvas.style.height = `${h}px`;
   if (inst.ctx) inst.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
@@ -286,8 +291,8 @@ function _redraw(inst) {
   if (!hasZones) return;
 
   const scaleW = _priceScaleWidth(inst);
-  const plotW  = Math.max(cw - scaleW, 0);
-  const ts     = inst.chart.timeScale();
+  const plotW = Math.max(cw - scaleW, 0);
+  const ts = inst.chart.timeScale();
 
   /**
    * Convert a Unix-ms timestamp → x pixel.
@@ -319,11 +324,11 @@ function _redraw(inst) {
 
     // x: from zone start to right edge of chart
     const x0Raw = toX(zone.startTime);
-    const x1    = plotW;                   // extend to right edge (mirrors Pine +500)
-    const x0    = x0Raw != null ? Math.max(0, x0Raw) : 0;
+    const x1 = plotW;                   // extend to right edge (mirrors Pine +500)
+    const x0 = x0Raw != null ? Math.max(0, x0Raw) : 0;
 
     // y: top / bottom of the zone
-    const yTop    = toY(zone.top);
+    const yTop = toY(zone.top);
     const yBottom = toY(zone.bottom);
 
     if (yTop == null || yBottom == null) continue;
@@ -339,15 +344,15 @@ function _redraw(inst) {
     let fillColor, borderColor;
     if (zone.strong) {
       // Purple for strong historical zones
-      fillColor   = "rgba(162, 89, 255, 0.25)";   // color.new(color.purple, 70) ≈ 30% alpha
+      fillColor = "rgba(162, 89, 255, 0.25)";   // color.new(color.purple, 70) ≈ 30% alpha
       borderColor = "rgba(162, 89, 255, 0.85)";
     } else if (isRes) {
       // Green for resistance
-      fillColor   = "rgba(0, 200, 83, 0.12)";      // color.new(color.green, 85) ≈ 15% alpha
+      fillColor = "rgba(0, 200, 83, 0.12)";      // color.new(color.green, 85) ≈ 15% alpha
       borderColor = "rgba(0, 200, 83, 0.75)";
     } else {
       // Red for support
-      fillColor   = "rgba(255, 69, 96, 0.12)";     // color.new(color.red, 85) ≈ 15% alpha
+      fillColor = "rgba(255, 69, 96, 0.12)";     // color.new(color.red, 85) ≈ 15% alpha
       borderColor = "rgba(255, 69, 96, 0.75)";
     }
 
@@ -357,7 +362,7 @@ function _redraw(inst) {
 
     // Border — only top/bottom lines (left side), no right border (extends to infinity)
     inst.ctx.strokeStyle = borderColor;
-    inst.ctx.lineWidth   = 1;
+    inst.ctx.lineWidth = 1;
     inst.ctx.beginPath();
     // Top edge
     inst.ctx.moveTo(rectX, rectY);
@@ -432,7 +437,7 @@ export function updateSRZonesIndicator(
   // Fingerprint to avoid unnecessary redraws on tick-only updates
   const fp = [
     ...resistanceZones.map((z) => `r:${z.startBarIndex}:${z.top.toFixed(2)}:${z.strong}`),
-    ...supportZones.map((z)    => `s:${z.startBarIndex}:${z.bottom.toFixed(2)}:${z.strong}`),
+    ...supportZones.map((z) => `s:${z.startBarIndex}:${z.bottom.toFixed(2)}:${z.strong}`),
   ].join("|");
 
   if (fp === inst.zoneFingerprint) {
@@ -440,9 +445,9 @@ export function updateSRZonesIndicator(
     return;
   }
 
-  inst.zoneFingerprint  = fp;
-  inst.resistanceZones  = resistanceZones;
-  inst.supportZones     = supportZones;
+  inst.zoneFingerprint = fp;
+  inst.resistanceZones = resistanceZones;
+  inst.supportZones = supportZones;
 
   _clearOverlay(inst);
 
@@ -476,9 +481,9 @@ export function removeSRZonesIndicator(fullTeardown = false, chart) {
   if (!inst) return;
 
   _clearOverlay(inst);
-  inst.resistanceZones  = [];
-  inst.supportZones     = [];
-  inst.zoneFingerprint  = "";
+  inst.resistanceZones = [];
+  inst.supportZones = [];
+  inst.zoneFingerprint = "";
   if (inst.panClearId != null) { clearTimeout(inst.panClearId); inst.panClearId = null; }
   inst.isPanning = false;
 

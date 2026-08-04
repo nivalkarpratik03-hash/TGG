@@ -30,19 +30,24 @@ export function calcConsolidationZonesPure(candles, emaHighs, emaLows, bubbleGap
     return out;
   }
 
+  // CHUNK 6 investigation (2026-08-04): this fallback is NOT dead code —
+  // see the identical note in indicators/WavesIndicator.js for the full
+  // trace. Short version: on the live socket-driven chart, candles update
+  // on every tick but emaHighs/emaLows only update on a full refresh, so
+  // this local calcEMA runs routinely during a live session, not rarely.
   const eH = emaHighs?.length === candles.length
     ? emaHighs : calcEMA(candles.map((c) => c.high), 9);
   const eL = emaLows?.length === candles.length
     ? emaLows : calcEMA(candles.map((c) => c.low), 9);
 
   // ── State machine ──────────────────────────────────────────────────────────
-  let seeking   = 0;
+  let seeking = 0;
   let bestPrice = null, bestBar = null;
-  let lastType  = "", lastBar = null, lastPrice = null;
+  let lastType = "", lastBar = null, lastPrice = null;
 
   // Active zone tracking
-  let inZone    = false;
-  let zoneTop   = null, zoneBot = null, zoneStart = null;
+  let inZone = false;
+  let zoneTop = null, zoneBot = null, zoneStart = null;
   let zoneHHBar = null, zoneLLBar = null;
   let zoneHHPrice = null, zoneLLPrice = null;
 
@@ -53,18 +58,18 @@ export function calcConsolidationZonesPure(candles, emaHighs, emaLows, bubbleGap
     const hB = candles[barB].high, lB = candles[barB].low;
     const zoneTopBase = Math.max(hA, hB);
     const zoneBotBase = Math.min(lA, lB);
-    const zoneSize    = zoneTopBase - zoneBotBase;
-    const extend      = zoneSize * 0.05;
+    const zoneSize = zoneTopBase - zoneBotBase;
+    const extend = zoneSize * 0.05;
     return { top: zoneTopBase + extend, bot: zoneBotBase - extend };
   }
 
   for (let i = 0; i < candles.length; i++) {
-    const c   = candles[i];
+    const c = candles[i];
     const emaH = eH[i], emaL = eL[i];
     if (emaH == null || emaL == null) continue;
 
     const touchHigh = c.high >= emaH;
-    const touchLow  = c.low  <= emaL;
+    const touchLow = c.low <= emaL;
 
     // ── Extend active zone right ────────────────────────────────────────────
     if (inZone) {
@@ -73,19 +78,19 @@ export function calcConsolidationZonesPure(candles, emaHighs, emaLows, bubbleGap
       const brokeDn = c.close < zoneBot;
       if (brokeUp || brokeDn) {
         zones.push({
-          startBarIndex : zoneStart,
-          endBarIndex   : i - 1,       // box stops BEFORE breakout candle
-          top           : zoneTop,
-          bottom        : zoneBot,
-          broken        : true,
-          breakDir      : brokeUp ? "up" : "down",
-          hhBar         : zoneHHBar,
-          llBar         : zoneLLBar,
-          hhPrice       : zoneHHPrice,
-          llPrice       : zoneLLPrice,
-          startTime     : candles[zoneStart].time,
-          endTime       : candles[Math.max(0, i - 1)].time,
-          status        : brokeUp ? "up" : "down",
+          startBarIndex: zoneStart,
+          endBarIndex: i - 1,       // box stops BEFORE breakout candle
+          top: zoneTop,
+          bottom: zoneBot,
+          broken: true,
+          breakDir: brokeUp ? "up" : "down",
+          hhBar: zoneHHBar,
+          llBar: zoneLLBar,
+          hhPrice: zoneHHPrice,
+          llPrice: zoneLLPrice,
+          startTime: candles[zoneStart].time,
+          endTime: candles[Math.max(0, i - 1)].time,
+          status: brokeUp ? "up" : "down",
         });
         inZone = false; zoneTop = null; zoneBot = null; zoneStart = null;
         lastType = ""; lastBar = null; lastPrice = null;
@@ -94,8 +99,8 @@ export function calcConsolidationZonesPure(candles, emaHighs, emaLows, bubbleGap
 
     // ── State machine ───────────────────────────────────────────────────────
     if (seeking === 0) {
-      if (touchHigh && !touchLow) { seeking = 1;  bestPrice = c.high; bestBar = i; }
-      else if (touchLow && !touchHigh) { seeking = -1; bestPrice = c.low;  bestBar = i; }
+      if (touchHigh && !touchLow) { seeking = 1; bestPrice = c.high; bestBar = i; }
+      else if (touchLow && !touchHigh) { seeking = -1; bestPrice = c.low; bestBar = i; }
     }
 
     else if (seeking === 1) {
@@ -107,7 +112,7 @@ export function calcConsolidationZonesPure(candles, emaHighs, emaLows, bubbleGap
 
         if (!inZone && lastType === "LL" && Math.abs(hhBar - lastBar) <= bubbleGap) {
           const { top, bot } = createZone(hhBar, lastBar);
-          zoneTop   = top; zoneBot = bot;
+          zoneTop = top; zoneBot = bot;
           zoneStart = Math.min(hhBar, lastBar);
           zoneHHBar = hhBar; zoneLLBar = lastBar;
           zoneHHPrice = hhPrice; zoneLLPrice = lastPrice;
@@ -128,7 +133,7 @@ export function calcConsolidationZonesPure(candles, emaHighs, emaLows, bubbleGap
 
         if (!inZone && lastType === "HH" && Math.abs(llBar - lastBar) <= bubbleGap) {
           const { top, bot } = createZone(llBar, lastBar);
-          zoneTop   = top; zoneBot = bot;
+          zoneTop = top; zoneBot = bot;
           zoneStart = Math.min(llBar, lastBar);
           zoneHHBar = lastBar; zoneLLBar = llBar;
           zoneHHPrice = lastPrice; zoneLLPrice = llPrice;
@@ -144,19 +149,19 @@ export function calcConsolidationZonesPure(candles, emaHighs, emaLows, bubbleGap
   // If still in an active zone at end of data, push it as "active"
   if (inZone && zoneStart != null) {
     zones.push({
-      startBarIndex : zoneStart,
-      endBarIndex   : candles.length - 1,
-      top           : zoneTop,
-      bottom        : zoneBot,
-      broken        : false,
-      breakDir      : null,
-      hhBar         : zoneHHBar,
-      llBar         : zoneLLBar,
-      hhPrice       : zoneHHPrice,
-      llPrice       : zoneLLPrice,
-      startTime     : candles[zoneStart].time,
-      endTime       : candles[candles.length - 1].time,
-      status        : "active",
+      startBarIndex: zoneStart,
+      endBarIndex: candles.length - 1,
+      top: zoneTop,
+      bottom: zoneBot,
+      broken: false,
+      breakDir: null,
+      hhBar: zoneHHBar,
+      llBar: zoneLLBar,
+      hhPrice: zoneHHPrice,
+      llPrice: zoneLLPrice,
+      startTime: candles[zoneStart].time,
+      endTime: candles[candles.length - 1].time,
+      status: "active",
     });
   }
 
@@ -200,7 +205,7 @@ function _ensureCanvas(inst) {
   if (inst.canvas && inst.container.contains(inst.canvas)) return;
   const cls = "__cz_" + _instId(inst);
   const old = inst.container.querySelector("." + cls);
-  if (old) try { inst.container.removeChild(old); } catch (_) {}
+  if (old) try { inst.container.removeChild(old); } catch (_) { }
   inst.canvas = document.createElement("canvas");
   inst.canvas.className = "__cz " + cls;
   inst.canvas.style.cssText = "position:absolute;top:0;left:0;pointer-events:none;z-index:4;";
@@ -223,13 +228,13 @@ function _syncSize(inst) {
 function _removeCanvas(inst) {
   if (inst.resizeObs) { inst.resizeObs.disconnect(); inst.resizeObs = null; }
   if (inst.canvas) {
-    try { inst.canvas.parentNode?.removeChild(inst.canvas); } catch (_) {}
+    try { inst.canvas.parentNode?.removeChild(inst.canvas); } catch (_) { }
     inst.canvas = null; inst.ctx = null;
   }
 }
 
 function _priceScaleWidth(inst) {
-  try { const ps = inst.chart.priceScale("right"); if (ps?.width) return ps.width(); } catch (_) {}
+  try { const ps = inst.chart.priceScale("right"); if (ps?.width) return ps.width(); } catch (_) { }
   return 0;
 }
 
@@ -242,8 +247,8 @@ function _redraw(inst) {
   if (!inst.zones.length) return;
 
   const scaleW = _priceScaleWidth(inst);
-  const plotW  = Math.max(cw - scaleW, 0);
-  const ts     = inst.chart.timeScale();
+  const plotW = Math.max(cw - scaleW, 0);
+  const ts = inst.chart.timeScale();
 
   function toX(timeMs) {
     try { const x = ts.timeToCoordinate(Math.floor(timeMs / 1000)); return x; } catch (_) { return null; }
@@ -264,24 +269,24 @@ function _redraw(inst) {
     const y2 = toY(z.bottom);
     if (x1 == null || x2 == null || y1 == null || y2 == null) return;
 
-    const left  = Math.min(x1, x2);
+    const left = Math.min(x1, x2);
     const right = Math.max(x1, x2);
-    const top   = Math.min(y1, y2);
-    const bot   = Math.max(y1, y2);
-    const w     = right - left;
-    const h     = bot - top;
+    const top = Math.min(y1, y2);
+    const bot = Math.max(y1, y2);
+    const w = right - left;
+    const h = bot - top;
     if (w < 1 || h < 1) return;
 
     // Colors by status
     let fillColor, borderColor;
     if (z.status === "active") {
-      fillColor  = "rgba(61,132,255,0.10)";
+      fillColor = "rgba(61,132,255,0.10)";
       borderColor = "rgba(61,132,255,0.6)";
     } else if (z.status === "up") {
-      fillColor  = "rgba(0,217,126,0.10)";
+      fillColor = "rgba(0,217,126,0.10)";
       borderColor = "rgba(0,217,126,0.6)";
     } else {
-      fillColor  = "rgba(255,69,96,0.10)";
+      fillColor = "rgba(255,69,96,0.10)";
       borderColor = "rgba(255,69,96,0.6)";
     }
 
@@ -346,7 +351,7 @@ export function updateConsolidationIndicator(candles, emaHighs, emaLows, chart, 
     };
     inst.chart.timeScale().subscribeVisibleLogicalRangeChange(handler);
     inst.rangeUnsub = () => {
-      try { inst.chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler); } catch (_) {}
+      try { inst.chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler); } catch (_) { }
     };
   }
 

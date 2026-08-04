@@ -336,7 +336,22 @@ export default function ReportsPage() {
     if (!candles.length) return { allWaves: [], allDates: [] };
     const { segments } = updateWavesIndicatorPure(candles, emaHighs, emaLows);
     const rows = buildTableRows(segments);
-    const dates = [...new Set(rows.map((w) => w.date))].sort().reverse();
+    // 7d fix (2026-08-04): was `.sort().reverse()` on the formatted date
+    // STRING (e.g. "4/8/2026"). That's a text sort, not a calendar sort —
+    // it broke across month/day-of-month boundaries once the toISTDate fix
+    // (Section 4d) switched the display to unpadded d/m/yyyy, e.g.
+    // "10/8/2026" would sort before "9/8/2026" as text. Fixed by sorting on
+    // each date's real underlying timestamp (col1Time, the same raw value
+    // toISTDate was given to produce the display string) instead of the
+    // string itself. Display format is untouched — only the sort key changed.
+    const dateTsByDate = {};
+    rows.forEach((w) => {
+      if (dateTsByDate[w.date] === undefined || w.col1Time < dateTsByDate[w.date]) {
+        dateTsByDate[w.date] = w.col1Time;
+      }
+    });
+    const dates = [...new Set(rows.map((w) => w.date))]
+      .sort((a, b) => dateTsByDate[b] - dateTsByDate[a]); // most recent first, same order as before
     return { allWaves: rows, allDates: dates };
   }, [candles, emaHighs, emaLows]);
 
