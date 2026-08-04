@@ -38,7 +38,10 @@
 // stream itself, plus the frontend's useSocket.js, both already agree on),
 // so this file now delegates to that instead of keeping a second, drifted
 // copy of the same market-hours logic.
-const { isLiveMarket } = require("../fyers/tickStream");
+// isMCXSymbol also delegates to tickStream.js now (2026-08-04, Chunk 8) —
+// was a byte-identical local copy here, tickStream.js already exports the
+// real one, no reason to keep a second copy in sync by hand.
+const { isLiveMarket, isMCXSymbol } = require("../fyers/tickStream");
 
 // ── Constants ────────────────────────────────────────────────────
 const MARKET_OPEN_HOUR = 9;
@@ -49,12 +52,6 @@ const MARKET_CLOSE_MIN = 30;
 // MCX (commodity) opens at 09:00 IST, not 09:15
 const MCX_OPEN_HOUR = 9;
 const MCX_OPEN_MIN = 0;
-
-/** Returns true if the symbol is an MCX commodity. */
-function isMCXSymbol(symbol) {
-  if (!symbol) return false;
-  return String(symbol).toUpperCase().startsWith("MCX:");
-}
 
 // Resolution → number of 1m candles per bar
 const TF_MINUTES = {

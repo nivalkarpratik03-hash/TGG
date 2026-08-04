@@ -40,6 +40,10 @@
 // Single source of truth — see backend/src/services/indicatorMath.js
 const { calcEMA } = require("./indicatorMath");
 
+// ─── Fib price / trap-zone helpers ─────────────────────────────────────────────
+// Single source of truth (2026-08-04, Chunk 9) — see backend/src/services/fibMath.js
+const { fibPrice, calcTrapZone, buildFibLevels } = require("./fibMath");
+
 // ─── Wave segment computation (matches WavesIndicator.js) ─────────────────────
 function computeSegments(candles) {
   if (!candles || candles.length < 5) return [];
@@ -117,36 +121,6 @@ function computeSegments(candles) {
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 const sp = s => Math.abs(s.toPrice - s.fromPrice);
 const bull = s => s.toSide === "high";
-
-// Build fib levels object from a wave segment
-function buildFibLevels(seg) {
-  const isBull = bull(seg);
-  const span = sp(seg);
-  const origin = seg.fromPrice;
-  const end = seg.toPrice;
-
-  return isBull
-    ? {
-      "-0.618": end + 0.618 * span,   // invalidation — extension above tip
-      "0.0": end,
-      "0.236": end - 0.236 * span,
-      "0.382": end - 0.382 * span,
-      "0.5": end - 0.5 * span,
-      "0.618": end - 0.618 * span,
-      "0.786": end - 0.786 * span,
-      "1.0": origin,               // invalidation — origin / base
-    }
-    : {
-      "1.0": origin,               // invalidation — origin / base
-      "0.786": origin - 0.214 * span,
-      "0.618": origin - 0.382 * span,
-      "0.5": origin - 0.5 * span,
-      "0.382": origin - 0.618 * span,
-      "0.236": origin - 0.764 * span,
-      "0.0": end,
-      "-0.618": end - 0.618 * span,   // invalidation — extension below tip
-    };
-}
 
 // Build the wave object (public shape) from a segment + waveNum
 function buildWaveObj(seg, waveNum) {
@@ -328,26 +302,6 @@ function detectMotherWaveForAPI(candles) {
   };
 }
 
-// ─── Fib helpers ─────────────────────────────────────────────────────────────
-function fibPrice(mw, ratio) {
-  const w = mw.wave || mw;
-  const to = w.toPrice ?? w.endPrice;
-  const from = w.fromPrice ?? w.startPrice;
-  return to + ratio * (from - to);
-}
-
-function calcTrapZone(mw) {
-  const w = mw.wave || mw;
-  const tip = fibPrice(w, 0);
-  const ret = fibPrice(w, 0.236);
-  return {
-    high: Math.max(tip, ret),
-    low: Math.min(tip, ret),
-    center: (tip + ret) / 2,
-    range: Math.abs(w.toPrice - w.fromPrice),
-  };
-}
-
 function classifyZone(mw, currentPrice) {
   const w = mw.wave || mw;
   if (!w || currentPrice == null) return "other";
@@ -372,4 +326,5 @@ module.exports = {
   calcTrapZone,
   classifyZone,
   computeSegments,
+  findDisplacingWave, // exported 2026-08-04 (Chunk 10) — was internal-only, test_motherwave.js needs it to drop its local duplicate
 };
