@@ -31,23 +31,12 @@
 // ─── EMA helper — single source of truth: backend/src/services/indicatorMath.js
 const { calcEMA } = require("../services/indicatorMath");
 
-// ─── Fib price helper (matches FibDashboardPage computeFibLevels) ─────────────
-// price(ratio) = toPrice + ratio × (fromPrice − toPrice)
-function fibPrice(w, ratio) {
-  return w.toPrice + ratio * (w.fromPrice - w.toPrice);
-}
-
-// ─── Trap zone from wave object ───────────────────────────────────────────────
-function calcTrapZone(w) {
-  const tip = fibPrice(w, 0);
-  const ret = fibPrice(w, 0.236);
-  return {
-    high: Math.max(tip, ret),
-    low: Math.min(tip, ret),
-    center: (tip + ret) / 2,
-    range: Math.abs(w.toPrice - w.fromPrice),
-  };
-}
+// ─── Fib price / trap-zone — single source of truth: backend/src/services/fibMath.js
+// (Chunk 9, 2026-08-04) dropped the local fibPrice/calcTrapZone duplicates that used
+// to live here; fibMath.calcTrapZone accepts either a raw wave object or a
+// {wave}-wrapped result, and this file always passes an already-unwrapped wave
+// (context.trapZone || calcTrapZone(mwResult.wave)) — same call shape as before.
+const { calcTrapZone } = require("../services/fibMath");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function isRed(c) { return c.close < c.open; }

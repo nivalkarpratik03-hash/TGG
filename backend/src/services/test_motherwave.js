@@ -14,7 +14,8 @@
 
 "use strict";
 
-const { detectMotherWaveForAPI } = require("./motherwave");
+const { detectMotherWaveForAPI, findDisplacingWave } = require("./motherwave");
+const { buildFibLevels } = require("./fibMath");
 
 // ─── Candle builder helper ────────────────────────────────────────────────────
 // Makes fake candles that force the wave system to produce a specific wave shape
@@ -23,16 +24,16 @@ const { detectMotherWaveForAPI } = require("./motherwave");
 
 function makeCandlesFromPrices(prices) {
   return prices.map((p, i) => {
-    const prev  = i === 0 ? p : prices[i - 1];
-    const open  = prev;
+    const prev = i === 0 ? p : prices[i - 1];
+    const open = prev;
     const close = p;
-    const isUp  = close >= open;
+    const isUp = close >= open;
     return {
-      time:  (1000000 + i) * 1000,   // fake timestamp
+      time: (1000000 + i) * 1000,   // fake timestamp
       open,
       close,
-      high:  isUp  ? close * 1.005 : open  * 1.005,   // slightly above
-      low:   isUp  ? open  * 0.995 : close * 0.995,   // slightly below
+      high: isUp ? close * 1.005 : open * 1.005,   // slightly above
+      low: isUp ? open * 0.995 : close * 0.995,   // slightly below
     };
   });
 }
@@ -46,49 +47,23 @@ function makeSeg(fromPrice, toPrice, timeOffset, side) {
   return {
     fromPrice,
     toPrice,
-    toSide:       side || (toPrice > fromPrice ? "high" : "low"),
-    fromTime:     (1000 + timeOffset) * 1000,
-    toTime:       (1010 + timeOffset) * 1000,
+    toSide: side || (toPrice > fromPrice ? "high" : "low"),
+    fromTime: (1000 + timeOffset) * 1000,
+    toTime: (1010 + timeOffset) * 1000,
     fromBarIndex: timeOffset,
-    toBarIndex:   timeOffset + 10,
+    toBarIndex: timeOffset + 10,
     prevWaveType: "LL",
     currWaveType: "HL",
-    _waveNum:     -timeOffset,
+    _waveNum: -timeOffset,
   };
 }
 
 // Pull out internals for direct testing
-const sp        = s => Math.abs(s.toPrice - s.fromPrice);
-const bull      = s => s.toSide === "high";
-
-function buildFibLevels(seg) {
-  const isBull = bull(seg);
-  const span   = sp(seg);
-  const origin = seg.fromPrice;
-  const end    = seg.toPrice;
-  return isBull
-    ? { "-0.618": end + 0.618 * span, "0.0": end, "0.236": end - 0.236 * span, "0.382": end - 0.382 * span, "0.5": end - 0.5 * span, "0.618": end - 0.618 * span, "0.786": end - 0.786 * span, "1.0": origin }
-    : { "1.0": origin, "0.786": origin - 0.214 * span, "0.618": origin - 0.382 * span, "0.5": origin - 0.5 * span, "0.382": origin - 0.618 * span, "0.236": origin - 0.764 * span, "0.0": end, "-0.618": end - 0.618 * span };
-}
-
-function findDisplacingWave(mwSeg, fibLevels, laterWaves) {
-  const isBull    = bull(mwSeg);
-  const inv       = fibLevels["-0.618"];
-  const originLvl = fibLevels["1.0"];
-  const mwSize    = sp(mwSeg);
-  for (const w of laterWaves) {
-    if (w.fromTime <= mwSeg.toTime) continue;
-    if (sp(w) >= mwSize) return { wave: w, reason: "size_promotion" };
-    if (isBull) {
-      if ( bull(w) && w.toPrice >  inv)       return { wave: w, reason: "fib_breach" };
-      if (!bull(w) && w.toPrice <  originLvl) return { wave: w, reason: "fib_breach" };
-    } else {
-      if (!bull(w) && w.toPrice <  inv)       return { wave: w, reason: "fib_breach" };
-      if ( bull(w) && w.toPrice >  originLvl) return { wave: w, reason: "fib_breach" };
-    }
-  }
-  return null;
-}
+// (Chunk 10, 2026-08-04): buildFibLevels/findDisplacingWave used to be hand-duplicated
+// here — now imported from fibMath.js / motherwave.js above. `sp`/`bull` are kept:
+// they're still called directly at 2 console.log lines further down (search "size=").
+const sp = s => Math.abs(s.toPrice - s.fromPrice);
+const bull = s => s.toSide === "high";
 
 // ─── Test runner ──────────────────────────────────────────────────────────────
 let passed = 0;
@@ -128,7 +103,7 @@ console.log("── SECTION 1: Direct logic tests (findDisplacingWave) ──\n"
 test("Rule 3 — New wave EQUAL in size → size_promotion", () => {
   // MW: Bull wave from 100 → 200 (size = 100)
   const mwSeg = makeSeg(100, 200, 0, "high");
-  const fibs  = buildFibLevels(mwSeg);
+  const fibs = buildFibLevels(mwSeg);
 
   // Later wave: also 100 in size (200 → 300) — equal size, inside fibs
   const laterWave = makeSeg(200, 300, 20, "high");
@@ -143,7 +118,7 @@ test("Rule 3 — New wave EQUAL in size → size_promotion", () => {
 test("Rule 3 — New wave LARGER in size → size_promotion", () => {
   // MW: Bull wave from 100 → 200 (size = 100)
   const mwSeg = makeSeg(100, 200, 0, "high");
-  const fibs  = buildFibLevels(mwSeg);
+  const fibs = buildFibLevels(mwSeg);
 
   // Later wave: size = 150 (bigger than MW) — clearly larger
   const laterWave = makeSeg(200, 350, 20, "high");
@@ -159,7 +134,7 @@ test("Rule 4 — Wave INSIDE fib levels but LARGER → size_promotion", () => {
   // MW: Bull wave from 100 → 200 (size = 100)
   // Fib levels for bull: 1.0 = 100 (origin), -0.618 = 261.8 (extension)
   const mwSeg = makeSeg(100, 200, 0, "high");
-  const fibs  = buildFibLevels(mwSeg);
+  const fibs = buildFibLevels(mwSeg);
 
   console.log(`       MW fib levels: 1.0=${fibs["1.0"].toFixed(1)}  -0.618=${fibs["-0.618"].toFixed(1)}`);
 
@@ -181,7 +156,7 @@ test("Rule 4 — Wave INSIDE fib levels but LARGER → size_promotion", () => {
 test("Small wave inside fibs → NO promotion (MW stays)", () => {
   // MW: Bull wave 100 → 200 (size = 100)
   const mwSeg = makeSeg(100, 200, 0, "high");
-  const fibs  = buildFibLevels(mwSeg);
+  const fibs = buildFibLevels(mwSeg);
 
   // Later wave: size = 30 (smaller), inside fibs — should not trigger anything
   const laterWave = makeSeg(180, 150, 20, "low");   // bear wave, size=30, inside fibs
@@ -198,7 +173,7 @@ test("Small wave inside fibs → NO promotion (MW stays)", () => {
 test("Fib breach — bull wave exceeds -0.618 extension → fib_breach", () => {
   // MW: Bull wave 100 → 200 (size=100), -0.618 fib = 261.8
   const mwSeg = makeSeg(100, 200, 0, "high");
-  const fibs  = buildFibLevels(mwSeg);
+  const fibs = buildFibLevels(mwSeg);
 
   // Later wave: small size (50) but goes above 261.8 → fib breach
   const laterWave = makeSeg(220, 270, 20, "high");   // toPrice=270 > 261.8
@@ -213,7 +188,7 @@ test("Fib breach — bull wave exceeds -0.618 extension → fib_breach", () => {
 test("Origin breach — bear wave drops below 1.0 → fib_breach", () => {
   // MW: Bull wave 100 → 200 (size=100), origin = 100
   const mwSeg = makeSeg(100, 200, 0, "high");
-  const fibs  = buildFibLevels(mwSeg);
+  const fibs = buildFibLevels(mwSeg);
 
   // Later bear wave: toPrice = 90 < origin 100 → origin breach
   const laterWave = makeSeg(150, 90, 20, "low");
@@ -229,7 +204,7 @@ test("SIZE CHECK runs before fib breach check (order matters)", () => {
   // If a wave is BOTH a fib breacher AND larger than MW size,
   // it should be labelled as size_promotion (size check runs first)
   const mwSeg = makeSeg(100, 200, 0, "high");
-  const fibs  = buildFibLevels(mwSeg);
+  const fibs = buildFibLevels(mwSeg);
 
   // Wave: size=150 (bigger), AND goes to 280 (above -0.618=261.8)
   const laterWave = makeSeg(120, 310, 20, "high");
@@ -248,7 +223,7 @@ console.log("\n── SECTION 2: Bear MW tests ──\n");
 test("Bear MW — Rule 3: equal size wave → size_promotion", () => {
   // Bear MW: from 200 → 100 (size=100)
   const mwSeg = makeSeg(200, 100, 0, "low");
-  const fibs  = buildFibLevels(mwSeg);
+  const fibs = buildFibLevels(mwSeg);
 
   // Later bear wave: 150 → 50 (size=100, equal)
   const laterWave = makeSeg(150, 50, 20, "low");
@@ -264,7 +239,7 @@ test("Bear MW — Rule 4: contained but larger → size_promotion", () => {
   // -0.618 fib for bear = 100 - 0.618*100 = 38.2 (extension below tip)
   // 1.0 fib (origin) = 200
   const mwSeg = makeSeg(200, 100, 0, "low");
-  const fibs  = buildFibLevels(mwSeg);
+  const fibs = buildFibLevels(mwSeg);
 
   console.log(`       Bear MW fib levels: 1.0=${fibs["1.0"].toFixed(1)}  -0.618=${fibs["-0.618"].toFixed(1)}`);
 
@@ -286,7 +261,7 @@ console.log("\n── SECTION 3: Edge cases ──\n");
 
 test("Wave at EXACT equal size (not 1 less, not 1 more) → size_promotion", () => {
   const mwSeg = makeSeg(100, 200, 0, "high");   // size = 100 exactly
-  const fibs  = buildFibLevels(mwSeg);
+  const fibs = buildFibLevels(mwSeg);
   const laterWave = makeSeg(200, 300, 20, "high"); // size = 100 exactly
 
   const result = findDisplacingWave(mwSeg, fibs, [laterWave]);
@@ -296,7 +271,7 @@ test("Wave at EXACT equal size (not 1 less, not 1 more) → size_promotion", () 
 
 test("Wave SLIGHTLY smaller (99.9) → no promotion (MW stays)", () => {
   const mwSeg = makeSeg(100, 200, 0, "high");      // size = 100
-  const fibs  = buildFibLevels(mwSeg);
+  const fibs = buildFibLevels(mwSeg);
   const laterWave = makeSeg(150, 249.9, 20, "high"); // size = 99.9
 
   const result = findDisplacingWave(mwSeg, fibs, [laterWave]);

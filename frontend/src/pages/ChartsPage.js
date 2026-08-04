@@ -360,7 +360,9 @@ const ChartPanel = memo(function ChartPanel({
   // driving the timeframe pill buttons). Typing any number that isn't one of
   // 1/3/5/15/60/1440/10080 does nothing and shows a brief warning — the
   // chart stays exactly on its current timeframe, never a half-applied or
-  // invalid resolution.
+  // invalid resolution. Also called (with "1440"/"10080"/"60") from the
+  // 1D/1W/1H letter-shortcut in the keydown handler above — same validation
+  // path either way, nothing special-cased for the letter entry point.
   const applyTypedTimeframe = useCallback((digits) => {
     const n = parseInt(digits, 10);
     const supported = TIMEFRAMES.some((tf) => tf.value === n);
@@ -1228,6 +1230,29 @@ export default function ChartsPage() {
         if (e.key === "Escape") { e.preventDefault(); clearBuffer(); return; }
       }
 
+      // "1" + D/W/H → Day/Week/Hour shortcut. 1440 (Day) and 10080 (Week) are
+      // valid numeric resolutions per TIMEFRAMES, but no one actually types
+      // those digit strings — this gives the real, typed-by-a-person alias.
+      // 60 (Hour) already works by typing "60" digit-by-digit; "1H"/"1h" is an
+      // additional alias for it, not a replacement. Only fires when the digit
+      // buffer is exactly "1" — a bare "D"/"W"/"H" with no leading "1" is not
+      // a recognized shortcut and falls through to type-to-search, unchanged.
+      // stopImmediatePropagation() is required here, not just preventDefault():
+      // the type-to-search handler below is a SEPARATE window keydown listener,
+      // and its own digit-only exclusion list doesn't know about this letter
+      // shortcut — without this, pressing "1" then "h" both switched the
+      // timeframe AND opened the symbol search pre-filled with "h" (found and
+      // reported 2026-08-04; preventDefault alone does not stop a second,
+      // independently-registered listener on the same event).
+      if (tfDigitBufferRef.current === "1" && e.key.length === 1 && "dDwWhH".includes(e.key)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const code = { d: "1440", D: "1440", w: "10080", W: "10080", h: "60", H: "60" }[e.key];
+        clearBuffer();
+        panelActionsRef.current?.applyTypedTimeframe?.(code);
+        return;
+      }
+
       if (e.key.length === 1 && e.key >= "0" && e.key <= "9") {
         e.preventDefault();
         tfDigitBufferRef.current += e.key;
@@ -1245,6 +1270,15 @@ export default function ChartsPage() {
   // pre-filled with the typed character. Only single plain LETTER chars with no
   // modifier — digits are claimed by the timeframe-typing handler above, so
   // they never collide with Ctrl+Q, Alt+letter, Ctrl+Z, arrows, or numbers.
+  // NOTE (2026-08-04): this handler's own checks below have no way to know
+  // whether "d"/"w"/"h" is part of the timeframe-typing handler's 1D/1W/1H
+  // shortcut (that handler only knows its own digit buffer, this one doesn't
+  // share state with it) — the timeframe handler prevents the collision on
+  // its side, by calling e.stopImmediatePropagation() when it consumes one of
+  // those letters, so this handler's onKey never runs for that keystroke at
+  // all. If that stopImmediatePropagation() call is ever removed, this
+  // handler WILL fire for "d"/"w"/"h" and re-introduce the double-action bug
+  // (timeframe changes AND search opens) that was found and fixed that day.
   useEffect(() => {
     function onKey(e) {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
