@@ -30,22 +30,31 @@
 
 require("dotenv").config({ path: require("path").resolve(__dirname, "../../backend/.env") });
 
-const { pool, query } = require("./pool");
+const { pool } = require("./pool");
+const { db } = require("./db/client");
+const { candles } = require("./db/schema");
+const { eq, and, asc, sql } = require("drizzle-orm");
 const { parseDerivativeSymbol } = require("./symbolParser");
 const { upsertOptionCandles, upsertFutureCandles } = require("./derivativesStore");
 
 const BATCH_SIZE = 2000; // rows read from `candles` per symbol chunk
 
 async function fetchAllRowsForSymbol(symbol) {
-  const rows = await query(
-    `SELECT extract(epoch from time)*1000 AS time, open, high, low, close, volume
-     FROM candles
-     WHERE symbol=$1 AND resolution=1
-     ORDER BY time ASC`,
-    [symbol]
-  );
+  const rows = await db
+    .select({
+      time: sql`extract(epoch from ${candles.time}) * 1000`.mapWith(Number),
+      open: candles.open,
+      high: candles.high,
+      low: candles.low,
+      close: candles.close,
+      volume: candles.volume,
+    })
+    .from(candles)
+    .where(and(eq(candles.symbol, symbol), eq(candles.resolution, 1)))
+    .orderBy(asc(candles.time));
+
   return rows.map((r) => ({
-    time: Math.round(Number(r.time)),
+    time: Math.round(r.time),
     open: Number(r.open),
     high: Number(r.high),
     low: Number(r.low),
@@ -56,7 +65,7 @@ async function fetchAllRowsForSymbol(symbol) {
 
 async function runBackfill() {
   console.log("[BackfillDerivatives] Scanning `candles` for distinct symbols...");
-  const symbolRows = await query("SELECT DISTINCT symbol FROM candles ORDER BY symbol", []);
+  const symbolRows = await db.selectDistinct({ symbol: candles.symbol }).from(candles).orderBy(asc(candles.symbol));
   console.log(`[BackfillDerivatives] ${symbolRows.length} distinct symbols found in candles.`);
 
   const candidates = [];

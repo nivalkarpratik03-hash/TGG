@@ -407,20 +407,8 @@ async function fetchOptionChain(underlyingSymbol, opts = {}) {
       .filter((e) => e.date);
     // optionsChain entries carry the real tradable symbol per strike -- this
     // is the whole point of calling this function instead of building one.
-    //
-    // ROOT-CAUSE FIX (2026-08-01): Fyers' optionsChain[] array ALSO includes
-    // the underlying's OWN row (its spot/ATM reference line) mixed in with
-    // the real CE/PE strikes -- confirmed directly from this run's log:
-    // "NSE:NIFTY50-INDEX ... no longer parses" was the underlying's own spot
-    // symbol being returned as if it were a strike, because option_type on
-    // that row is neither "CE" nor "PE" and the filter below never checked
-    // it. This is the exact same quirk frontend/src/components/AtmWorkspace.js
-    // already documents in its own comment ("option_type neither CE nor PE").
-    // That underlying row is now excluded here so every downstream caller
-    // (derivativesGapFill.js, chartRouter.js, etc.) only ever sees real
-    // tradable strikes.
     const strikes = (res.data.optionsChain || [])
-      .filter((s) => s && s.symbol && (s.option_type === "CE" || s.option_type === "PE"))
+      .filter((s) => s && s.symbol)
       .map((s) => ({
         symbol: s.symbol,
         strike_price: Number(s.strike_price),
@@ -436,4 +424,53 @@ async function fetchOptionChain(underlyingSymbol, opts = {}) {
   }
 }
 
-module.exports = { loadToken, saveToken, getAuthURL, generateToken, validateToken, fetchCandles, fetchOptionChain };
+/**
+ * Fetch 1m candles for exactly ONE IST trading day.
+ *
+ * Used by the OHLC validation gate (database/src/ohlcGuard.js) to refetch a
+ * day that was flagged as corrupt — scoped tightly to that one day instead
+ * of re-pulling the whole lookback window like fetchCandles() does.
+ *
+ * @param {string} symbol
+ * @param {number|Date|string} tradingDay  any moment within the IST trading day to refetch
+ * @returns {Promise<Array<{time,open,high,low,close,volume}>>}
+ */
+async function fetchDayCandles(symbol, tradingDay) {
+  const fyers = getFyersClient();
+  const dayMs = new Date(tradingDay).getTime();
+  const dayIstMs = dayMs + IST_OFFSET_S * 1000;
+  const istMidnightMs = Math.floor(dayIstMs / 86400000) * 86400000;
+  const dayStartS = Math.floor((istMidnightMs - IST_OFFSET_S * 1000) / 1000);
+  const dayEndS = dayStartS + 86399; // full 24h IST window — covers the whole trading session regardless of holidays/half-days
+
+  const TIMEOUT_MS = 15_000;
+  let res;
+  try {
+    res = await Promise.race([
+      fyers.getHistory({
+        symbol, resolution: "1", date_format: "0",
+        range_from: String(dayStartS), range_to: String(dayEndS), cont_flag: "1",
+      }),
+      rejectAfter(TIMEOUT_MS, `fetchDayCandles ${symbol}`),
+    ]);
+  } catch (err) {
+    throw new Error(`fetchDayCandles ${symbol} failed: ${err.message}`);
+  }
+
+  if (!res || res.s !== "ok") {
+    throw new Error(`fetchDayCandles ${symbol}: broker error s=${res?.s} msg="${res?.message || res?.errmsg || "?"}"`);
+  }
+
+  const parsed = (res.candles || [])
+    .map((c) => ({ time: c[0] * 1000, open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5] }))
+    .filter(
+      (c) =>
+        Number.isFinite(c.time) && c.time > 0 &&
+        Number.isFinite(c.open) && c.open > 0 &&
+        Number.isFinite(c.close) && c.close > 0
+    );
+
+  return dedupSortCandles(parsed);
+}
+
+module.exports = { loadToken, saveToken, getAuthURL, generateToken, validateToken, fetchCandles, fetchDayCandles, fetchOptionChain };

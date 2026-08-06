@@ -22,9 +22,21 @@
  *  • Broker-synchronized 1m timeline is maintained.
  *  • The frontend reads candles ONLY from this module (via the API).
  *  • WebSocket never writes here.
+ *
+ * DRIZZLE NOTE: this module now runs on Drizzle ORM (src/db/client.js +
+ * src/db/schema.js) instead of hand-written SQL strings over pg directly.
+ * The bulk upsert path (upsertCandleBatch) still builds one batched
+ * `INSERT ... VALUES (...),(...) ON CONFLICT DO UPDATE` per 500 rows —
+ * same batching rationale as before (PG's 65535 bind-param limit) — it's
+ * just expressed through Drizzle's query builder (.values([...]).
+ * onConflictDoUpdate(...)) instead of a manually built SQL string, so it
+ * stays type-checked and composable while keeping the exact same
+ * single-round-trip-per-batch performance characteristics.
  */
 
-const { query, transaction } = require("./pool");
+const { db } = require("./db/client");
+const { candles, validationState, symbolAccessLog } = require("./db/schema");
+const { and, eq, gte, lte, lt, sql, desc, asc } = require("drizzle-orm");
 const { isValidCandle } = require("./candleValidation");
 
 // ─── Write ─────────────────────────────────────────────────────────────────
@@ -33,16 +45,6 @@ const { isValidCandle } = require("./candleValidation");
 // Each candle uses 8 params → max safe batch = floor(65535/8) = 8191.
 // 500 rows (4000 params) leaves plenty of headroom.
 const UPSERT_BATCH_SIZE = 500;
-const UPSERT_SQL_SUFFIX = `
-  ON CONFLICT (symbol, resolution, time) DO UPDATE SET
-    open        = EXCLUDED.open,
-    high        = EXCLUDED.high,
-    low         = EXCLUDED.low,
-    close       = EXCLUDED.close,
-    volume      = EXCLUDED.volume,
-    validated   = TRUE,
-    inserted_at = NOW()
-`;
 
 /**
  * P3 #14 — shared batch-upsert core. Previously upsertCandles(),
@@ -50,39 +52,48 @@ const UPSERT_SQL_SUFFIX = `
  * independent copy of this exact batching/SQL-building loop. Now all
  * three call this one function.
  *
- * `exec` is whatever executes the query — either the module-level query()
- * (plain, un-transacted connection) or a transaction client's bound
- * `client.query`, so this works identically inside or outside a transaction.
- * Only requirement: `exec(sql, params)` — the return value isn't used here,
- * each caller already tracks its own row counts via batch.length.
+ * `execDb` is whatever executes the query — either the module-level `db`
+ * (plain, un-transacted connection) or a transaction's bound `tx`, so this
+ * works identically inside or outside a transaction.
  *
- * @param {(sql: string, params: any[]) => Promise<any>} exec
+ * @param {typeof db} execDb
  * @param {string} symbol
  * @param {number} resolution
  * @param {Array<{time,open,high,low,close,volume}>} validCandles  already isValidCandle()-filtered
  * @returns {Promise<number>} rows upserted
  */
-async function upsertCandleBatch(exec, symbol, resolution, validCandles) {
+async function upsertCandleBatch(execDb, symbol, resolution, validCandles) {
   let inserted = 0;
 
   for (let offset = 0; offset < validCandles.length; offset += UPSERT_BATCH_SIZE) {
     const batch = validCandles.slice(offset, offset + UPSERT_BATCH_SIZE);
-    const values = [];
-    const params = [];
-    let p = 1;
+    const values = batch.map((c) => ({
+      symbol,
+      resolution,
+      time: new Date(c.time), // epoch ms → timestamptz, same as old to_timestamp($/1000.0)
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume ?? 0,
+    }));
 
-    for (const c of batch) {
-      values.push(`($${p++},$${p++},to_timestamp($${p++}/1000.0),$${p++},$${p++},$${p++},$${p++},$${p++})`);
-      params.push(symbol, resolution, c.time, c.open, c.high, c.low, c.close, c.volume ?? 0);
-    }
+    await execDb
+      .insert(candles)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [candles.symbol, candles.resolution, candles.time],
+        set: {
+          open: sql`excluded.open`,
+          high: sql`excluded.high`,
+          low: sql`excluded.low`,
+          close: sql`excluded.close`,
+          volume: sql`excluded.volume`,
+          validated: true,
+          insertedAt: sql`now()`,
+        },
+      });
 
-    const sql = `
-      INSERT INTO candles (symbol, resolution, time, open, high, low, close, volume)
-      VALUES ${values.join(",")}
-      ${UPSERT_SQL_SUFFIX}
-    `;
-
-    await exec(sql, params);
     inserted += batch.length;
   }
 
@@ -97,23 +108,27 @@ async function upsertCandleBatch(exec, symbol, resolution, validCandles) {
  * ARCHITECTURE NOTE: Only call this with resolution=1. Higher timeframes
  * (3m, 5m, 15m, 1h, 1D, 1W) are derived in-memory and never persisted.
  *
- * PostgreSQL hard-limits a single query to 65535 bind parameters.
- * Each candle uses 8 params → max safe batch = floor(65535/8) = 8191.
- * We use UPSERT_BATCH_SIZE = 500 rows (4000 params) for headroom.
- *
  * @param {string} symbol
  * @param {number} resolution  must be 1 (1-minute)
- * @param {Array<{time,open,high,low,close,volume}>} candles  time in ms (epoch)
+ * @param {Array<{time,open,high,low,close,volume}>} candleRows  time in ms (epoch)
  * @returns {Promise<number>}  total rows upserted
  */
-async function upsertCandles(symbol, resolution, candles) {
-  if (!candles || candles.length === 0) return 0;
+async function upsertCandles(symbol, resolution, candleRows) {
+  if (!candleRows || candleRows.length === 0) return 0;
 
-  // Filter valid candles first
-  const valid = candles.filter(isValidCandle);
+  const valid = candleRows.filter(isValidCandle);
   if (valid.length === 0) return 0;
 
-  return upsertCandleBatch(query, symbol, resolution, valid);
+  return upsertCandleBatch(db, symbol, resolution, valid);
+}
+
+function dayBounds(tradingDay) {
+  const d = new Date(tradingDay);
+  const dayStart = new Date(d);
+  dayStart.setUTCHours(0, 0, 0, 0);
+  const dayEnd = new Date(dayStart);
+  dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
+  return { dayStart, dayEnd };
 }
 
 /**
@@ -127,19 +142,19 @@ async function upsertCandles(symbol, resolution, candles) {
 async function deleteDayCandles(symbol, resolution, tradingDay) {
   // A trading day in IST runs 09:15–15:30. We delete the full UTC day that
   // contains the IST trading session (safe: IST = UTC+5:30).
-  const d = new Date(tradingDay);
-  const dayStart = new Date(d);
-  dayStart.setUTCHours(0, 0, 0, 0);
-  const dayEnd = new Date(dayStart);
-  dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
+  const { dayStart, dayEnd } = dayBounds(tradingDay);
 
-  const rows = await query(
-    `DELETE FROM candles
-     WHERE symbol=$1 AND resolution=$2
-       AND time >= $3 AND time < $4
-     RETURNING 1`,
-    [symbol, resolution, dayStart.toISOString(), dayEnd.toISOString()]
-  );
+  const rows = await db
+    .delete(candles)
+    .where(
+      and(
+        eq(candles.symbol, symbol),
+        eq(candles.resolution, resolution),
+        gte(candles.time, dayStart),
+        lt(candles.time, dayEnd)
+      )
+    )
+    .returning({ symbol: candles.symbol });
   return rows.length;
 }
 
@@ -151,40 +166,39 @@ async function deleteDayCandles(symbol, resolution, tradingDay) {
  * upsertCandles() as two separate, independently-committed queries. Any
  * client reading via loadCandles() in the window between those two calls
  * would see that trading day as empty/partial — a transient phantom gap.
- * Wrapping both in BEGIN/COMMIT makes the replacement atomic: readers either
- * see the old day intact or the new day intact, never neither.
+ * Wrapping both in one Drizzle transaction makes the replacement atomic:
+ * readers either see the old day intact or the new day intact, never neither.
  *
  * @param {string} symbol
  * @param {number} resolution
  * @param {Date|string} tradingDay
- * @param {Array<{time,open,high,low,close,volume}>} candles  the replacement rows
+ * @param {Array<{time,open,high,low,close,volume}>} candleRows  the replacement rows
  * @returns {Promise<{deleted:number, inserted:number}>}
  */
-async function replaceDayCandles(symbol, resolution, tradingDay, candles) {
-  const d = new Date(tradingDay);
-  const dayStart = new Date(d);
-  dayStart.setUTCHours(0, 0, 0, 0);
-  const dayEnd = new Date(dayStart);
-  dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
-
-  const valid = (candles || []).filter(isValidCandle);
+async function replaceDayCandles(symbol, resolution, tradingDay, candleRows) {
+  const { dayStart, dayEnd } = dayBounds(tradingDay);
+  const valid = (candleRows || []).filter(isValidCandle);
 
   let deleted = 0;
   let inserted = 0;
 
-  await transaction(async (client) => {
-    const delRows = await client.query(
-      `DELETE FROM candles
-       WHERE symbol=$1 AND resolution=$2
-         AND time >= $3 AND time < $4
-       RETURNING 1`,
-      [symbol, resolution, dayStart.toISOString(), dayEnd.toISOString()]
-    );
-    deleted = delRows.rows.length;
+  await db.transaction(async (tx) => {
+    const delRows = await tx
+      .delete(candles)
+      .where(
+        and(
+          eq(candles.symbol, symbol),
+          eq(candles.resolution, resolution),
+          gte(candles.time, dayStart),
+          lt(candles.time, dayEnd)
+        )
+      )
+      .returning({ symbol: candles.symbol });
+    deleted = delRows.length;
 
     if (valid.length === 0) return;
 
-    inserted = await upsertCandleBatch(client.query.bind(client), symbol, resolution, valid);
+    inserted = await upsertCandleBatch(tx, symbol, resolution, valid);
   });
 
   return { deleted, inserted };
@@ -194,17 +208,12 @@ async function replaceDayCandles(symbol, resolution, tradingDay, candles) {
  * Delete ALL candles for a symbol (full refetch / nuke).
  */
 async function deleteAllCandles(symbol, resolution = null) {
-  if (resolution !== null) {
-    const rows = await query(
-      "DELETE FROM candles WHERE symbol=$1 AND resolution=$2 RETURNING 1",
-      [symbol, resolution]
-    );
-    return rows.length;
-  }
-  const rows = await query(
-    "DELETE FROM candles WHERE symbol=$1 RETURNING 1",
-    [symbol]
-  );
+  const where =
+    resolution !== null
+      ? and(eq(candles.symbol, symbol), eq(candles.resolution, resolution))
+      : eq(candles.symbol, symbol);
+
+  const rows = await db.delete(candles).where(where).returning({ symbol: candles.symbol });
   return rows.length;
 }
 
@@ -223,25 +232,26 @@ async function deleteAllCandles(symbol, resolution = null) {
  * @returns {Promise<Array<{time,open,high,low,close,volume}>>}  time in ms
  */
 async function loadCandles(symbol, resolution, { limit = 10000, from, to } = {}) {
-  const params = [symbol, resolution];
-  let whereClauses = "symbol=$1 AND resolution=$2";
-  let p = 3;
+  const conditions = [eq(candles.symbol, symbol), eq(candles.resolution, resolution)];
+  if (from) conditions.push(gte(candles.time, new Date(from)));
+  if (to) conditions.push(lte(candles.time, new Date(to)));
 
-  if (from) { whereClauses += ` AND time >= $${p++}`; params.push(new Date(from).toISOString()); }
-  if (to) { whereClauses += ` AND time <= $${p++}`; params.push(new Date(to).toISOString()); }
+  const rows = await db
+    .select({
+      time: sql`extract(epoch from ${candles.time}) * 1000`.mapWith(Number),
+      open: candles.open,
+      high: candles.high,
+      low: candles.low,
+      close: candles.close,
+      volume: candles.volume,
+    })
+    .from(candles)
+    .where(and(...conditions))
+    .orderBy(asc(candles.time))
+    .limit(limit);
 
-  const rows = await query(
-    `SELECT extract(epoch from time)*1000 AS time,
-            open, high, low, close, volume
-     FROM candles
-     WHERE ${whereClauses}
-     ORDER BY time ASC
-     LIMIT $${p}`,
-    [...params, limit]
-  );
-
-  return rows.map(r => ({
-    time: Math.round(Number(r.time)),
+  return rows.map((r) => ({
+    time: Math.round(r.time),
     open: Number(r.open),
     high: Number(r.high),
     low: Number(r.low),
@@ -255,17 +265,24 @@ async function loadCandles(symbol, resolution, { limit = 10000, from, to } = {})
  * Used by the periodic sync to detect silent drift from broker.
  */
 async function getLatestCandle(symbol, resolution) {
-  const rows = await query(
-    `SELECT extract(epoch from time)*1000 AS time, open, high, low, close, volume
-     FROM candles
-     WHERE symbol=$1 AND resolution=$2
-     ORDER BY time DESC LIMIT 1`,
-    [symbol, resolution]
-  );
+  const rows = await db
+    .select({
+      time: sql`extract(epoch from ${candles.time}) * 1000`.mapWith(Number),
+      open: candles.open,
+      high: candles.high,
+      low: candles.low,
+      close: candles.close,
+      volume: candles.volume,
+    })
+    .from(candles)
+    .where(and(eq(candles.symbol, symbol), eq(candles.resolution, resolution)))
+    .orderBy(desc(candles.time))
+    .limit(1);
+
   if (!rows.length) return null;
   const r = rows[0];
   return {
-    time: Math.round(Number(r.time)),
+    time: Math.round(r.time),
     open: Number(r.open),
     high: Number(r.high),
     low: Number(r.low),
@@ -278,12 +295,18 @@ async function getLatestCandle(symbol, resolution) {
  * Count candles stored for a symbol+resolution within a date range.
  */
 async function countCandles(symbol, resolution, from, to) {
-  const rows = await query(
-    `SELECT COUNT(*) AS cnt FROM candles
-     WHERE symbol=$1 AND resolution=$2 AND time >= $3 AND time <= $4`,
-    [symbol, resolution, new Date(from).toISOString(), new Date(to).toISOString()]
-  );
-  return parseInt(rows[0]?.cnt || "0", 10);
+  const rows = await db
+    .select({ cnt: sql`count(*)`.mapWith(Number) })
+    .from(candles)
+    .where(
+      and(
+        eq(candles.symbol, symbol),
+        eq(candles.resolution, resolution),
+        gte(candles.time, new Date(from)),
+        lte(candles.time, new Date(to))
+      )
+    );
+  return rows[0]?.cnt ?? 0;
 }
 
 // ─── Pruning ────────────────────────────────────────────────────────────────
@@ -296,30 +319,30 @@ async function countCandles(symbol, resolution, from, to) {
  * upsertCandles() as two separate, independently-committed queries — same
  * class of bug as the single-day repair race, just symbol-wide. A chart
  * read landing in that window could see the whole symbol as empty during
- * a manual "Full Refetch" click. Wrapped in BEGIN/COMMIT for the same
- * all-or-nothing guarantee as replaceDayCandles().
+ * a manual "Full Refetch" click. Wrapped in one Drizzle transaction for the
+ * same all-or-nothing guarantee as replaceDayCandles().
  *
  * @param {string} symbol
  * @param {number} resolution
- * @param {Array<{time,open,high,low,close,volume}>} candles  the full replacement set
+ * @param {Array<{time,open,high,low,close,volume}>} candleRows  the full replacement set
  * @returns {Promise<{deleted:number, inserted:number}>}
  */
-async function replaceAllCandles(symbol, resolution, candles) {
-  const valid = (candles || []).filter(isValidCandle);
+async function replaceAllCandles(symbol, resolution, candleRows) {
+  const valid = (candleRows || []).filter(isValidCandle);
 
   let deleted = 0;
   let inserted = 0;
 
-  await transaction(async (client) => {
-    const delRows = await client.query(
-      "DELETE FROM candles WHERE symbol=$1 AND resolution=$2 RETURNING 1",
-      [symbol, resolution]
-    );
-    deleted = delRows.rows.length;
+  await db.transaction(async (tx) => {
+    const delRows = await tx
+      .delete(candles)
+      .where(and(eq(candles.symbol, symbol), eq(candles.resolution, resolution)))
+      .returning({ symbol: candles.symbol });
+    deleted = delRows.length;
 
     if (valid.length === 0) return;
 
-    inserted = await upsertCandleBatch(client.query.bind(client), symbol, resolution, valid);
+    inserted = await upsertCandleBatch(tx, symbol, resolution, valid);
   });
 
   return { deleted, inserted };
@@ -340,17 +363,13 @@ async function replaceAllCandles(symbol, resolution, candles) {
  * @returns {Promise<number>}  rows deleted
  */
 async function pruneOldCandles(symbol = null, resolution = 1, retentionDays = 365) {
-  const cutoff = new Date(Date.now() - retentionDays * 86400 * 1000).toISOString();
+  const cutoff = new Date(Date.now() - retentionDays * 86400 * 1000);
 
-  let sql = "DELETE FROM candles WHERE time < $1";
-  const params = [cutoff];
-  let p = 2;
+  const conditions = [lt(candles.time, cutoff)];
+  if (symbol !== null) conditions.push(eq(candles.symbol, symbol));
+  if (resolution !== null) conditions.push(eq(candles.resolution, resolution));
 
-  if (symbol !== null) { sql += ` AND symbol=$${p++}`; params.push(symbol); }
-  if (resolution !== null) { sql += ` AND resolution=$${p++}`; params.push(resolution); }
-  sql += " RETURNING 1";
-
-  const rows = await query(sql, params);
+  const rows = await db.delete(candles).where(and(...conditions)).returning({ symbol: candles.symbol });
   return rows.length;
 }
 
@@ -452,7 +471,7 @@ function isContractExpired(info, now = new Date()) {
  * @returns {Promise<{symbolsPruned:number, candlesDeleted:number, symbols:string[]}>}
  */
 async function pruneExpiredContracts(now = new Date()) {
-  const rows = await query("SELECT DISTINCT symbol FROM candles", []);
+  const rows = await db.selectDistinct({ symbol: candles.symbol }).from(candles);
 
   let symbolsPruned = 0;
   let candlesDeleted = 0;
@@ -474,6 +493,59 @@ async function pruneExpiredContracts(now = new Date()) {
   return { symbolsPruned, candlesDeleted, symbols };
 }
 
+// ─── Symbol access log ──────────────────────────────────────────────────────
+//
+// BUG FIX (found while wiring up Drizzle): retentionCleanup.js has always
+// imported listSymbols, getSymbolAccessMap, and deleteSymbolAccess from
+// this module, but none of the three previously existed here — calling
+// runRetentionCleanup() would have thrown immediately. There was also no
+// writer for symbol_access_log anywhere in the codebase, so even once
+// callable, isOptionStale() would treat every option as "never accessed"
+// (immediately stale) since accessMap would always be empty. All four are
+// implemented below now, backed by the symbol_access_log table that
+// migration 001 already created for exactly this purpose.
+//
+// recordSymbolAccess() isn't wired into any call site yet — call it from
+// wherever a symbol is loaded/viewed (e.g. the options-chain / chart-open
+// API route) so the 2-trading-day staleness rule has real data to work from.
+
+/**
+ * Record (or bump) the last-accessed timestamp for a symbol.
+ * Call this wherever a symbol is loaded/viewed by a client.
+ */
+async function recordSymbolAccess(symbol) {
+  await db
+    .insert(symbolAccessLog)
+    .values({ symbol, lastAccessed: new Date() })
+    .onConflictDoUpdate({
+      target: symbolAccessLog.symbol,
+      set: { lastAccessed: new Date() },
+    });
+}
+
+/** Distinct symbols currently stored in the `candles` table. */
+async function listSymbols() {
+  const rows = await db.selectDistinct({ symbol: candles.symbol }).from(candles);
+  return rows.map((r) => r.symbol);
+}
+
+/** Map of symbol → last_accessed Date, for every row in symbol_access_log. */
+async function getSymbolAccessMap() {
+  const rows = await db.select().from(symbolAccessLog);
+  const map = new Map();
+  for (const r of rows) map.set(r.symbol, r.lastAccessed);
+  return map;
+}
+
+/** Remove a symbol's row from symbol_access_log (called after its candles are deleted). */
+async function deleteSymbolAccess(symbol) {
+  const rows = await db
+    .delete(symbolAccessLog)
+    .where(eq(symbolAccessLog.symbol, symbol))
+    .returning({ symbol: symbolAccessLog.symbol });
+  return rows.length;
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /**
@@ -490,19 +562,30 @@ async function pruneExpiredContracts(now = new Date()) {
  */
 async function upsertValidationState(symbol, resolution, { valid, issues }) {
   const status = valid ? "ok" : "issues_found";
-  const issueSummary = issues && issues.length > 0
-    ? issues.slice(0, 5).map(i => i.type || i.message || String(i)).join("; ")
-    : null;
-  await query(
-    `INSERT INTO validation_state (symbol, resolution, last_checked, last_ok, status, issue)
-     VALUES ($1, $2, NOW(), CASE WHEN $3 THEN NOW() ELSE NULL END, $4, $5)
-     ON CONFLICT (symbol, resolution) DO UPDATE SET
-       last_checked = NOW(),
-       last_ok = CASE WHEN $3 THEN NOW() ELSE validation_state.last_ok END,
-       status = $4,
-       issue = $5`,
-    [symbol, resolution, !!valid, status, issueSummary]
-  );
+  const issueSummary =
+    issues && issues.length > 0
+      ? issues.slice(0, 5).map((i) => i.type || i.message || String(i)).join("; ")
+      : null;
+
+  await db
+    .insert(validationState)
+    .values({
+      symbol,
+      resolution,
+      lastChecked: new Date(),
+      lastOk: valid ? new Date() : null,
+      status,
+      issue: issueSummary,
+    })
+    .onConflictDoUpdate({
+      target: [validationState.symbol, validationState.resolution],
+      set: {
+        lastChecked: new Date(),
+        lastOk: valid ? new Date() : sql`${validationState.lastOk}`,
+        status,
+        issue: issueSummary,
+      },
+    });
 }
 
 // P3 #12 — isValidCandle() now lives in ./candleValidation.js (single
@@ -524,4 +607,9 @@ module.exports = {
   countCandles,
   isValidCandle,
   upsertValidationState,
+  // symbol_access_log (see "Symbol access log" section above)
+  recordSymbolAccess,
+  listSymbols,
+  getSymbolAccessMap,
+  deleteSymbolAccess,
 };

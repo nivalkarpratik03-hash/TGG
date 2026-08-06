@@ -1,38 +1,41 @@
 /**
  * database/src/derivativesStore.js
  *
- * Persistence layer for the 6 derivatives tables:
- *   nse_options_candles, mcx_options_candles, bse_options_candles,
- *   nse_futures_candles, mcx_futures_candles, bse_futures_candles
- * (bse_* added in migrations/004_bse_tables_and_oi.sql, same migration
- * that added the `oi` column to all 4 pre-existing tables.)
+ * Persistence layer for the 4 derivatives tables added in
+ * migrations/003_derivatives_tables.sql:
+ *   nse_options_candles, mcx_options_candles,
+ *   nse_futures_candles, mcx_futures_candles
  *
- * Mirrors candleStore.js's style: imports query/transaction from pool.js,
- * batched multi-row INSERT ... ON CONFLICT upserts, same 500-row batch
- * size rationale (PG's 65535 bind-parameter limit).
+ * Mirrors candleStore.js's style: Drizzle ORM over the shared pool (see
+ * src/db/client.js), batched multi-row INSERT ... ON CONFLICT upserts via
+ * .values([...]).onConflictDoUpdate(...), same 500-row batch size
+ * rationale (PG's 65535 bind-parameter limit).
  *
  * Row shape in/out of every function here is the object returned by
- * symbolParser.parseDerivativeSymbol(), plus OHLCV + oi:
+ * symbolParser.parseDerivativeSymbol(), plus OHLCV:
  *   { symbol, exchange, underlying, instrument_type, expiry_date,
- *     expiry_type, strike, option_type, time, open, high, low, close,
- *     volume, oi }
- * `time` is epoch ms (same convention as candleStore.js). `oi` is
- * optional on the way in — rows without it (e.g. anything written before
- * OI capture existed) store NULL, same as any already-existing row.
- *
- * expiry_type column presence: NSE and BSE options both carry it (both
- * can have weekly+monthly alive at once — NIFTY and SENSEX respectively).
- * MCX options are the only ones without it (single active cycle, no
- * weekly/monthly split) — the branch below keys off "MCX or not", not
- * "NSE specifically", for exactly this reason.
+ *     expiry_type, strike, option_type, time, open, high, low, close, volume }
+ * `time` is epoch ms (same convention as candleStore.js).
  */
 
-const { query, transaction } = require("./pool");
+const { db } = require("./db/client");
+const {
+  nseOptionsCandles,
+  mcxOptionsCandles,
+  nseFuturesCandles,
+  mcxFuturesCandles,
+} = require("./db/schema");
+const { and, eq, gte, lte, lt, sql, desc, asc } = require("drizzle-orm");
 const { isValidCandle } = require("./candleValidation");
 
 const TABLES = {
-  option: { NSE: "nse_options_candles", MCX: "mcx_options_candles", BSE: "bse_options_candles" },
-  future: { NSE: "nse_futures_candles", MCX: "mcx_futures_candles", BSE: "bse_futures_candles" },
+  option: { NSE: nseOptionsCandles, MCX: mcxOptionsCandles },
+  future: { NSE: nseFuturesCandles, MCX: mcxFuturesCandles },
+};
+
+const TABLE_NAMES = {
+  option: { NSE: "nse_options_candles", MCX: "mcx_options_candles" },
+  future: { NSE: "nse_futures_candles", MCX: "mcx_futures_candles" },
 };
 
 function optionsTable(exchange) {
@@ -44,6 +47,9 @@ function futuresTable(exchange) {
   const t = TABLES.future[exchange];
   if (!t) throw new Error(`No futures table for exchange "${exchange}"`);
   return t;
+}
+function tableFor(instrumentType, exchange) {
+  return instrumentType === "option" ? optionsTable(exchange) : futuresTable(exchange);
 }
 
 // P3 #12 — isValidCandle() now lives in ./candleValidation.js (single
@@ -61,103 +67,85 @@ const UPSERT_BATCH_SIZE = 500; // matches candleStore.js — headroom under PG's
  * @returns {Promise<number>} total rows upserted
  */
 async function upsertOptionCandles(rows) {
-  return upsertRows(rows, "option");
+  return upsertRows(db, rows, "option");
 }
 
 /** Upsert a batch of parsed future candle rows. */
 async function upsertFutureCandles(rows) {
-  return upsertRows(rows, "future");
+  return upsertRows(db, rows, "future");
 }
 
 /**
- * Build the batched INSERT ... ON CONFLICT DO UPDATE statement for one
- * batch of rows. Pure function — no I/O — so it can be reused by both the
- * standalone upsert (runs each batch through the shared pool) and
- * replaceDayCandlesBySymbol (runs each batch through a transaction's
- * client, so the delete + insert land atomically).
+ * Map one parsed+OHLCV row to the shape a given table's Drizzle insert expects.
  */
-function buildBatchInsert(batch, kind, exchange, table) {
-  const isOption = kind === "option";
-  const values = [];
-  const params = [];
-  let p = 1;
-
-  // NSE and BSE options both carry expiry_type (both can have
-  // weekly+monthly alive at once). MCX is the only options exchange
-  // without it — keying off "not MCX", not "is NSE", so BSE options
-  // correctly take the expiry_type-bearing shape too.
-  if (isOption && exchange !== "MCX") {
-    for (const c of batch) {
-      values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},to_timestamp($${p++}/1000.0),$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
-      params.push(c.underlying, c.expiry_date, c.expiry_type, c.strike, c.option_type, c.time, c.open, c.high, c.low, c.close, c.volume ?? 0, c.oi ?? null, c.symbol);
-    }
-    return {
-      sql: `
-        INSERT INTO ${table} (underlying, expiry_date, expiry_type, strike, option_type, time, open, high, low, close, volume, oi, symbol)
-        VALUES ${values.join(",")}
-        ON CONFLICT (underlying, expiry_date, strike, option_type, time) DO UPDATE SET
-          open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-          close = EXCLUDED.close, volume = EXCLUDED.volume, oi = EXCLUDED.oi,
-          symbol = EXCLUDED.symbol, inserted_at = NOW()
-      `,
-      params,
-    };
-  } else if (isOption) { // MCX options — no expiry_type column
-    for (const c of batch) {
-      values.push(`($${p++},$${p++},$${p++},$${p++},to_timestamp($${p++}/1000.0),$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
-      params.push(c.underlying, c.expiry_date, c.strike, c.option_type, c.time, c.open, c.high, c.low, c.close, c.volume ?? 0, c.oi ?? null, c.symbol);
-    }
-    return {
-      sql: `
-        INSERT INTO ${table} (underlying, expiry_date, strike, option_type, time, open, high, low, close, volume, oi, symbol)
-        VALUES ${values.join(",")}
-        ON CONFLICT (underlying, expiry_date, strike, option_type, time) DO UPDATE SET
-          open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-          close = EXCLUDED.close, volume = EXCLUDED.volume, oi = EXCLUDED.oi,
-          symbol = EXCLUDED.symbol, inserted_at = NOW()
-      `,
-      params,
-    };
-  } else { // futures — NSE, MCX, or BSE, identical shape
-    for (const c of batch) {
-      values.push(`($${p++},$${p++},to_timestamp($${p++}/1000.0),$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
-      params.push(c.underlying, c.expiry_date, c.time, c.open, c.high, c.low, c.close, c.volume ?? 0, c.oi ?? null, c.symbol);
-    }
-    return {
-      sql: `
-        INSERT INTO ${table} (underlying, expiry_date, time, open, high, low, close, volume, oi, symbol)
-        VALUES ${values.join(",")}
-        ON CONFLICT (underlying, expiry_date, time) DO UPDATE SET
-          open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-          close = EXCLUDED.close, volume = EXCLUDED.volume, oi = EXCLUDED.oi,
-          symbol = EXCLUDED.symbol, inserted_at = NOW()
-      `,
-      params,
-    };
+function toInsertRow(c, kind, exchange) {
+  const base = {
+    underlying: c.underlying,
+    expiryDate: c.expiry_date,
+    time: new Date(c.time),
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+    volume: c.volume ?? 0,
+    symbol: c.symbol,
+  };
+  if (kind === "option") {
+    base.strike = c.strike;
+    base.optionType = c.option_type;
+    if (exchange === "NSE") base.expiryType = c.expiry_type;
   }
+  return base;
 }
 
-async function upsertRows(rows, kind) {
+/**
+ * Run one batched upsert (INSERT ... ON CONFLICT DO UPDATE) against the
+ * correct table for `kind`+`exchange`. `execDb` is either the module-level
+ * `db` or a transaction's `tx`, mirroring candleStore.js's upsertCandleBatch.
+ */
+async function upsertBatch(execDb, batch, kind, exchange) {
+  const table = tableFor(kind, exchange);
+  const values = batch.map((c) => toInsertRow(c, kind, exchange));
+
+  const conflictTarget =
+    kind === "option"
+      ? [table.underlying, table.expiryDate, table.strike, table.optionType, table.time]
+      : [table.underlying, table.expiryDate, table.time];
+
+  const set = {
+    open: sql`excluded.open`,
+    high: sql`excluded.high`,
+    low: sql`excluded.low`,
+    close: sql`excluded.close`,
+    volume: sql`excluded.volume`,
+    symbol: sql`excluded.symbol`,
+    insertedAt: sql`now()`,
+  };
+
+  await execDb.insert(table).values(values).onConflictDoUpdate({ target: conflictTarget, set });
+  return batch.length;
+}
+
+async function upsertRows(execDb, rows, kind) {
   if (!rows || rows.length === 0) return 0;
   const valid = rows.filter((r) => r && r.instrument_type === kind && isValidCandle(r));
   if (valid.length === 0) return 0;
 
   const exchanges = new Set(valid.map((r) => r.exchange));
   if (exchanges.size > 1) {
-    throw new Error(`upsert${kind === "option" ? "Option" : "Future"}Candles: mixed exchanges in one call (${[...exchanges].join(",")}) — call once per exchange`);
+    throw new Error(
+      `upsert${kind === "option" ? "Option" : "Future"}Candles: mixed exchanges in one call (${[...exchanges].join(
+        ","
+      )}) — call once per exchange`
+    );
   }
   const exchange = [...exchanges][0];
-  const table = kind === "option" ? optionsTable(exchange) : futuresTable(exchange);
 
   let totalInserted = 0;
-
   for (let offset = 0; offset < valid.length; offset += UPSERT_BATCH_SIZE) {
     const batch = valid.slice(offset, offset + UPSERT_BATCH_SIZE);
-    const { sql, params } = buildBatchInsert(batch, kind, exchange, table);
-    await query(sql, params);
-    totalInserted += batch.length;
+    totalInserted += await upsertBatch(execDb, batch, kind, exchange);
   }
-
   return totalInserted;
 }
 
@@ -184,7 +172,7 @@ async function upsertRows(rows, kind) {
  * @returns {Promise<{deleted:number, inserted:number}>}
  */
 async function replaceDayCandlesBySymbol(exchange, instrumentType, symbol, tradingDay, rows) {
-  const table = instrumentType === "option" ? optionsTable(exchange) : futuresTable(exchange);
+  const table = tableFor(instrumentType, exchange);
   const kind = instrumentType;
 
   const d = new Date(tradingDay);
@@ -198,22 +186,18 @@ async function replaceDayCandlesBySymbol(exchange, instrumentType, symbol, tradi
   let deleted = 0;
   let inserted = 0;
 
-  await transaction(async (client) => {
-    const delRows = await client.query(
-      `DELETE FROM ${table}
-       WHERE symbol=$1 AND time >= $2 AND time < $3
-       RETURNING 1`,
-      [symbol, dayStart.toISOString(), dayEnd.toISOString()]
-    );
-    deleted = delRows.rows.length;
+  await db.transaction(async (tx) => {
+    const delRows = await tx
+      .delete(table)
+      .where(and(eq(table.symbol, symbol), gte(table.time, dayStart), lt(table.time, dayEnd)))
+      .returning({ symbol: table.symbol });
+    deleted = delRows.length;
 
     if (valid.length === 0) return;
 
     for (let offset = 0; offset < valid.length; offset += UPSERT_BATCH_SIZE) {
       const batch = valid.slice(offset, offset + UPSERT_BATCH_SIZE);
-      const { sql, params } = buildBatchInsert(batch, kind, exchange, table);
-      await client.query(sql, params);
-      inserted += batch.length;
+      inserted += await upsertBatch(tx, batch, kind, exchange);
     }
   });
 
@@ -228,104 +212,79 @@ async function replaceDayCandlesBySymbol(exchange, instrumentType, symbol, tradi
  * uniquely identifies the contract).
  */
 async function loadCandlesBySymbol(exchange, instrumentType, symbol, { limit = 10000, from, to } = {}) {
-  const table = instrumentType === "option" ? optionsTable(exchange) : futuresTable(exchange);
-  const params = [symbol];
-  let where = "symbol=$1";
-  let p = 2;
-  if (from) { where += ` AND time >= $${p++}`; params.push(new Date(from).toISOString()); }
-  if (to) { where += ` AND time <= $${p++}`; params.push(new Date(to).toISOString()); }
+  const table = tableFor(instrumentType, exchange);
+  const conditions = [eq(table.symbol, symbol)];
+  if (from) conditions.push(gte(table.time, new Date(from)));
+  if (to) conditions.push(lte(table.time, new Date(to)));
 
-  const rows = await query(
-    `SELECT extract(epoch from time)*1000 AS time, open, high, low, close, volume, oi
-     FROM ${table}
-     WHERE ${where}
-     ORDER BY time ASC
-     LIMIT $${p}`,
-    [...params, limit]
-  );
+  const rows = await db
+    .select({
+      time: sql`extract(epoch from ${table.time}) * 1000`.mapWith(Number),
+      open: table.open,
+      high: table.high,
+      low: table.low,
+      close: table.close,
+      volume: table.volume,
+    })
+    .from(table)
+    .where(and(...conditions))
+    .orderBy(asc(table.time))
+    .limit(limit);
 
   return rows.map((r) => ({
-    time: Math.round(Number(r.time)),
+    time: Math.round(r.time),
     open: Number(r.open),
     high: Number(r.high),
     low: Number(r.low),
     close: Number(r.close),
     volume: Number(r.volume),
-    oi: r.oi == null ? null : Number(r.oi),
   }));
 }
 
 /** Most recent candle for a contract, by exact symbol. */
 async function getLatestCandleBySymbol(exchange, instrumentType, symbol) {
-  const table = instrumentType === "option" ? optionsTable(exchange) : futuresTable(exchange);
-  const rows = await query(
-    `SELECT extract(epoch from time)*1000 AS time, open, high, low, close, volume, oi
-     FROM ${table}
-     WHERE symbol=$1
-     ORDER BY time DESC LIMIT 1`,
-    [symbol]
-  );
+  const table = tableFor(instrumentType, exchange);
+  const rows = await db
+    .select({
+      time: sql`extract(epoch from ${table.time}) * 1000`.mapWith(Number),
+      open: table.open,
+      high: table.high,
+      low: table.low,
+      close: table.close,
+      volume: table.volume,
+    })
+    .from(table)
+    .where(eq(table.symbol, symbol))
+    .orderBy(desc(table.time))
+    .limit(1);
+
   if (!rows.length) return null;
   const r = rows[0];
   return {
-    time: Math.round(Number(r.time)),
+    time: Math.round(r.time),
     open: Number(r.open),
     high: Number(r.high),
     low: Number(r.low),
     close: Number(r.close),
     volume: Number(r.volume),
-    oi: r.oi == null ? null : Number(r.oi),
   };
 }
 
 /** Row count for a given table, optionally filtered by exact symbol. Used by verification/backfill scripts. */
 async function countDerivativeCandles(exchange, instrumentType, symbol = null) {
-  const table = instrumentType === "option" ? optionsTable(exchange) : futuresTable(exchange);
-  const rows = symbol
-    ? await query(`SELECT COUNT(*) AS cnt FROM ${table} WHERE symbol=$1`, [symbol])
-    : await query(`SELECT COUNT(*) AS cnt FROM ${table}`, []);
-  return parseInt(rows[0]?.cnt || "0", 10);
+  const table = tableFor(instrumentType, exchange);
+  const rows = await db
+    .select({ cnt: sql`count(*)`.mapWith(Number) })
+    .from(table)
+    .where(symbol ? eq(table.symbol, symbol) : undefined);
+  return rows[0]?.cnt ?? 0;
 }
 
 /** Distinct symbols currently stored in a given table. Used by verification/backfill scripts. */
 async function listDerivativeSymbols(exchange, instrumentType) {
-  const table = instrumentType === "option" ? optionsTable(exchange) : futuresTable(exchange);
-  const rows = await query(`SELECT DISTINCT symbol FROM ${table} ORDER BY symbol`, []);
+  const table = tableFor(instrumentType, exchange);
+  const rows = await db.selectDistinct({ symbol: table.symbol }).from(table).orderBy(asc(table.symbol));
   return rows.map((r) => r.symbol);
-}
-
-/**
- * Distinct (symbol, underlying, expiry_date) contracts currently stored in
- * a table — the input expiryLifecycle.js needs to decide what's expired.
- * Unlike listDerivativeSymbols(), this also returns expiry_date because
- * that's a first-class stored column here (unlike the legacy `candles`
- * table, which has no such column and has to regex-derive it from the
- * symbol string in candleStore.js's extractContractExpiry() — we don't
- * need that approach at all since expiry_date is already stored directly).
- */
-async function listDistinctContracts(exchange, instrumentType) {
-  const table = instrumentType === "option" ? optionsTable(exchange) : futuresTable(exchange);
-  const rows = await query(
-    `SELECT DISTINCT symbol, underlying, expiry_date::text AS expiry_date FROM ${table} ORDER BY expiry_date, symbol`,
-    []
-  );
-  return rows;
-}
-
-/**
- * Delete ALL stored rows for one exact contract symbol, from the correct
- * derivatives table. Used only by pruneExpiredDerivatives.js, and only
- * after a confirmed-successful archive write for that same symbol —
- * never called standalone. This is intentionally separate from
- * candleStore.js's pruneExpiredContracts()/deleteAllCandles(), which only
- * ever touch the legacy `candles` table — no overlap, no duplicate logic,
- * different tables entirely.
- * @returns {Promise<number>} rows deleted
- */
-async function deleteCandlesBySymbol(exchange, instrumentType, symbol) {
-  const table = instrumentType === "option" ? optionsTable(exchange) : futuresTable(exchange);
-  const rows = await query(`DELETE FROM ${table} WHERE symbol=$1 RETURNING 1`, [symbol]);
-  return rows.length;
 }
 
 module.exports = {
@@ -336,9 +295,17 @@ module.exports = {
   getLatestCandleBySymbol,
   countDerivativeCandles,
   listDerivativeSymbols,
-  listDistinctContracts,
-  deleteCandlesBySymbol,
   isValidCandle,
-  optionsTable,
-  futuresTable,
+  // Kept signature-compatible with the pre-Drizzle version: returns the
+  // table NAME (string), not the Drizzle table object used internally above.
+  optionsTable(exchange) {
+    const name = TABLE_NAMES.option[exchange];
+    if (!name) throw new Error(`No options table for exchange "${exchange}"`);
+    return name;
+  },
+  futuresTable(exchange) {
+    const name = TABLE_NAMES.future[exchange];
+    if (!name) throw new Error(`No futures table for exchange "${exchange}"`);
+    return name;
+  },
 };

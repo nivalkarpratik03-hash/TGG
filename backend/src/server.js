@@ -5,7 +5,7 @@ const path = require("path");
 const { Server } = require("socket.io");
 
 const { runSignalEngine } = require("./services/signalEngine");
-const { getAuthURL, generateToken, fetchCandles, validateToken: _validateToken, loadToken } = require("./fyers/client");
+const { getAuthURL, generateToken, fetchCandles, fetchDayCandles, validateToken: _validateToken, loadToken } = require("./fyers/client");
 
 // ── Throttled validateToken — caches result for 60s to prevent log spam ──────
 // Raw validateToken() is called repeatedly by updateTickSubscription, startAutoRefresh,
@@ -31,8 +31,6 @@ const { detectMotherWaveForAPI } = require("./services/motherwave");
 const createChartRouter = require("./routes/chartRouter");
 const corsMiddleware = require("./middleware/cors");
 const rateLimiter = require("./middleware/rateLimiter");
-const { wireGapFillScheduler } = require("./derivatives/gapFillScheduler");
-const { loadIndexSpotSymbols, loadStockSpotSymbols } = require("./derivatives/curatedUnderlyingsLoader");
 
 // ─── Database ─────────────────────────────────────────────────────────────────
 // DB is optional — if DATABASE_URL / PGHOST is not set, TGG runs without DB
@@ -546,7 +544,16 @@ async function ensureFreshOneMinData(symbol, oneMinCandles) {
 
     if (dbEnabled && db) {
       try {
-        const inserted = await db.upsertCandles(symbol, 1, newOnes);
+        // OHLC GATE: validate before storing — any invalid candle quarantines
+        // its whole trading day (delete + refetch full day from Fyers +
+        // re-validate), instead of writing potentially corrupt OHLC straight
+        // to the DB. See database/src/ohlcGuard.js for the full contract.
+        const { stored: inserted } = await db.validateAndStoreCandles({
+          symbol,
+          candles: newOnes,
+          fetchDayCandles: (sym, day) => fetchDayCandles(sym, day),
+          trigger: "staleness_backfill",
+        });
         console.log(`[Staleness] ${symbol}: backfilled ${inserted} missing 1m candle(s)`);
         // FRONTEND-SYNC FIX: if a chart for this symbol was already open in a
         // browser tab BEFORE this backfill ran, the page's first render would
@@ -602,21 +609,15 @@ async function runCuratedSymbolCatchUp(trigger = "startup") {
   _catchUpInFlight = true;
 
   try {
-    // REPOINTED 2026-07-30 (confirmed, Option 1): used to read
-    // ./data/noExpirySymbols.json directly. Now builds the same flat
-    // 205-symbol list (3 indices + ~202 equities) from the new
-    // symbols/index.json + symbols/stocks.json files via
-    // curatedUnderlyingsLoader.js, so noExpirySymbols.json has no
-    // remaining readers anywhere in the codebase and can be safely
-    // deleted (curatedUnderlyingsLoader.js was the other former reader,
-    // also repointed).
+    const fs = require("fs");
+    const path = require("path");
+    const NO_EXPIRY_SYMBOLS_JSON = path.resolve(__dirname, "./data/noExpirySymbols.json");
     let curatedSymbols = [];
     try {
-      const indexSpot = loadIndexSpotSymbols();
-      const stockSpot = loadStockSpotSymbols();
-      curatedSymbols = [...indexSpot, ...stockSpot].map((s) => s.symbol).filter(Boolean);
+      const all = JSON.parse(fs.readFileSync(NO_EXPIRY_SYMBOLS_JSON, "utf8"));
+      curatedSymbols = all.map((s) => s.symbol).filter(Boolean);
     } catch (e) {
-      console.warn("[Recovery] Could not load symbols/index.json + symbols/stocks.json for catch-up scan:", e.message);
+      console.warn("[Recovery] Could not load noExpirySymbols.json for catch-up scan:", e.message);
       return;
     }
 
@@ -843,7 +844,12 @@ async function fetchAndProcess(symbol = SYMBOL || "NSE:NIFTY50-INDEX", resolutio
         return;
       }
 
-      return db.upsertCandles(symbol, 1, newCandles).then((n) => {
+      return db.validateAndStoreCandles({
+        symbol,
+        candles: newCandles,
+        fetchDayCandles: (sym, day) => fetchDayCandles(sym, day),
+        trigger: "chart_open",
+      }).then(({ stored: n }) => {
         const since = latest ? new Date(latest.time).toISOString() : 'first time';
         console.log(`[DB] Upserted ${n} new 1m candles for ${symbol} (${since})`);
       });
@@ -1157,17 +1163,18 @@ server.listen(PORT, async () => {
       if (ok) {
         console.log("[DB] ✅  PostgreSQL connection healthy");
 
-        // ── PRUNING DISABLED (2026-07-03) — legacy `candles`-table pruning ──
+        // ── PRUNING DISABLED (2026-07-03) ──────────────────────────────────
         // Both pruneOldCandles() and pruneExpiredContracts() hard-DELETE rows
         // from `candles` with no archive anywhere else — every expired
         // option/future contract they touch is gone permanently, which
         // breaks backtesting (confirmed: they had already deleted 3 SENSEX
         // option contracts / 3420 candles by the time this was caught).
-        // Still turned off, still untouched, still applies ONLY to the
-        // legacy `candles` table (see database/src/candleStore.js) — this
-        // has NOTHING to do with the new derivatives archive/prune below,
-        // which targets the 6 separate derivatives tables and always
-        // archives to a real local Parquet file before ever deleting.
+        // Turned off site-wide until the separate backtest archive
+        // (derivatives_eod / underlying_eod, permanent, typed columns) is
+        // built and populated — only then is it safe to prune this live
+        // cache again, since the archive would hold the permanent copy.
+        // See database/src/candleStore.js for the (still intact, just
+        // unused) implementations of both functions.
         //
         // const pruned = await db.pruneOldCandles(null, 1, 365);
         // if (pruned > 0) console.log(`[DB] Pruned ${pruned} old candles (>365 days)`);
@@ -1186,52 +1193,6 @@ server.listen(PORT, async () => {
         //     console.warn("[DB] Periodic expired-contract prune failed:", e.message);
         //   }
         // }, 6 * 60 * 60 * 1000); // every 6 hours
-
-        // ── NEW: derivatives archive + prune (nse/mcx/bse options+futures) ──
-        // Unlike the legacy block above, this ALWAYS archives a contract's
-        // full row history to a local Parquet file (see
-        // backend/src/archive/parquetExport.js — writes under
-        // {DATASET_ROOT or ./dataset}/{ASSET_CLASS}/{UNDERLYING}/...) and
-        // ONLY deletes from Postgres after that archive write is confirmed
-        // successful. A failed archive leaves the contract's rows
-        // untouched, retried on the next sweep — see
-        // backend/src/derivatives/pruneExpiredDerivatives.js for the exact
-        // ordering guarantee.
-        //
-        // Deliberately NOT gated by isTradingDay() — unlike periodicSync
-        // and the curated sweep below, this makes zero Fyers/broker calls
-        // (archiving reads only from Postgres, and expiry is a pure
-        // calendar comparison against the already-stored expiry_date
-        // column) — so it's harmless and correct to run on any day,
-        // including weekends/holidays, not just trading days.
-        //
-        // Scheduling note: runs once at startup, then every 24h. This does
-        // NOT yet implement the more precise "run at NSE close (~15:40) /
-        // MCX close (~23:30) separately" timing discussed during design —
-        // that precision matters for the (not-yet-built) EOD
-        // reconciliation job, which needs that day's data specifically.
-        // It doesn't matter here: pruning only ever acts on contracts
-        // whose expiry_date has ALREADY passed as of a prior calendar day,
-        // so which hour of the day this runs at has no effect on
-        // correctness — a daily cadence is enough.
-        try {
-          const { runPruneSweep } = require("./derivatives/pruneExpiredDerivatives");
-          const runSweep = async (label) => {
-            try {
-              const r = await runPruneSweep();
-              if (r.scanned > 0 || r.archived > 0) {
-                console.log(`[Prune] ${label}: scanned ${r.scanned} expired contract(s) — archived ${r.archived}, pruned ${r.pruned}, already-empty ${r.alreadyEmpty}${r.failed.length ? `, FAILED ${r.failed.length} (left in DB, retried next sweep: ${r.failed.map(f => f.symbol).join(", ")})` : ""}`);
-              }
-            } catch (e) {
-              console.warn(`[Prune] ${label} sweep error:`, e.message);
-            }
-          };
-          setImmediate(() => runSweep("startup"));
-          setInterval(() => runSweep("daily"), 24 * 60 * 60 * 1000);
-          console.log("[Prune] Derivatives archive+prune wired — runs at startup, then every 24h (any day, not gated to trading days)");
-        } catch (e) {
-          console.warn("[Prune] Failed to wire derivatives archive+prune:", e.message);
-        }
 
 
         // ── Wire up recovery engine WebSocket emitter ──────────────────────
@@ -1275,46 +1236,12 @@ server.listen(PORT, async () => {
           console.log("[PeriodicSync] Wired — checking actively-viewed symbols every 5 minutes during market hours");
         }
 
-        // ── Derivatives GapFill scheduler ───────────────────────────────────
-        // Wires the recurring NSE/BSE-close and MCX-close checks now (cheap —
-        // just a once-a-minute clock comparison, see gapFillScheduler.js). The
-        // startup checkpoint is NOT fired here — it's chained below, onto the
-        // curated catch-up Promise, so it never races that boot-time work.
-        let gapFillScheduler = null;
-        try {
-          gapFillScheduler = wireGapFillScheduler();
-        } catch (e) {
-          console.warn("[GapFill] Failed to wire scheduler:", e.message);
-        }
-
-        // ── Curated-symbol gap scan + staleness sweep, THEN GapFill startup ──
+        // ── Curated-symbol gap scan + staleness sweep ──────────────────────
         // See runCuratedSymbolCatchUp() (hoisted function declaration,
         // defined further down this file) for the full implementation.
-        //
-        // ROOT CAUSE FIXED HERE (2026-07-30, "everything overlaps"):
-        // runCuratedSymbolCatchUp("startup") used to be fired with its own
-        // bare setImmediate, and gapFillScheduler.js used to fire its own
-        // startup checkpoint independently via its own setImmediate — two
-        // unrelated boot-time tasks both hitting the broker at the same
-        // time. Fixed: curated catch-up (Recovery gap-scan + Staleness
-        // sweep across all 205 spot symbols) now runs first and must fully
-        // resolve before the GapFill checkpoint (index+commodity F&O, in
-        // derivativesGapFill.js) is even attempted.
-        //
-        // The /api/auth/token route also calls runCuratedSymbolCatchUp
-        // again after a successful re-auth (trigger="reauth" — see
-        // chartRouter.js) — that path is untouched, it does not re-fire the
-        // GapFill checkpoint, since fireStartupCheckpoint() is a one-time,
-        // idempotent no-op after its first successful call anyway.
-        setImmediate(() => {
-          runCuratedSymbolCatchUp("startup")
-            .then(() => {
-              if (gapFillScheduler) return gapFillScheduler.fireStartupCheckpoint();
-            })
-            .catch((e) => {
-              console.warn("[Recovery] Startup catch-up chain failed — GapFill startup checkpoint will NOT run this boot:", e.message);
-            });
-        });
+        // Fires once now at boot; the /api/auth/token route also calls it
+        // again after a successful re-auth (fix 5 — see chartRouter.js).
+        setImmediate(() => runCuratedSymbolCatchUp("startup"));
 
       } else {
         console.warn("[DB] ⚠️  PostgreSQL health check failed — DB writes disabled");
