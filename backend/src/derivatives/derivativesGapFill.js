@@ -104,16 +104,28 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * Index/equity: entry.spotSymbol is already the real, documented-format
  * string ("NSE:NIFTY50-INDEX", "NSE:RELIANCE-EQ") — use it directly.
  *
- * Commodity (spotSymbol is null, by design — no fixed spot exists):
- * uses the bare "{exchange}:{underlying}" root (e.g. "MCX:CRUDEOILM"),
- * confirmed via the real Fyers app — see file header for the exact
- * evidence and its confidence level.
+ * Commodity: the bare "{exchange}:{underlying}" root (e.g. "MCX:CRUDEOILM")
+ * — what entry.spotSymbol actually holds for every commodity, since
+ * commodity.json's "symbol" field IS that bare root — does NOT work for
+ * Fyers' option-chain endpoint. LIVE-CONFIRMED 2026-08-07 (retestFlags.js
+ * run): fetchOptionChain("MCX:GOLDM") -> "Please provide a valid symbol"
+ * for all 4 commodities tested (CRUDEOILM, NATGASMINI, SILVERM, GOLDM);
+ * fetchOptionChain() against each root's live near-month FUTURES symbol
+ * (e.g. "MCX:GOLDM26SEPFUT") returned real strikes every time. So for
+ * commodities this now builds and returns the near-month futures symbol
+ * via resolveFuturesSymbols(entry) instead of the bare root — same
+ * near-month resolution derivativesGapFill.js already uses for the
+ * futures leg, reused here rather than reimplemented.
  */
 function resolveChainLookupSymbol(entry) {
-  if (entry.spotSymbol) return entry.spotSymbol;
   if (entry.assetClass === "COMMODITY") {
-    return `${entry.exchange}:${entry.underlying}`;
+    const [nearMonthFut] = resolveFuturesSymbols(entry);
+    if (!nearMonthFut) {
+      throw new Error(`resolveChainLookupSymbol: resolveFuturesSymbols() returned no symbol for "${entry.underlying}" — cannot build an option-chain lookup symbol without a near-month future`);
+    }
+    return nearMonthFut;
   }
+  if (entry.spotSymbol) return entry.spotSymbol;
   throw new Error(`resolveChainLookupSymbol: no spotSymbol and not a commodity — unexpected entry shape for "${entry.underlying}"`);
 }
 
@@ -408,17 +420,42 @@ async function runGapFillCheckpoint(label, deps = {}) {
     let entryOptionsFound = 0, entryOptionsStored = 0, entryFuturesStored = 0, entryStrikesFailed = 0;
 
     // Futures — respected for EVERY remaining asset class (index, commodity).
+    //
+    // ROOT-CAUSE FIX (2026-08-07): each futures symbol (near-month,
+    // next-month) now gets its own try/catch, mirroring the exact fix
+    // already applied to the options loop (ROOT CAUSE #3 above). Before
+    // this, one symbol throwing (most commonly fetchCandles's "no
+    // candles" error for a next-month contract that's real but has zero
+    // volume yet, OR a next/near-month contract that isn't actually
+    // listed) aborted the whole entry's futures stage — discarding an
+    // ALREADY-SUCCESSFUL sibling symbol's stored candles from this run's
+    // summary and mislabeling the entry "FAILED" in the log even though
+    // real data was written. Confirmed against real runs (retestFlags.js,
+    // 2026-08-07): FINNIFTY/BANKEX's near-month (AUG) succeeded (1790 /
+    // 380 candles) but their next-month (SEP) legitimately has no candles
+    // yet — an empty new contract, not a bug — which was previously
+    // enough to fail the entire entry. GOLDM showed the same bug in the
+    // opposite direction: near-month (AUG) is an invalid/delisted symbol,
+    // next-month (SEP) works (3741 candles), but AUG's throw aborted the
+    // loop before SEP was ever attempted. Now: one symbol failing is
+    // logged and skipped, its sibling symbols still get their own chance.
     if (entry.hasFutures !== false) {
+      let futSymbols = [];
       try {
-        const futSymbols = resolveFuturesSymbols(entry);
+        futSymbols = resolveFuturesSymbols(entry);
         discoveredFuturesSymbols.push(...futSymbols);
-        for (const sym of futSymbols) {
+      } catch (err) {
+        failed.push({ underlying: entry.underlying, stage: "futures-resolve", error: err.message });
+        log(`[GapFill] ${label}: ${entry.underlying} — could not resolve futures symbols: ${err.message}`);
+      }
+      for (const sym of futSymbols) {
+        try {
           const r = await backfillFuturesSymbol(entry, sym, deps);
           if (r.stored > 0) { futuresBackfilled++; entryFuturesStored += r.stored; }
+        } catch (err) {
+          failed.push({ underlying: entry.underlying, stage: "futures", symbol: sym, error: err.message });
+          log(`[GapFill] ${label}: ${entry.underlying} — futures ${sym} FAILED: ${err.message}`);
         }
-      } catch (err) {
-        failed.push({ underlying: entry.underlying, stage: "futures", error: err.message });
-        log(`[GapFill] ${label}: ${entry.underlying} — futures FAILED: ${err.message}`);
       }
     }
 
