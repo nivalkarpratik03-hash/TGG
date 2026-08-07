@@ -133,6 +133,54 @@ function createDataFetch({ io, tickEngine }) {
     }
   }
 
+  // ─── Staleness SWEEP — proactive, over a full symbol list ─────────────────
+  // Added 2026-08-06 (item 3 of the ongoing cleanup plan): this used to be
+  // an inline loop inside catchUp.js's runCuratedSymbolCatchUp(), calling
+  // ensureFreshOneMinData() per symbol under a name that didn't distinguish
+  // it from the REACTIVE call loadFromDB() makes for whatever single symbol
+  // a client's chart just requested. Same underlying logic either way
+  // (ensureFreshOneMinData does the actual staleness check + delta-fetch) —
+  // this function is just the proactive, whole-list-at-once wrapper around
+  // it, under its own name, so "sweep a symbol list" and "check one symbol
+  // reactively" are no longer the same unnamed pattern living in two
+  // different files.
+  //
+  // Deliberately generic over whatever symbol list the caller passes in —
+  // this function itself has no opinion on WHICH symbols belong in the
+  // sweep (that's catchUp.js's job, sourcing the spot-only list from root).
+  async function sweepStalenessForSymbols(symbols, label = "sweep") {
+    console.log(`[Staleness] ${label}: checking ${symbols.length} symbol(s) for staleness...`);
+    let staleFound = 0;
+    // Concurrency=3 / 1200ms between batches to stay comfortably under
+    // Fyers' rate limit across a long sweep (a faster 5/500ms setting was
+    // seen failing near the tail end of a 205-symbol list in production
+    // with "request limit reached" errors) — same values the inline sweep
+    // loop this replaces already used.
+    const SWEEP_CONCURRENCY = 3;
+    for (let i = 0; i < symbols.length; i += SWEEP_CONCURRENCY) {
+      const batch = symbols.slice(i, i + SWEEP_CONCURRENCY);
+      await Promise.all(batch.map(async (symbol) => {
+        try {
+          const latest = await state.db.getLatestCandle(symbol, 1);
+          if (!latest) return; // symbol has no 1m data yet — nothing to check staleness against
+          const before = latest.time;
+          await ensureFreshOneMinData(symbol, [latest]);
+          // ensureFreshOneMinData logs its own [Staleness] line when it
+          // actually backfills something; we just tally here for the summary.
+          const after = await state.db.getLatestCandle(symbol, 1).catch(() => null);
+          if (after && after.time > before) staleFound++;
+        } catch (e) {
+          console.warn(`[Staleness] ${label} sweep error for ${symbol}:`, e.message);
+        }
+      }));
+      if (i + SWEEP_CONCURRENCY < symbols.length) {
+        await new Promise((r) => setTimeout(r, 1200));
+      }
+    }
+    console.log(`[Staleness] ${label} sweep complete — ${staleFound} symbol(s) backfilled out of ${symbols.length} checked`);
+    return { checked: symbols.length, backfilled: staleFound };
+  }
+
   // SINGLE SOURCE OF TRUTH for "get me candles for symbol+resolution".
   // Every caller — GET /api/chart, POST /api/chart/refresh, /api/motherwave,
   // and initialRestFetch() — goes through this one function. No DB code lives
@@ -353,7 +401,7 @@ function createDataFetch({ io, tickEngine }) {
   }
 
   return {
-    ensureFreshOneMinData, loadFromDB, fetchAndProcess, fetchAndBroadcast,
+    ensureFreshOneMinData, sweepStalenessForSymbols, loadFromDB, fetchAndProcess, fetchAndBroadcast,
     startAutoRefresh, initialRestFetch,
   };
 }

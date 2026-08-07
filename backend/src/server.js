@@ -52,6 +52,20 @@ const dataFetch = createDataFetch({ io, tickEngine });
 const catchUp = createCatchUp({ dataFetch });
 createWebSocket({ io, tickEngine, dataFetch }); // wires io.on("connection", ...) — nothing to store, matches original inline block
 
+// UPDATED 2026-08-06: chartRouter.js's /api/auth/token route needs to call
+// gapFillScheduler.fireReauthCheckpoint() on a successful re-auth, but that
+// scheduler doesn't exist yet at the point createChartRouter() is called
+// below (it's built inside wireDbJobs(), which only runs once DB health-
+// checks pass, inside the listen() callback further down). This small
+// indirection lets the router close over a getter instead of the real
+// function directly — getFireReauthCheckpoint() is reassigned once
+// wireDbJobs() resolves; until then it's a safe no-op so an early re-auth
+// attempt (before DB is ready) doesn't throw.
+let _fireReauthCheckpoint = async () => {
+  console.log("[GapFill] Re-auth checkpoint requested before scheduler was ready — skipped (DB/scheduler not yet wired)");
+};
+function getFireReauthCheckpoint() { return _fireReauthCheckpoint; }
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 // Chart, auth, health, signals, motherwave → chartRouter (extracted, pre-existing)
 app.use(createChartRouter({
@@ -66,10 +80,15 @@ app.use(createChartRouter({
   getAuthURL, generateToken, validateToken: state.validateToken, bustTokenCache: state.bustTokenCache,
   detectMotherWaveForAPI,
   markBroadcastSymbol: state.markBroadcastSymbol,
-  // FIX 5 (re-auth hook): expose the same curated-symbol gap-fill/staleness
-  // sweep that runs at boot so the /api/auth/token route can re-trigger it
-  // the moment a token goes from invalid to valid again — see catchUp.js.
-  runCuratedSymbolCatchUp: catchUp.runCuratedSymbolCatchUp,
+  // UPDATED 2026-08-06 (items 2, 3, 4, 6): re-auth now re-fires the FULL
+  // Staleness→GapFill→Validator/Recovery chain via
+  // gapFillScheduler.fireReauthCheckpoint(), not the old spot-only
+  // runCuratedSymbolCatchUp. wireDbJobs() below constructs the scheduler
+  // and hands it back — see the getFireReauthCheckpoint() wiring at the
+  // bottom of this file, since wireDbJobs() only resolves after this
+  // router is already constructed (async health-check happens inside the
+  // listen() callback, after routes are set up).
+  runReauthCheckpoint: (...args) => getFireReauthCheckpoint()(...args),
 }));
 
 app.use("/api/symbols", symbolsRouter);
@@ -99,8 +118,15 @@ server.listen(PORT, async () => {
 
   // ── DB: connect, health-check, wire every DB-dependent periodic job ──────
   // (prune sweep, recoveryEngine emitter, periodicSync, GapFill scheduler,
-  // curated catch-up→GapFill boot chain — see scheduler.js for all of it)
-  await wireDbJobs({ io, runCuratedSymbolCatchUp: catchUp.runCuratedSymbolCatchUp });
+  // Staleness→GapFill→Validator/Recovery boot chain — see scheduler.js)
+  const dbJobs = await wireDbJobs({
+    io,
+    sweepCuratedStaleness: catchUp.sweepCuratedStaleness,
+    runValidatorRecovery: catchUp.runValidatorRecovery,
+  });
+  if (dbJobs && dbJobs.gapFillScheduler) {
+    _fireReauthCheckpoint = dbJobs.gapFillScheduler.fireReauthCheckpoint;
+  }
 
   await dataFetch.initialRestFetch();
 

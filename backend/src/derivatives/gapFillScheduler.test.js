@@ -49,7 +49,17 @@ async function main() {
     return { scanned: 1, optionsDiscovered: 0, optionsBackfilled: 0, futuresBackfilled: 0, failed: [] };
   };
 
-  const scheduler = wireGapFillScheduler({ nowIST: fakeNowIST, runGapFillCheckpoint: fakeRunFn, log: () => { } });
+  // UPDATED 2026-08-06: wireGapFillScheduler() now requires
+  // sweepCuratedStaleness and runValidatorRecovery in deps (fire() calls
+  // all three, in order — see gapFillScheduler.js header). No-op fakes
+  // here since this test is only about the SCHEDULING logic (right
+  // checkpoint, right time, right dedup) — the actual behavior of those
+  // two functions is tested in dataFetch.js's and catchUp.js's own test
+  // coverage, not here. Deliberately don't push into `fired` — this
+  // test's assertions track only runGapFillCheckpoint's own calls.
+  const noopStaleness = async () => { };
+  const noopValidatorRecovery = async () => { };
+  const scheduler = wireGapFillScheduler({ nowIST: fakeNowIST, runGapFillCheckpoint: fakeRunFn, sweepCuratedStaleness: noopStaleness, runValidatorRecovery: noopValidatorRecovery, log: () => { } });
 
   check("wiring the scheduler does NOT fire a startup checkpoint by itself", () => {
     assert.deepStrictEqual(fired, [], "startup must only fire via an explicit fireStartupCheckpoint() call, never automatically");

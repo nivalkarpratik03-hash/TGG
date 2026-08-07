@@ -337,6 +337,15 @@ async function backfillStrikesForEntry(entry, strikes, label, log, delayFn, deps
   let storedRows = 0;
   let symbolsBackfilled = 0;
   let strikesFailed = 0;
+  // FIX (Blocker 2, 2026-08-06): collect the real symbol string for every
+  // strike DISCOVERED this run (not just the ones that got new candles
+  // stored) — a symbol with r.stored===0 still genuinely exists right now,
+  // it just didn't need any new candles this pass. Item 2 of the ongoing
+  // cleanup plan needs "which option contracts currently exist" to hand to
+  // Validator/Recovery, which is a different question than "which ones
+  // changed this run" — so this list is built from `strikes` up front,
+  // independent of each symbol's backfill outcome below.
+  const discoveredSymbols = strikes.map((s) => s.symbol).filter(Boolean);
   for (let i = 0; i < strikes.length; i++) {
     const s = strikes[i];
     try {
@@ -352,7 +361,7 @@ async function backfillStrikesForEntry(entry, strikes, label, log, delayFn, deps
     }
     if (i < strikes.length - 1) await delayFn(INTER_STRIKE_DELAY_MS);
   }
-  return { found: strikes.length, storedRows, symbolsBackfilled, strikesFailed };
+  return { found: strikes.length, storedRows, symbolsBackfilled, strikesFailed, discoveredSymbols };
 }
 
 /**
@@ -381,6 +390,15 @@ async function runGapFillCheckpoint(label, deps = {}) {
   let optionsDiscovered = 0, optionsBackfilled = 0, futuresBackfilled = 0;
   const skipped = [];
   const failed = [];
+  // FIX (Blocker 2, 2026-08-06): real symbol strings, not just counts —
+  // needed by item 2 of the ongoing cleanup plan (Validator/Recovery scope
+  // expansion to fut/opt), which has no other way to know which specific
+  // option/future contracts currently exist. Futures symbols come straight
+  // from resolveFuturesSymbols(entry) (already real symbol strings, no
+  // discovery step needed the way options have). Options symbols come from
+  // backfillStrikesForEntry's new discoveredSymbols return (see above).
+  const discoveredFuturesSymbols = [];
+  const discoveredOptionsSymbols = [];
 
   log(`[GapFill] ${label}: starting checkpoint — ${scoped.length} underlying(s) (${scoped.filter((e) => e.assetClass === "INDEX").length} index, ${scoped.filter((e) => e.assetClass === "COMMODITY").length} commodity; equities excluded — spot-only)`);
 
@@ -393,6 +411,7 @@ async function runGapFillCheckpoint(label, deps = {}) {
     if (entry.hasFutures !== false) {
       try {
         const futSymbols = resolveFuturesSymbols(entry);
+        discoveredFuturesSymbols.push(...futSymbols);
         for (const sym of futSymbols) {
           const r = await backfillFuturesSymbol(entry, sym, deps);
           if (r.stored > 0) { futuresBackfilled++; entryFuturesStored += r.stored; }
@@ -415,6 +434,7 @@ async function runGapFillCheckpoint(label, deps = {}) {
         entryOptionsStored = result.storedRows;
         entryStrikesFailed = result.strikesFailed;
         optionsBackfilled += result.symbolsBackfilled;
+        discoveredOptionsSymbols.push(...result.discoveredSymbols);
       } catch (err) {
         // resolveChainLookupSymbol's deliberate throw for unconfirmed MCX
         // format lands here — tracked as "skipped", not "failed", since
@@ -444,6 +464,15 @@ async function runGapFillCheckpoint(label, deps = {}) {
     futuresBackfilled,
     skipped,
     failed,
+    // FIX (Blocker 2, 2026-08-06): real symbol strings for every currently
+    // discovered option/future contract this checkpoint touched — additive
+    // field, existing callers (integration test, gapFillScheduler.js)
+    // confirmed unaffected (checked via grep, neither does whole-object
+    // equality on the return value).
+    discoveredSymbols: {
+      futures: discoveredFuturesSymbols,
+      options: discoveredOptionsSymbols,
+    },
   };
 }
 

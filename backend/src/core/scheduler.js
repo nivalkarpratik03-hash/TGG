@@ -20,7 +20,15 @@ const { backtestRunner } = require("../services/backtestRunner");
 const state = require("./state");
 
 // ── DB: connect, health-check, wire every DB-dependent periodic job ────────
-async function wireDbJobs({ io, runCuratedSymbolCatchUp }) {
+// UPDATED 2026-08-06 (items 2, 3, 4, 6): now takes sweepCuratedStaleness +
+// runValidatorRecovery (both from catchUp.js's createCatchUp()) instead of
+// the old single runCuratedSymbolCatchUp. Both get handed straight into
+// wireGapFillScheduler() as deps — gapFillScheduler.js's fire() now runs
+// all three (Staleness → GapFill → Validator/Recovery, in that order) at
+// every one of its checkpoints, so this function no longer needs its own
+// separate startup chain for catch-up before GapFill — there's only one
+// chain now, and gapFillScheduler.js owns all of it.
+async function wireDbJobs({ io, sweepCuratedStaleness, runValidatorRecovery }) {
   if (!state.dbEnabled) return;
   try {
     const ok = await state.db.healthCheck();
@@ -69,11 +77,11 @@ async function wireDbJobs({ io, runCuratedSymbolCatchUp }) {
       // ordering guarantee.
       //
       // Deliberately NOT gated by isTradingDay() — unlike periodicSync
-      // and the curated sweep below, this makes zero Fyers/broker calls
-      // (archiving reads only from Postgres, and expiry is a pure
-      // calendar comparison against the already-stored expiry_date
-      // column) — so it's harmless and correct to run on any day,
-      // including weekends/holidays, not just trading days.
+      // and the Staleness/GapFill/Validator chain below, this makes zero
+      // Fyers/broker calls (archiving reads only from Postgres, and
+      // expiry is a pure calendar comparison against the already-stored
+      // expiry_date column) — so it's harmless and correct to run on any
+      // day, including weekends/holidays, not just trading days.
       //
       // Scheduling note: runs once at startup, then every 24h. This does
       // NOT yet implement the more precise "run at NSE close (~15:40) /
@@ -117,14 +125,15 @@ async function wireDbJobs({ io, runCuratedSymbolCatchUp }) {
       // the entire backend/src and found zero callers. Wiring it here,
       // scoped to only the symbols someone actually has open right now
       // (getLiveBroadcastSymbols(), same TTL-expiring set used for tick
-      // subscriptions) so this can't turn into a 205-symbol Fyers-hammering
-      // loop — it only ever checks charts a real client is looking at.
+      // subscriptions) so this can't turn into a Fyers-hammering loop —
+      // it only ever checks charts a real client is looking at. Unrelated
+      // to the Staleness/GapFill/Validator chain below — this is a
+      // separate, narrower, much more frequent check.
       //
       // NOTE: NOT touched by the "no day-type gating" change — this loop's
       // own isTradingDay()/isLiveMarket() gates were not part of the
-      // confirmed scope (ensureFreshOneMinData + runCuratedSymbolCatchUp
-      // staleness sweep only). Say the word if you want the same
-      // token-only rule applied to periodicSync too.
+      // confirmed scope. Say the word if you want the same token-only
+      // rule applied to periodicSync too.
       if (state.recoveryEngine) {
         setInterval(async () => {
           try {
@@ -145,45 +154,41 @@ async function wireDbJobs({ io, runCuratedSymbolCatchUp }) {
         console.log("[PeriodicSync] Wired — checking actively-viewed symbols every 5 minutes during market hours");
       }
 
-      // ── Derivatives GapFill scheduler ───────────────────────────────────
-      // Wires the recurring NSE/BSE-close and MCX-close checks now (cheap —
-      // just a once-a-minute clock comparison, see gapFillScheduler.js). The
-      // startup checkpoint is NOT fired here — it's chained below, onto the
-      // curated catch-up Promise, so it never races that boot-time work.
+      // ── Staleness → GapFill → Validator/Recovery chain, 3x/day ──────────
+      // RESTRUCTURED 2026-08-06 (items 2, 3, 4, 6): this used to be a
+      // one-time boot chain — runCuratedSymbolCatchUp("startup") (spot-only
+      // Recovery+Validator, then a spot-only staleness sweep, curated list
+      // only) followed by a single GapFill startup checkpoint, both firing
+      // exactly once, ever. That whole shape is gone.
+      //
+      // gapFillScheduler.js now owns the full chain — Staleness sweep,
+      // then GapFill, then the (now DB-sourced, spot+fut/opt) Validator/
+      // Recovery pass — and fires all three together at startup,
+      // nse_bse_close, and mcx_close (see gapFillScheduler.js for the full
+      // explanation). This file's job is just to construct it with the
+      // right dependencies and fire the startup checkpoint once boot is
+      // otherwise ready — no separate catch-up chain to sequence in front
+      // of it anymore.
       let gapFillScheduler = null;
       try {
-        gapFillScheduler = wireGapFillScheduler();
+        gapFillScheduler = wireGapFillScheduler({ sweepCuratedStaleness, runValidatorRecovery });
       } catch (e) {
         console.warn("[GapFill] Failed to wire scheduler:", e.message);
       }
 
-      // ── Curated-symbol gap scan + staleness sweep, THEN GapFill startup ──
-      // See runCuratedSymbolCatchUp() (catchUp.js) for the full implementation.
-      //
-      // ROOT CAUSE FIXED HERE (2026-07-30, "everything overlaps"):
-      // runCuratedSymbolCatchUp("startup") used to be fired with its own
-      // bare setImmediate, and gapFillScheduler.js used to fire its own
-      // startup checkpoint independently via its own setImmediate — two
-      // unrelated boot-time tasks both hitting the broker at the same
-      // time. Fixed: curated catch-up (Recovery gap-scan + Staleness
-      // sweep across all 205 spot symbols) now runs first and must fully
-      // resolve before the GapFill checkpoint (index+commodity F&O, in
-      // derivativesGapFill.js) is even attempted.
-      //
-      // The /api/auth/token route also calls runCuratedSymbolCatchUp
-      // again after a successful re-auth (trigger="reauth" — see
-      // chartRouter.js) — that path is untouched, it does not re-fire the
-      // GapFill checkpoint, since fireStartupCheckpoint() is a one-time,
-      // idempotent no-op after its first successful call anyway.
-      setImmediate(() => {
-        runCuratedSymbolCatchUp("startup")
-          .then(() => {
-            if (gapFillScheduler) return gapFillScheduler.fireStartupCheckpoint();
-          })
-          .catch((e) => {
-            console.warn("[Recovery] Startup catch-up chain failed — GapFill startup checkpoint will NOT run this boot:", e.message);
+      if (gapFillScheduler) {
+        setImmediate(() => {
+          gapFillScheduler.fireStartupCheckpoint().catch((e) => {
+            console.warn("[GapFill] Startup checkpoint chain failed:", e.message);
           });
-      });
+        });
+      }
+
+      // Returned so server.js can wire fireReauthCheckpoint into
+      // chartRouter.js's /api/auth/token route (item 6/4 follow-through —
+      // re-auth now re-triggers the SAME full 3-step chain, not just the
+      // old spot-only catch-up).
+      return { gapFillScheduler };
 
     } else {
       console.warn("[DB] ⚠️  PostgreSQL health check failed — DB writes disabled");

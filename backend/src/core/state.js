@@ -57,13 +57,20 @@ function bustTokenCache() { _tokenCache = { valid: null, at: 0 }; }
 // SYMBOL: optional — if set in .env, that symbol is pre-warmed at boot.
 // If not set, the chart loads whatever the first connected client requests.
 const SYMBOL = process.env.SYMBOL || null;
+// CANDLE_RESOLUTION / CANDLES_TO_FETCH / TICK_WATCHDOG_MS / WATCHDOG_GRACE_MS
+// were removed from .env on 2026-08-06 -- .env now only holds APP_ID,
+// ST_KEY, PIN, and DB credentials. The fallback values below ARE the real
+// running values (previously set in .env as 3 / 100 / 60000 / 60000) --
+// this is now the single source of truth for these 4, not a dormant
+// fallback behind an env var. process.env reads are left in place only so
+// a future .env override still works if one is ever added back.
 const RESOLUTION = parseInt(process.env.CANDLE_RESOLUTION || "3");
 // CANDLES_TO_FETCH: passed to fetchCandles() as the `count` parameter but
 // fetchCandles() currently ignores it — Fyers data is fetched by date-range
 // windows (calcLookbackDays) not by count. This env var is kept for future use
 // if a count-based slice is added. The actual depth is controlled by
 // calcLookbackDays() in fyers/client.js (30d for 3m, 60d for 15m, 150d for 1h).
-const CANDLES_TO_FETCH = parseInt(process.env.CANDLES_TO_FETCH || "10000");
+const CANDLES_TO_FETCH = parseInt(process.env.CANDLES_TO_FETCH || "100");
 // CHART_DB_WINDOW_DAYS: how many days of 1m history fetchAndProcess() pulls
 // from Postgres for intraday resolutions (1/3/5/15/60). DB itself still
 // stores a full year — this only controls what the chart loads/displays.
@@ -73,8 +80,8 @@ const CANDLES_TO_FETCH = parseInt(process.env.CANDLES_TO_FETCH || "10000");
 // of this value, since they need long lookback for correct bar boundaries.
 const CHART_DB_WINDOW_DAYS = parseInt(process.env.CHART_DB_WINDOW_DAYS || "90");
 const REFRESH_MS = parseInt(process.env.SCHEDULE_INTERVAL_MS || "5000");
-const TICK_WATCHDOG_MS = parseInt(process.env.TICK_WATCHDOG_MS || "10000");
-const WATCHDOG_GRACE_MS = parseInt(process.env.WATCHDOG_GRACE_MS || "30000");
+const TICK_WATCHDOG_MS = parseInt(process.env.TICK_WATCHDOG_MS || "60000");
+const WATCHDOG_GRACE_MS = parseInt(process.env.WATCHDOG_GRACE_MS || "60000");
 
 // ─── State ────────────────────────────────────────────────────────────────────
 const symbolCacheMap = new Map();  // "SYMBOL:resolution" → { candles, result, lastFetch }

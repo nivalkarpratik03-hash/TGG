@@ -35,10 +35,14 @@
  *
  * recoveryEngine.js now imports upsertCandles/replaceDayCandles from HERE
  * instead of candleStore.js directly. validationEngine.js now imports
- * getLatestCandle from HERE (its other exports — loadCandles, countCandles,
- * upsertValidationState — stay on candleStore.js directly, since those are
- * only ever called by validateHistorical/validateCurrentDay, which really
- * are curated-symbol-only, via runCuratedSymbolCatchUp).
+ * getLatestCandle AND loadCandles from HERE too (UPDATED 2026-08-06 —
+ * loadCandles was moved here from candleStore.js ahead of the planned
+ * Validator/Recovery scope expansion to option/future symbols, so it
+ * resolves to the correct derivatives table once that lands, instead of
+ * always reading the plain `candles` table). validationEngine.js's
+ * remaining candleStore.js import, upsertValidationState, stays there
+ * unrouted — it writes to a single generic validation_state table with no
+ * per-symbol-type table to route between.
  */
 
 const candleStore = require("./candleStore");

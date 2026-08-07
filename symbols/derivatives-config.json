@@ -1,5 +1,5 @@
 {
-  "_readme": "F&O-specific configuration for ONLY the underlyings actually tracked by the derivatives GapFill checkpoint (5 indices + 6 commodities -- equities are confirmed spot-only, final, never appear here). Keyed by 'name' to join against index.json/commodity.json at load time. Kept separate from the plain master files so index.json/commodity.json/equity.json stay lean and usable by any consumer (Scanner, symbol search) without derivatives-tracking fields bleeding in. This absorbs what was temporarily backend/src/derivatives/symbols/{index,commodity,settings}.json -- that folder is retired once this file's readers are repointed here.",
+  "_readme": "F&O-specific configuration for ONLY the underlyings actually tracked by the derivatives GapFill checkpoint (6 indices + 6 commodities -- equities are confirmed spot-only, final, never appear here). Keyed by 'name' to join against index.json/commodity.json at load time. Kept separate from the plain master files so index.json/commodity.json/equity.json stay lean and usable by any consumer (Scanner, symbol search) without derivatives-tracking fields bleeding in. This absorbs what was temporarily backend/src/derivatives/symbols/{index,commodity,settings}.json -- that folder is retired once this file's readers are repointed here. BANKEX added 2026-08-06 -- its expiryDayRule below is NOT yet confirmed (conflicting info found across sources: last-Thursday-monthly vs. a 2023 BSE notice moving weekly expiry to Monday, unclear if that also applies here or was superseded by the Sep-2025 NSE/BSE restructuring). Do not treat this entry's expiryDayRule as reliable until confirmed live, same standard every other entry in this file was held to.",
   "atmBandWidth": 4,
   "openItems": [
     "SILVERM single-active-cycle status: inferred from the MCX option-chain screenshot showing one expiry-per-month rolling list (Jul/Aug/Sep/...), same shape as GOLDM's confirmed single cycle, but not independently stated by the desk the way GOLDM's cycle was implied. Treat as high-confidence, not fully independently confirmed.",
@@ -79,6 +79,20 @@
       "mcxAtmReference": null,
       "strikeGap": null,
       "notes": "BSE's single weekly-expiry benchmark (mirrors NIFTY's role on NSE). WEEKLY OPTION SYMBOL ENCODING STILL FLAGGED UNVERIFIED in symbolParser.js (expiryEncodingUnverified:true on parse) -- this entry does not resolve that, only the expiry-day rule."
+    },
+    "BANKEX": {
+      "expiryTypes": [
+        "monthly"
+      ],
+      "expiryDayRule": {
+        "exchange": "BSE",
+        "monthly": "UNCONFIRMED -- see _readme. Multiple candidate answers found (last Thursday; a since-superseded 2023 Monday weekly-expiry notice) but none independently confirmed the way every other entry in this file was. Do not use for expiry-date computation until confirmed live."
+      },
+      "hasOptions": true,
+      "hasFutures": true,
+      "mcxAtmReference": null,
+      "strikeGap": null,
+      "notes": "Added 2026-08-06. Symbol BSE:BANKEX-INDEX live-confirmed real via Fyers Symbol Search (working futures BANKEX26AUGFUT/SEPFUT/OCTFUT and options chain visible). expiryDayRule is the one open item -- needs live confirmation (a current option-chain/futures screenshot showing the actual next expiry date) before this config can be trusted for expiry-date logic, same bar every other entry here was held to."
     }
   },
   "commodities": {

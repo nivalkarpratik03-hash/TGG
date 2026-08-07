@@ -451,6 +451,20 @@ function isContractExpired(info, now = new Date()) {
  *
  * @returns {Promise<{symbolsPruned:number, candlesDeleted:number, symbols:string[]}>}
  */
+/**
+ * Every distinct symbol currently sitting in the plain `candles` table
+ * (spot/index — derivative option/future symbols live in the 6 separate
+ * derivativesStore.js tables instead, see listDerivativeSymbols() there).
+ * Added 2026-08-06 for Validator/Recovery's expanded scope (item 2 of the
+ * ongoing cleanup plan) — same DISTINCT-symbol query pattern that already
+ * existed inline inside pruneExpiredContracts() below, pulled out into its
+ * own reusable exported function rather than duplicated.
+ */
+async function listSpotSymbols() {
+  const rows = await query("SELECT DISTINCT symbol FROM candles ORDER BY symbol", []);
+  return rows.map((r) => r.symbol);
+}
+
 async function pruneExpiredContracts(now = new Date()) {
   const rows = await query("SELECT DISTINCT symbol FROM candles", []);
 
@@ -524,4 +538,5 @@ module.exports = {
   countCandles,
   isValidCandle,
   upsertValidationState,
+  listSpotSymbols,
 };

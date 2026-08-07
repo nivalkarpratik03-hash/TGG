@@ -90,7 +90,7 @@ export const INDICATOR_REGISTRY = [
 
 export function buildDefaultIndicators() {
   return {
-    bubble: true,
+    bubble: false,
     waves: false,
     consolidation: false,
     srZones: false,

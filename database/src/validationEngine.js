@@ -13,19 +13,77 @@
  *  • Periodic synchronization (compare latest DB vs broker)
  */
 
-// FIX (derivatives-routing): getLatestCandle is used by checkPeriodicSync()
-// below, which server.js's periodicSync loop can call with whatever symbol
-// a client currently has open — including option/future contracts. Routing
-// it through dataRouter.js means that lookup lands on the correct
-// nse_options_candles/etc. table for a derivative symbol instead of always
-// reading the plain `candles` table. The other three imports here
-// (loadCandles, countCandles, upsertValidationState) stay on candleStore.js
-// directly — they're only ever called by validateHistorical/
-// validateCurrentDay, which run exclusively against the curated no-expiry
-// symbol list (see runCuratedSymbolCatchUp in server.js), so there's no
-// derivative-symbol case to route for those.
-const { loadCandles, countCandles, upsertValidationState } = require("./candleStore");
-const { getLatestCandle } = require("./dataRouter");
+// FIX (derivatives-routing), UPDATED 2026-08-06: getLatestCandle AND
+// loadCandles are now both routed through dataRouter.js. getLatestCandle
+// was already routed (used by checkPeriodicSync(), which can be handed an
+// option/future symbol via server.js's getLiveBroadcastSymbols()).
+// loadCandles is used by validateHistorical()/validateCurrentDay() — those
+// currently only ever run against the curated no-expiry symbol list today,
+// but item 2 of the ongoing cleanup plan (TGG-project-plan.md) expands
+// Validator/Recovery's scope to include option/future contracts too. Once
+// that lands, loadCandles needs to resolve to the correct one of the 6
+// derivatives tables for those symbols instead of always reading the plain
+// `candles` table — dataRouter.js's loadCandles already does exactly that
+// (signature-compatible drop-in, confirmed via dataRouter.js's own file
+// header), so this fix is routing loadCandles there now, ahead of item 2,
+// rather than leaving it pointed at candleStore.js and having item 2 land
+// on a function that silently reads the wrong table for derivative symbols.
+//
+// countCandles was previously imported here from candleStore.js but is NOT
+// called anywhere in this file (confirmed via full-file grep) — dropped as
+// a dead import rather than also routed, since routing an unused function
+// adds surface area for no reason.
+//
+// upsertValidationState stays on candleStore.js, unrouted — confirmed it
+// writes to a single generic `validation_state` table keyed by
+// (symbol, resolution), not one of the 6 derivatives candle tables, so
+// there is no per-symbol-type table to route between; any symbol string
+// works identically there already.
+const { upsertValidationState, listSpotSymbols } = require("./candleStore");
+const { getLatestCandle, loadCandles } = require("./dataRouter");
+const { listDerivativeSymbols } = require("./derivativesStore");
+
+/**
+ * Every symbol currently tracked anywhere in the DB — spot (plain `candles`
+ * table) plus all 6 derivatives tables (NSE/MCX/BSE × option/future).
+ * Added 2026-08-06 for item 2 of the ongoing cleanup plan: Validator/
+ * Recovery's boot/checkpoint loop now sources its symbol list from
+ * whatever's ACTUALLY IN THE DATABASE right now — which by the time this
+ * runs (Staleness sweep + GapFill have already run first this same
+ * checkpoint, per the new Staleness→GapFill→Validator→Recovery order) is
+ * exactly what Staleness's spot sweep and GapFill's fut/opt backfill just
+ * wrote. This deliberately does NOT take GapFill's returned
+ * discoveredSymbols as an input — no explicit hand-off between the two
+ * steps, no coupling to introduce, Validator/Recovery simply asks the DB
+ * "what do you actually have right now" and checks all of it. Equities/
+ * indices with no F&O and commodities (which have no spot symbol at all,
+ * confirmed — see curatedUnderlyingsLoader.js) are naturally absent from
+ * their respective tables, no special-casing needed here.
+ *
+ * Returns a flat array of symbol strings, no type metadata — loadCandles()
+ * (routed via dataRouter.js, see Blocker 1 fix above) already infers spot
+ * vs. option vs. future purely from the symbol string itself via
+ * parseDerivativeSymbol(), so the caller never needs to know which table a
+ * given symbol came from.
+ */
+async function getAllTrackedSymbols() {
+  const spot = await listSpotSymbols();
+  const derivativeLists = await Promise.all(
+    ["NSE", "MCX", "BSE"].flatMap((exchange) =>
+      ["option", "future"].map((instrumentType) =>
+        listDerivativeSymbols(exchange, instrumentType).catch((err) => {
+          console.warn(`[Validator] getAllTrackedSymbols: failed to list ${exchange} ${instrumentType} symbols (${err.message}) — continuing without them`);
+          return [];
+        })
+      )
+    )
+  );
+  const all = [...spot, ...derivativeLists.flat()];
+  // Dedup defensively — spot and derivatives live in disjoint tables today,
+  // so this should never actually collide, but a Set costs nothing here
+  // and removes any doubt.
+  return [...new Set(all)];
+}
 
 // ─── IST helpers ─────────────────────────────────────────────────────────────
 
@@ -308,4 +366,5 @@ module.exports = {
   checkPeriodicSync,
   expectedCandlesPerDay,
   expectedCandlesForDay,
+  getAllTrackedSymbols,
 };

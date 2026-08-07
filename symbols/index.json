@@ -1,5 +1,5 @@
 {
-  "_readme": "5 index underlyings -- the single source of truth for indices across this app (Scanner, GapFill curated list, symbol search). Plain shape only: name/symbol/exchange/type. F&O-specific fields (expiryTypes, expiryDayRule, etc.) live separately in derivatives-config.json, keyed by 'name', so this file stays lean and usable by any consumer regardless of whether it cares about derivatives tracking. FINNIFTY's spot symbol (NSE:CNXFINANCE-INDEX) is confirmed correct and internally consistent with backend/src/server.js's own INDEX_ROOT_TO_SYMBOL mapping -- but live fetchOptionChain calls against it have been observed erroring 'Please provide a valid symbol' in real terminal logs. This is a known, unresolved, separate issue -- not a wrong symbol in this file. Flagged for investigation, not silently worked around.",
+  "_readme": "6 index underlyings -- the single source of truth for indices across this app (Scanner, GapFill curated list, symbol search). Plain shape only: name/symbol/exchange/type. F&O-specific fields (expiryTypes, expiryDayRule, etc.) live separately in derivatives-config.json, keyed by 'name', so this file stays lean and usable by any consumer regardless of whether it cares about derivatives tracking. FINNIFTY's spot symbol was changed from NSE:CNXFINANCE-INDEX to NSE:FINNIFTY-INDEX on 2026-08-06 -- live-confirmed via Fyers Symbol Search (working option chain, futures, and index quote all returned under FINNIFTY-INDEX; CNXFINANCE returned an unrelated stock, CSL Finance Limited, not this index). BANKEX added 2026-08-06 as a 6th index -- live-confirmed real, tradable BSE index with working futures/options via Fyers Symbol Search. See derivatives-config.json for BANKEX's F&O config -- its expiry day rule is NOT yet confirmed, do not assume a value from this file alone.",
   "indices": [
     {
       "name": "NIFTY",
@@ -15,7 +15,7 @@
     },
     {
       "name": "FINNIFTY",
-      "symbol": "NSE:CNXFINANCE-INDEX",
+      "symbol": "NSE:FINNIFTY-INDEX",
       "exchange": "NSE",
       "type": "index"
     },
@@ -28,6 +28,12 @@
     {
       "name": "SENSEX",
       "symbol": "BSE:SENSEX-INDEX",
+      "exchange": "BSE",
+      "type": "index"
+    },
+    {
+      "name": "BANKEX",
+      "symbol": "BSE:BANKEX-INDEX",
       "exchange": "BSE",
       "type": "index"
     }
