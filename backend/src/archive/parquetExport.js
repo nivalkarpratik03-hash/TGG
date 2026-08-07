@@ -41,9 +41,14 @@ const path = require("path");
 const parquet = require("parquetjs-lite");
 const derivativesStore = require("../../../database/src/derivativesStore");
 const { parseDerivativeSymbol } = require("../../../database/src/symbolParser");
+const { loadIndexSpotSymbols } = require("../derivatives/curatedUnderlyingsLoader");
 
-// Short, stable — index roots don't change often, unlike equity lists.
-const INDEX_ROOTS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"]);
+// Read live from symbols/index.json (the same root master every other
+// consumer reads) instead of a separate hardcoded copy of the 6 names.
+// This one happened to already be content-correct, but kept its own
+// independent copy that could still drift out of sync silently if a 7th
+// index is ever curated — now it can't.
+const INDEX_ROOTS = new Set(loadIndexSpotSymbols().map((e) => e.name));
 
 function assetClassFor(exchange, underlying) {
   if (exchange === "MCX") return "COMMODITY";

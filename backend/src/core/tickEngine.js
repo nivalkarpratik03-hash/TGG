@@ -15,6 +15,7 @@
 const { runSignalEngine } = require("../services/signalEngine");
 const { CandleBuilder } = require("../services/candleBuilder");
 const { TickStream, isLiveMarket, isAnyMarketLive, isTradingDay } = require("../fyers/tickStream");
+const { loadIndexSpotSymbols } = require("../derivatives/curatedUnderlyingsLoader");
 const state = require("./state");
 
 function createTickEngine({ io }) {
@@ -166,14 +167,20 @@ function createTickEngine({ io }) {
    * pattern already used for db/recoveryEngine above.
    */
   const OPTION_SUFFIX_RE = /^(.*?)(\d{2}(?:[A-Z]{3}|[1-9OND]\d{2}))(\d+(?:\.\d+)?)(CE|PE)$/;
-  const INDEX_ROOT_TO_SYMBOL = {
-    NIFTY: "NSE:NIFTY50-INDEX",
-    BANKNIFTY: "NSE:NIFTYBANK-INDEX",
-    FINNIFTY: "NSE:CNXFINANCE-INDEX",
-    NIFTYIT: "NSE:CNXIT-INDEX",
-    MIDCPNIFTY: "NSE:MIDCPNIFTY-INDEX",
-    SENSEX: "BSE:SENSEX-INDEX",
-  };
+  // Built dynamically from symbols/index.json (the same root-master file
+  // curatedUnderlyingsLoader.js and symbolsRouter.js read) — no separate
+  // hardcoded copy, so this can't go stale again the way it did when
+  // FINNIFTY's real symbol changed on 2026-08-06 and this file's own copy
+  // silently kept pointing at the old NSE:CNXFINANCE-INDEX. Always reflects
+  // whatever the 6 curated indices currently are.
+  //
+  // The old hardcoded map also carried a NIFTYIT: "NSE:CNXIT-INDEX" entry —
+  // dropped here since NIFTYIT is not one of the 6 curated indices in
+  // symbols/index.json and never was; it was an orphan left over from
+  // before the curated-index system existed.
+  const INDEX_ROOT_TO_SYMBOL = Object.fromEntries(
+    loadIndexSpotSymbols().map((e) => [e.name, e.symbol])
+  );
   let parseDerivativeSymbol = null;
   try {
     ({ parseDerivativeSymbol } = require("../../../database/src/symbolParser"));

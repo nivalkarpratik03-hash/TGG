@@ -88,14 +88,36 @@ const INDEX_WEEKLY_EXPIRY_DAY = {
 };
 export { INDEX_WEEKLY_EXPIRY_DAY };
 
-// ── NSE index option roots ────────────────────────────────────────────────────
+// ── NSE/BSE index option roots ─────────────────────────────────────────────────
+// Frontend code can't read symbols/index.json off disk (no filesystem access
+// in the browser — would need /api/symbols to go fully dynamic), so this
+// stays a small hand-maintained map, verified against the real index.json.
+//
+// IMPORTANT — this must stay a FULL map of all 6 curated indices, not just
+// the 2 that getOptionRoot()'s forward "-INDEX"-strip fallback can't handle
+// on its own. NSE_INDEX_TICKERS below is the REVERSE of this map (root name
+// → full ticker), and ChartsPage.js uses that reverse map in 3 places to
+// rebuild a full underlying symbol from just a parsed option's root — with
+// a fallback that assumes `${root}-EQ` (equity) for anything not found here.
+// An earlier pass trimmed this to just NIFTY/BANKNIFTY on the theory that
+// the forward fallback alone was enough — that was correct for
+// getOptionRoot() but silently broke ChartsPage.js's Auto-ATM lookups for
+// FINNIFTY/MIDCPNIFTY/SENSEX/BANKEX (each would have resolved to a bogus
+// "...-EQ" equity symbol instead of "...-INDEX"). Caught and fixed by
+// actually testing that consumer, not just getOptionRoot() in isolation.
+//
+// Previously this also carried a stale "CNXFINANCE-INDEX": "FINNIFTY" entry
+// (FINNIFTY's spot symbol changed to NSE:FINNIFTY-INDEX on 2026-08-06 — see
+// symbols/index.json's own _readme — CNXFINANCE-INDEX is no longer a real
+// symbol anywhere in this codebase) and a "CNXIT-INDEX": "NIFTYIT" orphan
+// (NIFTYIT was never one of the 6 curated indices). Both dropped.
 const NSE_INDEX_ROOTS = {
   "NIFTY50-INDEX": "NIFTY",
   "NIFTYBANK-INDEX": "BANKNIFTY",
-  "CNXFINANCE-INDEX": "FINNIFTY",
-  "CNXIT-INDEX": "NIFTYIT",
+  "FINNIFTY-INDEX": "FINNIFTY",
   "MIDCPNIFTY-INDEX": "MIDCPNIFTY",
   "SENSEX-INDEX": "SENSEX",   // BSE
+  "BANKEX-INDEX": "BANKEX",   // BSE
 };
 
 // Inverse of NSE_INDEX_ROOTS (option root → index ticker), derived once so the
@@ -354,12 +376,24 @@ export function buildStrikeLadder(spot, indexRoot, stepsEachSide = 14, overrideS
   return { strikes, atm };
 }
 
+// One entry per curated index (5 of the 6 — BANKEX is still missing on
+// purpose, see below). NIFTYIT's old entry was dropped: it's not one of the
+// 6 curated indices, and with the CNXIT-INDEX orphan removed from
+// NSE_INDEX_ROOTS above, no code path can ever produce root:"NIFTYIT" here
+// any more anyway — it was already dead.
+//
+// BANKEX: still genuinely missing, not an oversight. Without a real
+// entry, getStrikeStep()/buildStrikeLadder() fall through to the generic
+// guessStep(spot) price-bucket heuristic below, which currently outputs
+// 500 for BANKEX's ~64,000–65,000 range — that is NOT a confirmed real
+// strike gap, just what the fallback happens to produce. Needs a live
+// option-chain screenshot showing two adjacent real BANKEX strikes before
+// this can be set correctly.
 const INDEX_STRIKE_STEPS = {
   NIFTY: 50,
   BANKNIFTY: 100,
   FINNIFTY: 50,
   MIDCPNIFTY: 25,
-  NIFTYIT: 50,
   SENSEX: 100,
 };
 

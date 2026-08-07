@@ -14,10 +14,10 @@
  *     for Commodity Fut (which buildFutures() already tags type
  *     "commodity" specifically so it works as "current fut" — see that
  *     file's own comment).
- *   - derivativesGapFill.js's resolveFuturesSymbols() for Index Fut (all 5
- *     curated indices, not just symbolsRouter.js's INDEX_FUT_ROOTS
- *     NIFTY/BANKNIFTY subset) — including the 2026-08-03 BSE/SENSEX
- *     expiry-day fix.
+ *   - derivativesGapFill.js's resolveFuturesSymbols() for Index Fut (all 6
+ *     curated indices, read live from index.json — including the
+ *     2026-08-03 BSE/SENSEX expiry-day fix, and the BSE/BANKEX exchange gap
+ *     fixed in symbolsRouter.js's own buildFutures() this session).
  *   - derivativesGapFill.js's resolveChainLookupSymbol() + the generic
  *     fetchOptionChain() for Opt discovery (index/commodity).
  *   - curatedUnderlyingsLoader.js's loadCuratedUnderlyings()/
@@ -33,19 +33,14 @@
  * symbols/index.json's own _readme and this module's resolveIndexOpt()
  * comment below).
  *
- * NOT DONE HERE (flagged, not silently skipped): an earlier plan for this
- * feature also proposed swapping FINNIFTY's option-chain lookup symbol
- * from "NSE:CNXFINANCE-INDEX" to "NSE:FINNIFTY-INDEX" to work around the
- * "Please provide a valid symbol" broker error. That swap is NOT applied
- * here — nothing in this codebase (server.js's INDEX_ROOT_TO_SYMBOL,
- * symbols/index.json, curatedUnderlyings.json, or any prior session's
- * saved output) confirms "NSE:FINNIFTY-INDEX" is a real, valid Fyers
- * symbol; every reference in this repo uses NSE:CNXFINANCE-INDEX
- * consistently. Applying an unverified symbol swap risks silently
- * breaking a currently-correct spot/candle symbol for a "fix" that has no
- * evidence behind it in this codebase. FINNIFTY Opt discovery will
- * continue to come back empty until this is independently confirmed live
- * against the Fyers API (or Fyers support) — flagged, not guessed around.
+ * UPDATE (this session): the note that used to live here said FINNIFTY's
+ * option-chain lookup symbol swap ("NSE:CNXFINANCE-INDEX" →
+ * "NSE:FINNIFTY-INDEX") was NOT applied and unverified. That's now stale —
+ * symbols/index.json was live-confirmed and repointed to
+ * "NSE:FINNIFTY-INDEX" on 2026-08-06 (see that file's own _readme), and
+ * this module reads FINNIFTY's spot/lookup symbol from index.json via
+ * curatedUnderlyingsLoader.js, so it picks up the corrected symbol
+ * automatically — no separate swap needed here.
  * ─────────────────────────────────────────────────────────────────
  */
 
@@ -77,11 +72,20 @@ function dedupe(symbols) {
 }
 
 // Bases that show up tagged type:"future" in symbolsRouter.getSymbols()
-// but are actually the 2 index futures buildFutures() also generates
-// there (NIFTY, BANKNIFTY — via its INDEX_FUT_ROOTS), not equity futures.
-// Needed to cleanly split that merged bucket back into "just the equities"
-// when isolating the near-month-only contract for Equity Fut.
-const INDEX_FUT_BASES_IN_FUTURE_TYPE = new Set(["NIFTY", "BANKNIFTY"]);
+// but are actually index futures buildFutures() also generates there (via
+// its INDEX_FUT_ROOTS), not equity futures. Needed to cleanly split that
+// merged bucket back into "just the equities" when isolating the
+// near-month-only contract for Equity Fut.
+//
+// Derived directly from symbolsRouter.js's own exported INDEX_FUT_ROOTS
+// (this session) instead of a separate hardcoded copy — previously this
+// was a hand-maintained Set(["NIFTY", "BANKNIFTY"]) that silently fell out
+// of sync once buildFutures() started generating futures for all 6 curated
+// indices (FINNIFTY/MIDCPNIFTY/SENSEX/BANKEX would otherwise leak into the
+// Equity Fut bucket as if they were stocks). Now it can't drift: whatever
+// bases INDEX_FUT_ROOTS produces futures for is exactly what gets excluded
+// here, always.
+const INDEX_FUT_BASES_IN_FUTURE_TYPE = new Set(Object.values(symbolsRouter.INDEX_FUT_ROOTS));
 
 function nearMonthCode() {
   const codes = symbolsRouter.monthCodesFromOffset(1, symbolsRouter.nseNearMonthOffset());
@@ -125,8 +129,10 @@ function resolveEquityFut() {
 }
 
 /**
- * Index Fut — near-month contract only, for all 5 curated indices (not
- * just symbolsRouter.js's INDEX_FUT_ROOTS NIFTY/BANKNIFTY subset).
+ * Index Fut — near-month contract only, for all 6 curated indices, read
+ * live from index.json via loadCuratedUnderlyings() (not tied to
+ * symbolsRouter.js's INDEX_FUT_ROOTS, which is a separate, now also-fixed
+ * generation path used for the merged /api/symbols "future" bucket).
  * Reuses derivativesGapFill.js's resolveFuturesSymbols(entry), which
  * returns [nearMonth, nextMonth] — takes just the first.
  */

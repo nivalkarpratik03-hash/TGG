@@ -38,7 +38,12 @@
  * names are preserved via INDEX_DISPLAY_NAME_OVERRIDES below; FINNIFTY and
  * MIDCPNIFTY are new to symbol search (symbols.json never carried them) so
  * they use index.json's own `name` field as-is — there's no prior
- * convention to preserve for those two.
+ * convention to preserve for those two. BANKEX (added 2026-08-06) is the
+ * same situation as FINNIFTY/MIDCPNIFTY — no legacy display text ever
+ * existed for it, so it's deliberately NOT in the overrides map below and
+ * falls through to index.json's own `name` field ("BANKEX") via the
+ * `INDEX_DISPLAY_NAME_OVERRIDES[s.name] || s.name` fallback in
+ * loadIndices() — confirmed correct output, not an oversight.
  *
  * PLUS dynamically generated, always-current-month contracts:
  *   - NSE equity futures      e.g. NSE:RELIANCE26JUNFUT
@@ -70,6 +75,7 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const { previousTradingDay } = require("../data/holidays");
+const { loadIndexSpotSymbols } = require("../derivatives/curatedUnderlyingsLoader");
 
 const router = express.Router();
 
@@ -221,11 +227,19 @@ function monthCodesFromOffset(n, offset, from = new Date()) {
   return nextMonthCodes(n, new Date(y, m, 1));
 }
 
-// The futures-ticker root sometimes differs from the index's spot ticker.
-const INDEX_FUT_ROOTS = {
-  "NIFTY50-INDEX": "NIFTY",
-  "NIFTYBANK-INDEX": "BANKNIFTY",
-};
+// The futures-ticker root sometimes differs from the index's spot ticker
+// (e.g. spot ticker "NIFTY50-INDEX" but the futures contract root is
+// "NIFTY"). Built dynamically from symbols/index.json — the same root
+// master curatedUnderlyingsLoader.js reads — instead of a hand-maintained
+// table. This works uniformly for all 6 curated indices because each
+// index's futures root IS simply its `name` field in index.json
+// (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX, BANKEX all match their
+// own name exactly) — confirmed by inspecting every entry, not assumed.
+// No per-index override table needed, and this can't go stale again if a
+// 7th index is ever curated.
+const INDEX_FUT_ROOTS = Object.fromEntries(
+  loadIndexSpotSymbols().map((e) => [e.symbol.split(":")[1], e.name])
+);
 
 // ── NSE F&O expiry rollover ──────────────────────────────────────────────────
 // NSE monthly F&O contracts expire on the LAST TUESDAY of the month (NSE
@@ -301,7 +315,10 @@ function loadCommodityRoots(filePath) {
 
 /**
  * Builds live FUT contracts for:
- *   - NSE equities + the two liquid index futures (NIFTY, BANKNIFTY)
+ *   - NSE equities
+ *   - All 6 curated index futures (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY —
+ *     NSE; SENSEX, BANKEX — BSE), each on its own exchange's real expiry
+ *     calendar
  *   - MCX commodities (roots taken from symbols/commodity.json)
  *
  * ROOT-CAUSE FIX (2026-08-01): equity.json is the general NSE board list,
@@ -316,29 +333,46 @@ function loadCommodityRoots(filePath) {
  * table. See that file's own coverage/warning block before assuming any
  * other equity is confirmed either way.
  *
+ * ROOT-CAUSE FIX (this session): this function used to hard-skip every
+ * symbol whose exchange wasn't NSE (`if (exch !== "NSE") continue`), so
+ * SENSEX and BANKEX (both BSE) never generated futures no matter what
+ * INDEX_FUT_ROOTS contained — and it also called nseNearMonthOffset()
+ * unconditionally, which is the wrong (Tuesday) expiry rule for BSE
+ * (Thursday — see bseNearMonthOffset() above, already used correctly
+ * elsewhere in this codebase, just never wired in here). Now equities stay
+ * NSE-only (real constraint — equity F&O only exists on NSE), while index
+ * futures are generated per the index's own real exchange, each using that
+ * exchange's own expiry calendar.
+ *
  * The nearest commodity month is tagged type "commodity" so it keeps
  * appearing (and working) under the existing Commodity tab using a real,
  * currently-tradable symbol. Every month (including that nearest one) is
  * also tagged "future" so it shows under the new Futures tab.
  */
 function buildFutures(equityAndIndexSymbols, commodityRoots) {
-  const nseOffset = nseNearMonthOffset();
-  const monthCodes = monthCodesFromOffset(FUT_MONTHS_AHEAD, nseOffset);
+  const nseMonthCodes = monthCodesFromOffset(FUT_MONTHS_AHEAD, nseNearMonthOffset());
+  const bseMonthCodes = monthCodesFromOffset(FUT_MONTHS_AHEAD, bseNearMonthOffset());
   const foExclusions = loadEquityFoExclusions();
   const out = [];
 
   for (const s of equityAndIndexSymbols) {
     const [exch, rawTicker] = s.symbol.split(":");
-    if (exch !== "NSE") continue; // F&O is an NSE-only segment
 
     let base = null;
-    if (s.type === "equity") base = rawTicker.replace(/-EQ$/i, "");
-    else if (s.type === "index" && INDEX_FUT_ROOTS[rawTicker]) base = INDEX_FUT_ROOTS[rawTicker];
+    let monthCodes = null;
+    if (s.type === "equity") {
+      if (exch !== "NSE") continue; // equity F&O is an NSE-only segment
+      base = rawTicker.replace(/-EQ$/i, "");
+      monthCodes = nseMonthCodes;
+    } else if (s.type === "index" && INDEX_FUT_ROOTS[rawTicker]) {
+      base = INDEX_FUT_ROOTS[rawTicker];
+      monthCodes = exch === "BSE" ? bseMonthCodes : nseMonthCodes;
+    }
     if (!base) continue;
     if (s.type === "equity" && foExclusions.has(base)) continue; // live-verified: no real F&O for this one
 
     for (const mc of monthCodes) {
-      out.push({ symbol: `NSE:${base}${mc}FUT`, name: `${s.name} FUT (${mc})`, type: "future" });
+      out.push({ symbol: `${exch}:${base}${mc}FUT`, name: `${s.name} FUT (${mc})`, type: "future" });
     }
   }
 
@@ -545,3 +579,8 @@ module.exports.nextValidMonthCodes = nextValidMonthCodes;
 // files with a second, simpler implementation. Returns the same cached/
 // refreshed list getSymbols() above uses — one parser, one cache, no drift.
 module.exports.getSymbols = getSymbols;
+// NEW (this session) — exported so instrumentTypeResolver.js's
+// INDEX_FUT_BASES_IN_FUTURE_TYPE can derive itself from this exact map
+// instead of keeping its own separate hardcoded copy of "which bases get
+// type:'future' index entries here." One source of truth for that fact.
+module.exports.INDEX_FUT_ROOTS = INDEX_FUT_ROOTS;
