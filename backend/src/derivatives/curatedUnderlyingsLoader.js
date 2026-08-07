@@ -53,24 +53,6 @@ const COMMODITY_PATH = path.join(SYMBOLS_DIR, "commodity.json");
 const EQUITY_PATH = path.join(SYMBOLS_DIR, "equity.json");
 const CONFIG_PATH = path.join(SYMBOLS_DIR, "derivatives-config.json");
 
-/**
- * Recovery+Staleness sweep in server.js's runCuratedSymbolCatchUp() only
- * ever tracked spot data for these 3 indices (NIFTY, BANKNIFTY, SENSEX) —
- * NOT FINNIFTY/MIDCPNIFTY, which the F&O side tracks but this particular
- * spot sweep never did. This is the same 3-entry subset that used to live
- * verbatim in the temporary symbols/settings.json's `indexSpotSymbols`
- * array; carried forward as-is here rather than guessed at or silently
- * expanded to all 5. Display names ("NIFTY 50" / "NIFTY BANK") also match
- * that original list verbatim — they differ from index.json's `name` field
- * ("NIFTY" / "BANKNIFTY") on purpose, symbols are looked up (not retyped)
- * so they can never drift from the master.
- */
-const INDEX_SPOT_SUBSET = [
-  { underlying: "NIFTY", displayName: "NIFTY 50" },
-  { underlying: "BANKNIFTY", displayName: "NIFTY BANK" },
-  { underlying: "SENSEX", displayName: "SENSEX" },
-];
-
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
@@ -169,25 +151,26 @@ function loadCuratedUnderlyings() {
 }
 
 /**
- * The 3 index spot symbols (NIFTY 50, NIFTY BANK, SENSEX) — flat
- * name/symbol pairs, same shape as loadStockSpotSymbols() below. Used by
- * server.js's runCuratedSymbolCatchUp() to build its full curated-spot
- * symbol list (3 indices + ~202 equities) without reading equity.json's
- * F&O-irrelevant fields directly.
+ * The 6 index spot symbols (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX,
+ * BANKEX) — flat name/symbol pairs, read directly from symbols/index.json,
+ * same pattern as loadStockSpotSymbols() below (no intermediate hardcoded
+ * subset). Used by server.js's runCuratedSymbolCatchUp() to build its full
+ * curated-spot symbol list (6 indices + ~202 equities) without reading
+ * equity.json's F&O-irrelevant fields directly.
+ *
+ * REPOINTED 2026-08-07: previously filtered through a hardcoded
+ * INDEX_SPOT_SUBSET array carrying only 3 of the (then 5, now 6) indices,
+ * left over from the old temporary symbols/settings.json's
+ * `indexSpotSymbols` list. The array's `displayName` field was confirmed
+ * unused — catchUp.js's only call site reads `.symbol` alone (`.map((s) =>
+ * s.symbol)`) — so there was nothing behavior-relevant left to preserve by
+ * keeping a separate label per index; `index.json`'s own `name` field is
+ * used as-is, same as the equity loader already does.
  * @returns {Array<{name: string, symbol: string}>}
  */
 function loadIndexSpotSymbols() {
   const { indices } = readJson(INDEX_PATH);
-  const byUnderlying = new Map(indices.map((e) => [e.name, e]));
-  return INDEX_SPOT_SUBSET.map(({ underlying, displayName }) => {
-    const master = byUnderlying.get(underlying);
-    if (!master) {
-      throw new Error(
-        `[curatedUnderlyingsLoader] loadIndexSpotSymbols: "${underlying}" not found in symbols/index.json — expected subset and master have drifted out of sync.`
-      );
-    }
-    return { name: displayName, symbol: master.symbol };
-  });
+  return indices.map((e) => ({ name: e.name, symbol: e.symbol }));
 }
 
 /**
