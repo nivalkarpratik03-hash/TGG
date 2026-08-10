@@ -148,7 +148,7 @@ const MCX_EXPIRY_DAY = {
   NATURALGAS: 23, NATGASMINI: 23,                  // ~23rd (NATGASMINI is Fyers root for Nat Gas Mini)
   COPPER: 22, ZINC: 22, ZINCMINI: 22,
   ALUMINIUM: 22, LEAD: 22, LEADMINI: 22, NICKEL: 22,
-  GOLD: 5, GOLDM: 29, GOLDPETAL: 29,       // bullion: early/late month, varies
+  GOLD: 5, GOLDM: 5, GOLDPETAL: 29,       // bullion: GOLD/GOLDM expire early-month (~4th-5th, live-confirmed via Fyers symbol search 2026-08-10 — GOLDM26AUG had already rolled off by the 10th, nearest listed was 26SEP expiring 4 Sep); GOLDPETAL unconfirmed, left as-is
   SILVER: 27, SILVERM: 27, SILVERMIC: 27,
   MENTHAOIL: 29,
   COTTON: 29, CASTORSEED: 29,                  // agri: near month-end
