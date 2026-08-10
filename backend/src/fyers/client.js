@@ -488,6 +488,19 @@ async function fetchOptionChain(underlyingSymbol, opts = {}) {
  * @param {string[]} symbols
  * @returns {Promise<{passed: string[], failed: Array<{symbol: string, reason: string}>}>}
  */
+// INTER-BATCH DELAY for validateSymbols() — 2026-08-09, added after a real
+// boot log showed zero-delay back-to-back Quotes batches getting rate
+// limited by Fyers partway through (everything alphabetically after ~"J"
+// in a 618-symbol futures list failed as one solid block — since fixed by
+// dropping futures from this check entirely, but the same risk exists for
+// the 208-symbol spot list too, just not yet observed failing). Reuses the
+// exact same 300ms value already established for this reason elsewhere in
+// this codebase — see derivativesGapFill.js's INTER_STRIKE_DELAY_MS and its
+// comment for the full reasoning; same number, same justification, not a
+// new guess.
+const SYMBOL_CHECK_BATCH_DELAY_MS = 300;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 async function validateSymbols(symbols) {
   const passed = [];
   const failed = [];
@@ -495,8 +508,11 @@ async function validateSymbols(symbols) {
 
   const fyers = getFyersClient();
   const BATCH_SIZE = 50;
-  for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
-    const batch = symbols.slice(i, i + BATCH_SIZE);
+  const batches = [];
+  for (let i = 0; i < symbols.length; i += BATCH_SIZE) batches.push(symbols.slice(i, i + BATCH_SIZE));
+
+  for (let b = 0; b < batches.length; b++) {
+    const batch = batches[b];
     try {
       const res = await Promise.race([
         fyers.getQuotes(batch),
@@ -518,6 +534,7 @@ async function validateSymbols(symbols) {
     } catch (err) {
       for (const s of batch) failed.push({ symbol: s, reason: err.message });
     }
+    if (b < batches.length - 1) await sleep(SYMBOL_CHECK_BATCH_DELAY_MS);
   }
   return { passed, failed };
 }
