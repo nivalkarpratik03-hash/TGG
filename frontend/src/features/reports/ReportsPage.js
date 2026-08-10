@@ -83,7 +83,12 @@ function MotherWaveSection({ motherWave, onWaveClick }) {
     ? ["-0.618", "0.0", "0.236", "0.382", "0.5", "0.618", "0.786", "1.0"]
     : ["1.0", "0.786", "0.618", "0.5", "0.382", "0.236", "0.0", "-0.618"];
 
-  const allFibPrices = curFibs ? Object.values(curFibs) : [];
+  // Scoped to the ratios this section actually displays (fibOrder), not every
+  // key backend returns — backend's fibMath.js buildFibLevels() now returns
+  // additional extension ratios (-1.618/-1.0/-0.236) for the fib-dashboard's
+  // use, which this section doesn't render; including them here would widen
+  // minP/maxP and compress the bars for the 8 levels actually shown.
+  const allFibPrices = curFibs ? fibOrder.map((level) => curFibs[level]).filter((p) => p != null) : [];
   const minP = allFibPrices.length ? Math.min(...allFibPrices) : 0;
   const maxP = allFibPrices.length ? Math.max(...allFibPrices) : 1;
   const priceRange = maxP - minP || 1;

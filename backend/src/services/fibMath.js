@@ -77,9 +77,12 @@ function buildFibLevels(seg) {
 
   return isBull
     ? {
+      "-1.618": end + 1.618 * span,   // extension above tip
+      "-1.0": end + 1.0 * span,   // extension above tip
       "-0.618": end + 0.618 * span,   // invalidation — extension above tip
+      "-0.236": end + 0.236 * span,   // extension above tip (trap zone upper edge)
       "0.0": end,
-      "0.236": end - 0.236 * span,
+      "0.236": end - 0.236 * span,   // trap zone lower edge
       "0.382": end - 0.382 * span,
       "0.5": end - 0.5 * span,
       "0.618": end - 0.618 * span,
@@ -94,7 +97,10 @@ function buildFibLevels(seg) {
       "0.382": origin - 0.618 * span,
       "0.236": origin - 0.764 * span,
       "0.0": end,
+      "-0.236": end - 0.236 * span,   // extension below tip (trap zone upper edge)
       "-0.618": end - 0.618 * span,   // invalidation — extension below tip
+      "-1.0": end - 1.0 * span,   // extension below tip
+      "-1.618": end - 1.618 * span,   // extension below tip
     };
 }
 

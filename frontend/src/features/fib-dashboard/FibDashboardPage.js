@@ -31,18 +31,22 @@ const ENTRY_TFS = [
 ];
 
 // Full Fib levels per document: -1.618, -1, -0.236 to 0.236 (trap), 0, 0.382, 0.500, 0.618, 0.786, 1
+// `key` is the exact string key backend's fibMath.js buildFibLevels() uses for
+// this ratio in its returned object — kept explicit here (not derived via
+// String(ratio)) because String(1) === "1", not "1.0", which would silently
+// break the -1.0 / 0.0 / 1.0 lookups. See mapBackendFibLevels() below.
 const FIB_LEVELS = [
-  { ratio: -1.618, badge: "Ext Target" },
-  { ratio: -1.000, badge: "Target" },
-  { ratio: -0.618, badge: "Ext Golden" },
-  { ratio: -0.236, badge: "Trap Top" },  // upper edge of trap zone
-  { ratio: 0.000, badge: null },         // High (reference)
-  { ratio: 0.236, badge: "Trap Bot" },  // lower edge of trap zone
-  { ratio: 0.382, badge: "Support" },
-  { ratio: 0.500, badge: "Mid" },
-  { ratio: 0.618, badge: "Golden" },
-  { ratio: 0.786, badge: "Caution" },
-  { ratio: 1.000, badge: null },         // Low (reference)
+  { ratio: -1.618, badge: "Ext Target", key: "-1.618" },
+  { ratio: -1.000, badge: "Target", key: "-1.0" },
+  { ratio: -0.618, badge: "Ext Golden", key: "-0.618" },
+  { ratio: -0.236, badge: "Trap Top", key: "-0.236" },  // upper edge of trap zone
+  { ratio: 0.000, badge: null, key: "0.0" },         // High (reference)
+  { ratio: 0.236, badge: "Trap Bot", key: "0.236" },  // lower edge of trap zone
+  { ratio: 0.382, badge: "Support", key: "0.382" },
+  { ratio: 0.500, badge: "Mid", key: "0.5" },
+  { ratio: 0.618, badge: "Golden", key: "0.618" },
+  { ratio: 0.786, badge: "Caution", key: "0.786" },
+  { ratio: 1.000, badge: null, key: "1.0" },         // Low (reference)
 ];
 
 // Trap zone is between -0.236 and +0.236
@@ -51,27 +55,23 @@ const TRAP_ZONE_BOT = 0.236;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-// Compute fib levels per document:
-// Bullish Mother Wave → Fib Bottom to Top (1=Low, 0=High)
-//   ratio 0 = High (start/from of bull wave), ratio 1 = Low (end/to NOT right — see below)
-//   Actually for a bull wave: fromPrice=Low, toPrice=High
-//   ratio 0 = 0% retracement = toPrice (High), ratio 1 = 100% retracement = fromPrice (Low)
-//   price = toPrice - ratio * (toPrice - fromPrice)
-// Bearish Mother Wave → Fib Top to Bottom (1=High, 0=Low)
-//   ratio 0 = toPrice (Low), ratio 1 = fromPrice (High) — mirror of above
-// In both cases: price = toPrice + ratio * (fromPrice - toPrice)
-//   which = toPrice - ratio * delta where delta = toPrice - fromPrice
-// This aligns with the document: 0=High end of wave, 1=Low end, 0.382 first pullback etc.
-function computeFibLevels(segment) {
-  if (!segment) return [];
-  const { fromPrice, toPrice } = segment;
-  // For fib: "0" is the wave tip (toPrice), "1" is the wave origin (fromPrice)
-  // Retracement price = toPrice + ratio * (fromPrice - toPrice)
-  return FIB_LEVELS.map((f) => ({
-    ratio: f.ratio,
-    badge: f.badge,
-    price: toPrice + f.ratio * (fromPrice - toPrice),
-  }));
+// Fib levels are computed on the backend — single source of truth is
+// backend/src/services/fibMath.js buildFibLevels(), served via the
+// `fibLevels` field of GET /api/motherwave (see useColData below).
+// This is a pure display-mapping adapter, no math: it takes the backend's
+// { "0.618": price, ... } object and attaches the UI badge for each ratio,
+// producing the { ratio, badge, price }[] shape the rest of this file
+// consumes. Ratios the backend hasn't returned a value for are dropped
+// rather than surfaced as NaN/undefined.
+function mapBackendFibLevels(backendFibLevels) {
+  if (!backendFibLevels) return [];
+  return FIB_LEVELS
+    .map((f) => ({
+      ratio: f.ratio,
+      badge: f.badge,
+      price: backendFibLevels[f.key],
+    }))
+    .filter((f) => f.price != null);
 }
 
 // Derive mother wave condition per document 4 cases
@@ -417,15 +417,19 @@ function useColData(symbol, tfValue) {
           candles: data.candles,
           emaHighsData: data.emaHighs || [],
           emaLowsData: data.emaLows || [],
+          // Raw backend fib-levels object (ratio-string -> price), straight from
+          // fibMath.js buildFibLevels() via /api/motherwave. Consumers map this
+          // for display with mapBackendFibLevels() — no fib math happens here.
+          fibLevelsData: mwResult ? mwResult.fibLevels : null,
           lastClose,
           mwError,
         });
       } else {
-        setState({ status: "error", segment: null, mwError: false });
+        setState({ status: "error", segment: null, fibLevelsData: null, mwError: false });
       }
     } catch (e) {
       if (e.name === "AbortError") return;
-      setState({ status: "error", segment: null, mwError: false });
+      setState({ status: "error", segment: null, fibLevelsData: null, mwError: false });
     }
   }, []);
 
@@ -447,7 +451,7 @@ function DrawFibOnChartBtn({ symbol, resolution, segment }) {
   function handleClick() {
     // DrawingOverlay formula: price = p1 + (p2 - p1) * ratio
     //   so ratio=0 → p1, ratio=1 → p2
-    // Dashboard computeFibLevels: price = toPrice + ratio * (fromPrice - toPrice)
+    // Backend fibMath.js buildFibLevels: price = toPrice + ratio * (fromPrice - toPrice)
     //   so ratio=0 → toPrice (wave TIP), ratio=1 → fromPrice (wave ORIGIN)
     // To match the dashboard:
     //   Bull wave (toSide="high"): toPrice=High (tip), fromPrice=Low (origin)
@@ -493,10 +497,10 @@ function HtfColumn({ symbol }) {
     { label: "15Min", value: 15 },
   ];
 
-  const { status, segment, reportMotherSegment, lastClose, mwError } = useColData(symbol, activeTF);
+  const { status, segment, reportMotherSegment, lastClose, mwError, fibLevelsData } = useColData(symbol, activeTF);
   // Use report-style mother wave (detectMotherWave algorithm) for display
   const motherSegment = reportMotherSegment || segment;
-  const fibLevels = computeFibLevels(motherSegment);
+  const fibLevels = mapBackendFibLevels(fibLevelsData);
   const bias = getBias(motherSegment);
   const waveLabel = activeTF >= 10080 ? "Weekly wave" : activeTF >= 1440 ? "Daily wave" : activeTF >= 60 ? "1H wave" : "15Min wave";
 
@@ -961,7 +965,7 @@ function SRPanel({ sr, status, motherSegment, fibLevels }) {
 // ── Single-TF SR sub-panel ───────────────────────────────────────────────────
 
 function SRSubPanel({ symbol, tfValue, tfLabel, motherSegment, motherFibLevels }) {
-  const { status, segment, candles, emaHighsData, emaLowsData } = useColData(symbol, tfValue);
+  const { status, segment, candles, emaHighsData, emaLowsData, fibLevelsData } = useColData(symbol, tfValue);
   const bias = getBias(segment);
 
   const sr = (status === "done" && candles?.length)
@@ -970,8 +974,9 @@ function SRSubPanel({ symbol, tfValue, tfLabel, motherSegment, motherFibLevels }
 
   // Use 1H mother wave segment for condition detection, fallback to this TF's segment
   const condSegment = motherSegment || segment;
-  // Use 1H fib levels for trap zone detection if available, else compute from this TF
-  const fibLvls = motherFibLevels?.length ? motherFibLevels : (segment ? computeFibLevels(segment) : []);
+  // Use 1H fib levels for trap zone detection if available, else this TF's own
+  // backend-sourced fib levels (both already come straight from fibMath.js).
+  const fibLvls = motherFibLevels?.length ? motherFibLevels : mapBackendFibLevels(fibLevelsData);
 
   return (
     <div className="sr-subpanel">
@@ -991,8 +996,8 @@ function SRSubPanel({ symbol, tfValue, tfLabel, motherSegment, motherFibLevels }
 
 function IntradayColumn({ symbol }) {
   // Also fetch 1H data to get mother wave condition and fib levels for trap zone
-  const { status: htfStatus, segment: htfSegment } = useColData(symbol, 60);
-  const htfFibLevels = computeFibLevels(htfSegment);
+  const { status: htfStatus, segment: htfSegment, fibLevelsData: htfFibLevelsData } = useColData(symbol, 60);
+  const htfFibLevels = mapBackendFibLevels(htfFibLevelsData);
 
   return (
     <div className="fdb-col">
@@ -1018,8 +1023,8 @@ function IntradayColumn({ symbol }) {
 function EntryColumn({ symbol }) {
   const [activeEntryTF, setActiveEntryTF] = useState(1);
 
-  const { status, segment } = useColData(symbol, activeEntryTF);
-  const fibLevels = computeFibLevels(segment);
+  const { status, segment, fibLevelsData } = useColData(symbol, activeEntryTF);
+  const fibLevels = mapBackendFibLevels(fibLevelsData);
   const bias = getBias(segment);
   const isBull = bias === "bull";
   const isBear = bias === "bear";

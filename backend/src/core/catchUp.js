@@ -160,7 +160,7 @@ function createCatchUp({ dataFetch }) {
           await new Promise((r) => setTimeout(r, BATCH_DELAY_MS));
         }
       }
-      console.log(`[Recovery] Validator/Recovery (${trigger}) complete — ${clean} clean, ${repaired} repaired, ${skippedKnown} skipped (known short day) out of ${trackedSymbols.length} tracked symbols`);
+      console.log(`[Recovery] Validator/Recovery (${trigger}) complete — ${clean} clean, ${repaired} repaired, ${skippedKnown} skipped (known short day) out of ${trackedSymbols.length} tracked symbols — at ${new Date().toISOString()}`);
     } finally {
       _validatorInFlight = false;
     }
