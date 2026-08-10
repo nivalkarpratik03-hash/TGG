@@ -26,7 +26,7 @@ const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tgg-dataset-test-"));
 process.env.DATASET_ROOT = tmpRoot;
 
 const { query } = require("../../../database/src/pool");
-const derivativesStore = require("../../../database/src/derivativesStore");
+const derivativesStore = require("../../../database/src/store/derivativesStore");
 const { runPruneSweep } = require("./pruneExpiredDerivatives");
 
 let passed = 0, failed = 0;

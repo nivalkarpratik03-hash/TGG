@@ -76,6 +76,18 @@ const ChartPanel = memo(function ChartPanel({
   const { chartData, connected, loading, error, refresh, ticksFlowing, underlyingTick, setUnderlying } = useSocket();
 
   // ── Symbol / resolution / mode — all namespaced by pfx ────────────────────
+  // hadNoSavedSymbol: true only for a genuinely first-time client on this
+  // panel — no ?symbol= in the URL AND nothing yet in localStorage for this
+  // panel's pfx. Used below to force the search modal open on first render
+  // instead of silently loading the NIFTY50 fallback underneath — item 10,
+  // 2026-08-07: "dont keep any hardcoded symbolys at alll ... first it will
+  // open search box not at all default." The `symbol` state itself still
+  // initializes to the NIFTY50 fallback (not null) — nulling it outright
+  // would touch ~85 other reads of `symbol` in this file (chart data fetch,
+  // Auto-ATM, drawing sync, etc.) that haven't been audited for null-safety,
+  // so that deeper change was deliberately not attempted here. The visible
+  // behavior a first-time client sees is what changes: search box first.
+  const hadNoSavedSymbol = !urlSymbol && loadPref(pfx + "symbol", null) === null;
   const [symbol, setSymbol] = useState(() => urlSymbol || loadPref(pfx + "symbol", "NSE:NIFTY50-INDEX"));
   const [resolution, setResolution] = useState(() => urlResolution || loadPref(pfx + "resolution", 3));
   const [todayMode, setTodayMode] = useState(() => {
@@ -425,7 +437,9 @@ const ChartPanel = memo(function ChartPanel({
   }, [isActivePanel, getAtmBaseSymbol, panelActionsRef]);
 
   // ── Symbol search modal ────────────────────────────────────────────────────
-  const [searchOpen, setSearchOpen] = useState(false);
+  // Starts open for a genuinely first-time client (see hadNoSavedSymbol
+  // above) — item 10, 2026-08-07.
+  const [searchOpen, setSearchOpen] = useState(() => hadNoSavedSymbol);
   const [initialSearchQuery, setInitialSearchQuery] = useState("");
   // Mirror of searchOpen in a ref — used by openSearchWithQuery to safely
   // append characters that arrive before the input gains focus (~60ms delay).

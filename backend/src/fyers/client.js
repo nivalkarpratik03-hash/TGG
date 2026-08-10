@@ -17,6 +17,28 @@ function rejectAfter(ms, label) {
   );
 }
 
+// ─── Boot-time symbol exclusion (project-plan Section 8, item 9) ────────────
+// Populated once by core/symbolCheck.js near the very start of boot, before
+// Staleness/GapFill/Validator or any other task that could spend a real
+// Fyers API call on a symbol Fyers doesn't actually recognize (spot or
+// futures — options are never checked/excluded here, see symbolCheck.js).
+// Kept as a plain module-local Set (not read from state.js) specifically to
+// avoid a circular require: state.js already requires this file (for
+// validateToken), so this file requiring state.js back would create exactly
+// the kind of circular CJS require this project's own working rules (see
+// TGG-project-plan.md Section 4k) flag as a real bug risk.
+const _excludedSymbols = new Set();
+
+/** Called once by symbolCheck.js after boot-time validation completes. */
+function setExcludedSymbols(symbols) {
+  for (const s of symbols) _excludedSymbols.add(s);
+}
+
+/** True if `symbol` failed boot-time validation and must not be fetched. */
+function isExcludedSymbol(symbol) {
+  return _excludedSymbols.has(symbol);
+}
+
 /**
  * P3 #15 — dedup-by-time + sort-ascending used to be copy-pasted identically
  * in both fetchDailyCandles() and fetchCandles()'s intraday chunk merge.
@@ -257,6 +279,9 @@ function aggregateDailyToWeekly(dailyCandles) {
 
 // ── Fetch historical candles ──────────────────────────────────────────────────
 async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverride = null) {
+  if (_excludedSymbols.has(symbol)) {
+    throw new Error(`[Fyers] ${symbol} excluded (failed boot-time symbol validation) — skipping fetch, not calling Fyers`);
+  }
   const fyers = getFyersClient();
   const now = Math.floor(Date.now() / 1000);
   const isWeekly = resolution === 10080 || String(resolution).toUpperCase() === "W";
@@ -392,6 +417,10 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
  */
 async function fetchOptionChain(underlyingSymbol, opts = {}) {
   const { strikeCount = 20, timestamp = "" } = opts;
+  if (_excludedSymbols.has(underlyingSymbol)) {
+    console.warn(`[Fyers] fetchOptionChain skipped for ${underlyingSymbol} — underlying excluded (failed boot-time symbol validation)`);
+    return { expiries: [], strikes: [] };
+  }
   try {
     const fyers = getFyersClient();
     const res = await Promise.race([
@@ -436,4 +465,64 @@ async function fetchOptionChain(underlyingSymbol, opts = {}) {
   }
 }
 
-module.exports = { loadToken, saveToken, getAuthURL, generateToken, validateToken, fetchCandles, fetchOptionChain };
+/**
+ * validateSymbols — boot-time SPOT/FUTURES validation only (see
+ * symbolCheck.js). Batches through Fyers' Quotes API, max 50 symbols per
+ * call (Fyers' own documented/enforced limit — a >50 call returns error
+ * code -351 "You have provided symbols greater than 50").
+ *
+ * A symbol is treated as failed if either:
+ *  - the whole batch call itself fails (network/timeout/auth) — every
+ *    symbol in that batch is marked failed with the batch-level error, or
+ *  - the batch call succeeds overall but that symbol's own entry in the
+ *    response comes back with a non-"ok" status (Fyers' documented
+ *    per-symbol status field inside a quotes response).
+ *
+ * NOTE: this has not yet been exercised against a real boot with a live
+ * token in this project. The per-symbol response field names below match
+ * Fyers' documented Quotes API shape and this codebase's own existing
+ * `res.s === "ok"` convention (see fetchOptionChain above), but per this
+ * project's own working rules, the real confirmation is a live run —
+ * check the first real boot log against this function's behavior.
+ *
+ * @param {string[]} symbols
+ * @returns {Promise<{passed: string[], failed: Array<{symbol: string, reason: string}>}>}
+ */
+async function validateSymbols(symbols) {
+  const passed = [];
+  const failed = [];
+  if (!symbols || symbols.length === 0) return { passed, failed };
+
+  const fyers = getFyersClient();
+  const BATCH_SIZE = 50;
+  for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+    const batch = symbols.slice(i, i + BATCH_SIZE);
+    try {
+      const res = await Promise.race([
+        fyers.getQuotes(batch),
+        rejectAfter(15_000, "validateSymbols"),
+      ]);
+      if (!res || res.s !== "ok" || !Array.isArray(res.d)) {
+        const reason = `batch call failed: s=${res?.s} msg="${res?.message || res?.errmsg || "?"}"`;
+        for (const s of batch) failed.push({ symbol: s, reason });
+        continue;
+      }
+      // Map response entries back to symbols. Fyers echoes the requested
+      // symbol in each entry's `n` field per this response shape.
+      const byName = new Map(res.d.map((entry) => [entry.n, entry]));
+      for (const s of batch) {
+        const entry = byName.get(s);
+        if (entry && entry.s === "ok") passed.push(s);
+        else failed.push({ symbol: s, reason: entry ? `s=${entry.s}` : "missing from response" });
+      }
+    } catch (err) {
+      for (const s of batch) failed.push({ symbol: s, reason: err.message });
+    }
+  }
+  return { passed, failed };
+}
+
+module.exports = {
+  loadToken, saveToken, getAuthURL, generateToken, validateToken, fetchCandles, fetchOptionChain,
+  validateSymbols, setExcludedSymbols, isExcludedSymbol,
+};

@@ -235,11 +235,18 @@ export default function ReportsPage() {
     catch { return 15; }
   });
 
+  // hadNoSavedSymbol: true only if nothing was yet cached for this page —
+  // used below to force the search modal open on first render instead of
+  // silently loading the NIFTY50 fallback underneath. Item 10, 2026-08-07.
+  // See ChartsPage.js's matching comment for why `symbol` itself still
+  // keeps the NIFTY50 fallback rather than being nulled outright.
+  const hadNoSavedSymbol = localStorage.getItem("tgg_symbol") === null;
   const [symbol, setSymbol] = useState(() => {
     try { const v = localStorage.getItem("tgg_symbol"); return v ? JSON.parse(v) : "NSE:NIFTY50-INDEX"; }
     catch { return "NSE:NIFTY50-INDEX"; }
   });
-  const [searchOpen, setSearchOpen] = useState(false);
+  // Starts open for a genuinely first-time client — item 10, 2026-08-07.
+  const [searchOpen, setSearchOpen] = useState(() => hadNoSavedSymbol);
   const [initialSearchQuery, setInitialSearchQuery] = useState("");
   // Mirror of searchOpen in a ref — same reasoning as ChartsPage.js's
   // openSearchWithQuery: lets fast typing append correctly even in the

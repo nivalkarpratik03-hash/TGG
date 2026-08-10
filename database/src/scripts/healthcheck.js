@@ -5,8 +5,8 @@
  *   node database/src/healthcheck.js
  */
 
-require("dotenv").config({ path: require("path").resolve(__dirname, "../../backend/.env") });
-const { pool, healthCheck } = require("./pool");
+require("dotenv").config({ path: require("path").resolve(__dirname, "../../../backend/.env") });
+const { pool, healthCheck } = require("../pool");
 
 (async () => {
   const ok = await healthCheck();

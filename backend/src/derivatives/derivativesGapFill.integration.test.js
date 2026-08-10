@@ -16,7 +16,7 @@
 
 const assert = require("assert");
 const { query } = require("../../../database/src/pool");
-const derivativesStore = require("../../../database/src/derivativesStore");
+const derivativesStore = require("../../../database/src/store/derivativesStore");
 const {
   runGapFillCheckpoint,
   discoverStrikes,

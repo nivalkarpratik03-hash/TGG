@@ -31,7 +31,7 @@ let dbEnabled = false;
 let recoveryEngine = null;
 try {
   db = require("../../../database/src/index");
-  recoveryEngine = require("../../../database/src/recoveryEngine");
+  recoveryEngine = require("../../../database/src/integrity/recoveryEngine");
   dbEnabled = true;
   console.log("[DB] Database module loaded — PostgreSQL integration active");
 } catch (err) {

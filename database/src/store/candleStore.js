@@ -24,7 +24,7 @@
  *  • WebSocket never writes here.
  */
 
-const { query, transaction } = require("./pool");
+const { query, transaction } = require("../pool");
 const { isValidCandle } = require("./candleValidation");
 
 // ─── Write ─────────────────────────────────────────────────────────────────

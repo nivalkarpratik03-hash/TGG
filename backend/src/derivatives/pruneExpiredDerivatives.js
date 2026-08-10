@@ -36,7 +36,7 @@
  */
 
 const expiryLifecycle = require("../../../database/src/expiryLifecycle");
-const derivativesStore = require("../../../database/src/derivativesStore");
+const derivativesStore = require("../../../database/src/store/derivativesStore");
 const { exportContractGroupToParquet } = require("../archive/parquetExport");
 
 function groupKey(c) {

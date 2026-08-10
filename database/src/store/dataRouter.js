@@ -47,7 +47,7 @@
 
 const candleStore = require("./candleStore");
 const derivativesStore = require("./derivativesStore");
-const { parseDerivativeSymbol } = require("./symbolParser");
+const { parseDerivativeSymbol } = require("../parsing/symbolParser");
 
 /**
  * Upsert a batch of finalized 1m candles for `symbol`. Same signature as

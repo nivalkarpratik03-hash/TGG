@@ -34,8 +34,8 @@ require("dotenv").config({ path: require("path").resolve(__dirname, "../../backe
 
 const assert = require("assert");
 const { pool, query } = require("./pool");
-const router = require("./dataRouter");
-const derivativesStore = require("./derivativesStore");
+const router = require("./store/dataRouter");
+const derivativesStore = require("./store/derivativesStore");
 
 let passed = 0, failed = 0;
 const failures = [];

@@ -39,9 +39,9 @@
 // (symbol, resolution), not one of the 6 derivatives candle tables, so
 // there is no per-symbol-type table to route between; any symbol string
 // works identically there already.
-const { upsertValidationState, listSpotSymbols } = require("./candleStore");
-const { getLatestCandle, loadCandles } = require("./dataRouter");
-const { listDerivativeSymbols } = require("./derivativesStore");
+const { upsertValidationState, listSpotSymbols } = require("../store/candleStore");
+const { getLatestCandle, loadCandles } = require("../store/dataRouter");
+const { listDerivativeSymbols } = require("../store/derivativesStore");
 
 /**
  * Every symbol currently tracked anywhere in the DB — spot (plain `candles`

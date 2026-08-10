@@ -27,6 +27,7 @@ const createDataFetch = require("./core/dataFetch");
 const createCatchUp = require("./core/catchUp");
 const createWebSocket = require("./core/websocket");
 const { wireDbJobs, wireScannerAndBacktest } = require("./core/scheduler");
+const symbolCheck = require("./core/symbolCheck");
 
 const app = express();
 const server = http.createServer(app);
@@ -105,7 +106,21 @@ app.get("*", (req, res, next) => {
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || "5280");
+// ─── Boot sequence — LOCKED order, 2026-08-07 (see TGG-project-plan.md) ────
+// 1. Boot banner + URLs
+// 2. Symbol-check (spot+futures validated against Fyers, failures excluded
+//    from every future fetch)
+// 3. startAutoRefresh() — arms fallback timer
+// 4. startTickWatchdog() — arms watchdog
+// 5. initialRestFetch() — pre-warms backend default (NIFTY50) candles
+// 6. Tick stream start (if market live)
+// 7. wireScannerAndBacktest()
+// 8. wireDbJobs() — DB health check → Staleness → GapFill → Validator/Recovery
+//    (last, deliberately — it's the slowest stage)
+// No fixed delay between stages — each `await` simply waits for the
+// previous stage's real work to finish before the next one starts.
 server.listen(PORT, async () => {
+  // ── 1. Boot banner ────────────────────────────────────────────────────────
   console.log(`\n✅ TGG Backend running on http://localhost:${PORT}`);
   console.log(`   Health     : http://localhost:${PORT}/health`);
   console.log(`   Chart      : http://localhost:${PORT}/api/chart`);
@@ -113,12 +128,29 @@ server.listen(PORT, async () => {
   console.log(`   Auth       : http://localhost:${PORT}/api/auth/status`);
   console.log(`   Symbols    : http://localhost:${PORT}/api/symbols`);
   console.log(`   Scanner    : http://localhost:${PORT}/api/scanner/signals\n`);
+
+  // ── 2. Symbol-check ────────────────────────────────────────────────────────
+  await symbolCheck.runSymbolCheck();
+
+  // ── 3/4. Arm fallback timer + watchdog (instant, no real waiting) ────────
   dataFetch.startAutoRefresh();
   tickEngine.startTickWatchdog();
 
-  // ── DB: connect, health-check, wire every DB-dependent periodic job ──────
+  // ── 5. Pre-warm backend default symbol ────────────────────────────────────
+  await dataFetch.initialRestFetch();
+
+  // ── 6. Tick stream (if market live) ───────────────────────────────────────
+  if (isAnyMarketLive(tickEngine.getActiveTickSymbols())) { console.log("[INIT] Market is live — starting tick stream for real-time candles."); await tickEngine.maybeStartTickStream(); }
+  else if (isTradingDay()) { console.log("[INIT] Weekday outside market hours — REST data ready. Tick stream inactive."); }
+  else { console.log("[INIT] Weekend/holiday — REST data loaded from last session. No tick stream."); }
+
+  // ── 7. Scanner + Backtest ─────────────────────────────────────────────────
+  wireScannerAndBacktest({ io });
+
+  // ── 8. DB: connect, health-check, wire every DB-dependent periodic job ────
   // (prune sweep, recoveryEngine emitter, periodicSync, GapFill scheduler,
-  // Staleness→GapFill→Validator/Recovery boot chain — see scheduler.js)
+  // Staleness→GapFill→Validator/Recovery boot chain — see scheduler.js).
+  // Deliberately last — the slowest stage, per user's explicit call.
   const dbJobs = await wireDbJobs({
     io,
     sweepCuratedStaleness: catchUp.sweepCuratedStaleness,
@@ -127,14 +159,6 @@ server.listen(PORT, async () => {
   if (dbJobs && dbJobs.gapFillScheduler) {
     _fireReauthCheckpoint = dbJobs.gapFillScheduler.fireReauthCheckpoint;
   }
-
-  await dataFetch.initialRestFetch();
-
-  wireScannerAndBacktest({ io });
-
-  if (isAnyMarketLive(tickEngine.getActiveTickSymbols())) { console.log("[INIT] Market is live — starting tick stream for real-time candles."); await tickEngine.maybeStartTickStream(); }
-  else if (isTradingDay()) { console.log("[INIT] Weekday outside market hours — REST data ready. Tick stream inactive."); }
-  else { console.log("[INIT] Weekend/holiday — REST data loaded from last session. No tick stream."); }
 });
 
 module.exports = { app, server };

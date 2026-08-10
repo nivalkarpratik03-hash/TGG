@@ -39,8 +39,8 @@
 const fs = require("fs");
 const path = require("path");
 const parquet = require("parquetjs-lite");
-const derivativesStore = require("../../../database/src/derivativesStore");
-const { parseDerivativeSymbol } = require("../../../database/src/symbolParser");
+const derivativesStore = require("../../../database/src/store/derivativesStore");
+const { parseDerivativeSymbol } = require("../../../database/src/parsing/symbolParser");
 const { loadIndexSpotSymbols } = require("../derivatives/curatedUnderlyingsLoader");
 
 // Read live from symbols/index.json (the same root master every other

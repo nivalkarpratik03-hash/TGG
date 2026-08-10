@@ -14,7 +14,7 @@
  * that don't pass it keep working exactly as before (column stores NULL).
  */
 
-const { query } = require("./pool");
+const { query } = require("../pool");
 
 /**
  * Insert a new repair_log entry and return its id.

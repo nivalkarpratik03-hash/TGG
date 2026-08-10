@@ -183,7 +183,7 @@ function createTickEngine({ io }) {
   );
   let parseDerivativeSymbol = null;
   try {
-    ({ parseDerivativeSymbol } = require("../../../database/src/symbolParser"));
+    ({ parseDerivativeSymbol } = require("../../../database/src/parsing/symbolParser"));
   } catch (err) {
     console.warn("[SymbolParser] Module not found — deriveUnderlyingSymbol falls back to inline regex:", err.message);
   }

@@ -4,10 +4,10 @@
   "description": "TGG Centralized Candle Database — PostgreSQL + TimescaleDB",
   "main": "src/index.js",
   "scripts": {
-    "migrate": "node src/migrate.js",
-    "test": "node src/healthcheck.js",
-    "backfill:derivatives": "node src/backfillDerivatives.js",
-    "test:symbolParser": "node src/symbolParser.test.js",
+    "migrate": "node src/scripts/migrate.js",
+    "test": "node src/scripts/healthcheck.js",
+    "backfill:derivatives": "node src/scripts/backfillDerivatives.js",
+    "test:symbolParser": "node src/parsing/symbolParser.test.js",
     "test:integration": "node src/integration.test.js"
   },
   "dependencies": {

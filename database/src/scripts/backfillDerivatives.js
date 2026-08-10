@@ -28,11 +28,11 @@
  * separate, deliberate step, not part of this script.
  */
 
-require("dotenv").config({ path: require("path").resolve(__dirname, "../../backend/.env") });
+require("dotenv").config({ path: require("path").resolve(__dirname, "../../../backend/.env") });
 
-const { pool, query } = require("./pool");
-const { parseDerivativeSymbol } = require("./symbolParser");
-const { upsertOptionCandles, upsertFutureCandles } = require("./derivativesStore");
+const { pool, query } = require("../pool");
+const { parseDerivativeSymbol } = require("../parsing/symbolParser");
+const { upsertOptionCandles, upsertFutureCandles } = require("../store/derivativesStore");
 
 const BATCH_SIZE = 2000; // rows read from `candles` per symbol chunk
 

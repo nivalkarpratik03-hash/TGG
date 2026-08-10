@@ -6,13 +6,13 @@
  */
 
 const pool = require("./pool");
-const candleStore = require("./candleStore");
-const validationEngine = require("./validationEngine");
-const recoveryEngine = require("./recoveryEngine");
-const repairLog = require("./repairLog");
-const derivativesStore = require("./derivativesStore");
-const symbolParser = require("./symbolParser");
-const dataRouter = require("./dataRouter");
+const candleStore = require("./store/candleStore");
+const validationEngine = require("./integrity/validationEngine");
+const recoveryEngine = require("./integrity/recoveryEngine");
+const repairLog = require("./integrity/repairLog");
+const derivativesStore = require("./store/derivativesStore");
+const symbolParser = require("./parsing/symbolParser");
+const dataRouter = require("./store/dataRouter");
 
 module.exports = {
   ...pool,

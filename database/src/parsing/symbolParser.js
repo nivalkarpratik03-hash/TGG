@@ -84,8 +84,12 @@
  */
 
 const path = require("path");
+// Cross-package reference into backend/. This file moved from
+// database/src/symbolParser.js to database/src/parsing/symbolParser.js
+// (2026-08-09 folder split) — one extra "../" added here to compensate for
+// the added depth; verified via a real require() load test, not assumed.
 const { previousTradingDay } = require(
-  path.resolve(__dirname, "../../backend/src/data/holidays.js")
+  path.resolve(__dirname, "../../../backend/src/data/holidays.js")
 );
 
 const MONTH_CODES = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];

@@ -68,8 +68,8 @@
  */
 
 const { fetchOptionChain, fetchCandles } = require("../fyers/client");
-const derivativesStore = require("../../../database/src/derivativesStore");
-const { lastTuesdayOfMonth, lastThursdayOfMonth, parseDerivativeSymbol } = require("../../../database/src/symbolParser");
+const derivativesStore = require("../../../database/src/store/derivativesStore");
+const { lastTuesdayOfMonth, lastThursdayOfMonth, parseDerivativeSymbol } = require("../../../database/src/parsing/symbolParser");
 const symbolsRouter = require("../routes/symbolsRouter");
 const { loadCuratedUnderlyings } = require("./curatedUnderlyingsLoader");
 

@@ -376,25 +376,24 @@ export function buildStrikeLadder(spot, indexRoot, stepsEachSide = 14, overrideS
   return { strikes, atm };
 }
 
-// One entry per curated index (5 of the 6 — BANKEX is still missing on
-// purpose, see below). NIFTYIT's old entry was dropped: it's not one of the
-// 6 curated indices, and with the CNXIT-INDEX orphan removed from
-// NSE_INDEX_ROOTS above, no code path can ever produce root:"NIFTYIT" here
-// any more anyway — it was already dead.
+// One entry per curated index (all 6). NIFTYIT's old entry was dropped:
+// it's not one of the 6 curated indices, and with the CNXIT-INDEX orphan
+// removed from NSE_INDEX_ROOTS above, no code path can ever produce
+// root:"NIFTYIT" here any more anyway — it was already dead.
 //
-// BANKEX: still genuinely missing, not an oversight. Without a real
-// entry, getStrikeStep()/buildStrikeLadder() fall through to the generic
-// guessStep(spot) price-bucket heuristic below, which currently outputs
-// 500 for BANKEX's ~64,000–65,000 range — that is NOT a confirmed real
-// strike gap, just what the fallback happens to produce. Needs a live
-// option-chain screenshot showing two adjacent real BANKEX strikes before
-// this can be set correctly.
+// BANKEX: live-confirmed 100, via a real BSE Option Chain screenshot
+// (27 Aug 26 expiry) showing 12 consecutive sorted strikes from 64,900
+// to 66,000, every adjacent pair exactly 100 apart. This replaces the
+// earlier guessStep(spot) fallback, which had been outputting 500 for
+// BANKEX's ~64,000–65,000 range — that was never a confirmed real strike
+// gap, just what the generic price-bucket heuristic happened to produce.
 const INDEX_STRIKE_STEPS = {
   NIFTY: 50,
   BANKNIFTY: 100,
   FINNIFTY: 50,
   MIDCPNIFTY: 25,
   SENSEX: 100,
+  BANKEX: 100,
 };
 
 function guessStep(price) {

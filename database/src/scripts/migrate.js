@@ -14,14 +14,14 @@
  * them in sequence.
  */
 
-require("dotenv").config({ path: require("path").resolve(__dirname, "../../backend/.env") });
+require("dotenv").config({ path: require("path").resolve(__dirname, "../../../backend/.env") });
 
 const fs = require("fs");
 const path = require("path");
-const { pool } = require("./pool");
+const { pool } = require("../pool");
 
 async function migrate() {
-  const migrationsDir = path.resolve(__dirname, "../migrations");
+  const migrationsDir = path.resolve(__dirname, "../../migrations");
   if (!fs.existsSync(migrationsDir)) {
     console.error("Migrations folder not found:", migrationsDir);
     process.exit(1);

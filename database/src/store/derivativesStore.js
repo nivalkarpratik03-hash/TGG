@@ -27,7 +27,7 @@
  * "NSE specifically", for exactly this reason.
  */
 
-const { query, transaction } = require("./pool");
+const { query, transaction } = require("../pool");
 const { isValidCandle } = require("./candleValidation");
 
 const TABLES = {

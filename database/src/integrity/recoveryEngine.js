@@ -40,7 +40,7 @@
 // repair can run against whatever symbol a client currently has open in a
 // chart — including option/future contracts — so it needs dataRouter.js's
 // symbol-aware routing to land in nse_options_candles/etc. instead.
-const { upsertCandles, replaceDayCandles } = require("./dataRouter");
+const { upsertCandles, replaceDayCandles } = require("../store/dataRouter");
 const { validateCandleArray, checkPeriodicSync } = require("./validationEngine");
 const { logRepairStart, logRepairFinish } = require("./repairLog");
 

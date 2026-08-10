@@ -186,6 +186,15 @@ function createDataFetch({ io, tickEngine }) {
   // and initialRestFetch() — goes through this one function. No DB code lives
   // anywhere else in the codebase.
   //
+  // `symbol` has no default value — checked every real call site (2026-08-07,
+  // dataFetch.js's own 2 internal calls, websocket.js's 1, chartRouter.js's
+  // 3): every one always passes either a real symbol string or an explicit
+  // `null` (e.g. `state.SYMBOL` is `null`, not `undefined`, when the env var
+  // is unset). JS default params only fire on `undefined`, so the old
+  // `symbol = SYMBOL || "NSE:NIFTY50-INDEX"` default could never actually
+  // execute — confirmed dead, not assumed, removed as part of the project
+  // cleanup pass.
+  //
   // Order of operations:
   //   1. DB-first  — if DB is enabled and has 1m rows for `symbol`, derive the
   //      requested resolution from Postgres. No Fyers call needed. This is the
@@ -229,7 +238,7 @@ function createDataFetch({ io, tickEngine }) {
     }
   }
 
-  async function fetchAndProcess(symbol = SYMBOL || "NSE:NIFTY50-INDEX", resolution = RESOLUTION) {
+  async function fetchAndProcess(symbol, resolution = RESOLUTION) {
     // ── 1. DB-first ──────────────────────────────────────────────────────────
     // CHANGED: previously this skipped the DB entirely for option contracts
     // (CE/PE) because "the DB will always be empty for them" — true when this
