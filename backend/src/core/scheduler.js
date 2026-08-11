@@ -98,7 +98,7 @@ async function wireDbJobs({ io, sweepCuratedStaleness, runValidatorRecovery }) {
           try {
             const r = await runPruneSweep();
             if (r.scanned > 0 || r.archived > 0) {
-              console.log(`[Prune] ${label}: scanned ${r.scanned} expired contract(s) — archived ${r.archived}, pruned ${r.pruned}, already-empty ${r.alreadyEmpty}${r.failed.length ? `, FAILED ${r.failed.length} (left in DB, retried next sweep: ${r.failed.map(f => f.symbol).join(", ")})` : ""}`);
+              console.log(`[Prune] ${label}: scanned ${r.scanned} expired contract(s) — archived ${r.archived}, pruned ${r.pruned}, already-empty ${r.alreadyEmpty}${r.failed.length ? `, FAILED ${r.failed.length} (left in DB, retried next sweep: ${r.failed.map(f => `${f.group} [${f.error}]`).join("; ")})` : ""}`);
             }
           } catch (e) {
             console.warn(`[Prune] ${label} sweep error:`, e.message);

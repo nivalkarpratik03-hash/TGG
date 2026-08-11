@@ -38,6 +38,26 @@ const { fetchCandles } = require("../fyers/client");
 const { loadIndexSpotSymbols, loadStockSpotSymbols } = require("../derivatives/curatedUnderlyingsLoader");
 const state = require("./state");
 
+// Same IST-offset arithmetic already used in fyers/tickStream.js's nowIST()
+// and derivatives/gapFillScheduler.js's istDateString() — reused here, not
+// reinvented, just extended to a full readable timestamp instead of only
+// hours/minutes or only a date. Explicit "+05:30" suffix (not "Z") so this
+// never gets misread as UTC — this project runs for an IST-only market, so
+// every completion log should read in IST, not the server's local/UTC time.
+function nowISTTimestamp() {
+  const d = new Date();
+  const ist = new Date(d.getTime() + 5.5 * 3600 * 1000);
+  const pad = (n, len = 2) => String(n).padStart(len, "0");
+  const y = ist.getUTCFullYear();
+  const mo = pad(ist.getUTCMonth() + 1);
+  const day = pad(ist.getUTCDate());
+  const h = pad(ist.getUTCHours());
+  const mi = pad(ist.getUTCMinutes());
+  const s = pad(ist.getUTCSeconds());
+  const ms = pad(ist.getUTCMilliseconds(), 3);
+  return `${y}-${mo}-${day}T${h}:${mi}:${s}.${ms}+05:30`;
+}
+
 function createCatchUp({ dataFetch }) {
   // Two independent in-flight guards — sweepCuratedStaleness and
   // runValidatorRecovery can now be called separately (by
@@ -140,8 +160,7 @@ function createCatchUp({ dataFetch }) {
                   return;
                 }
 
-                console.log(`[Recovery] ${symbol}: ${issues.length} issue(s) — repairing gap at ${tradingDay.toISOString().slice(0, 10)}`);
-                await state.recoveryEngine.repairDay({
+                console.log(`[Recovery] ${symbol}: ${issues.length} issue(s) — repairing gap at ${tradingDay.toISOString().slice(0, 10)}`); await state.recoveryEngine.repairDay({
                   symbol,
                   tradingDay,
                   fetchCandles: (sym, res) => fetchCandles(sym, res),
@@ -160,7 +179,7 @@ function createCatchUp({ dataFetch }) {
           await new Promise((r) => setTimeout(r, BATCH_DELAY_MS));
         }
       }
-      console.log(`[Recovery] Validator/Recovery (${trigger}) complete — ${clean} clean, ${repaired} repaired, ${skippedKnown} skipped (known short day) out of ${trackedSymbols.length} tracked symbols — at ${new Date().toISOString()}`);
+      console.log(`[Recovery] Validator/Recovery (${trigger}) complete — ${clean} clean, ${repaired} repaired, ${skippedKnown} skipped (known short day) out of ${trackedSymbols.length} tracked symbols — at ${nowISTTimestamp()}`);
     } finally {
       _validatorInFlight = false;
     }
