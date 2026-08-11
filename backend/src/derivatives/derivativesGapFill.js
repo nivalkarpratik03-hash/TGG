@@ -38,22 +38,35 @@
  * live sweep ever comes back empty/wrong for a commodity, re-check this
  * assumption before anything else.
  *
- * EQUITIES EXCLUDED — CONFIRMED 2026-07-30, NOT A GUESS: this app tracks
- * stock SPOT prices only. No stock futures, no stock options, ever. This
- * checkpoint only ever covers index F&O (NIFTY/BANKNIFTY/FINNIFTY/
- * MIDCPNIFTY/SENSEX) and MCX commodity F&O. The scoped filter below
- * excludes assetClass==="EQUITY" outright, not via the hasOptions/
- * hasFutures flags alone (those are also explicitly false on every equity
- * in curatedUnderlyingsLoader.js, belt-and-suspenders, but the outright
- * exclusion is the real guarantee).
+ * EQUITIES — REVERSED 2026-08-11, EXPLICIT USER GO-AHEAD, NOT A SILENT
+ * FLIP: this checkpoint now also covers all ~202 equities' stock F&O, in
+ * addition to index F&O (NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY/SENSEX/
+ * BANKEX) and MCX commodity F&O. Previously excluded outright (spot-only,
+ * confirmed 2026-07-30) — that decision is superseded here, not deleted;
+ * see symbols/derivatives-config.json's equities block for the full
+ * history. Equities are now included purely via the same hasOptions/
+ * hasFutures flag check every other asset class already goes through
+ * below — no separate equity-specific branch, same code path as indices
+ * and commodities.
+ *
+ * SCALE WARNING (not yet benchmarked): adding ~202 underlyings on top of
+ * the previous 11 (5 indices + 6 commodities) materially increases both
+ * checkpoint runtime (INTER_UNDERLYING_DELAY_MS x ~200 more underlyings,
+ * plus INTER_STRIKE_DELAY_MS x however many strikes each one discovers)
+ * and live Fyers call volume per checkpoint. Worth watching the first few
+ * real checkpoint logs closely — if this turns out too slow or too heavy
+ * on the broker, consider scoping to a curated liquid-equity subset rather
+ * than all 202 at once, rather than reverting the whole feature.
  *
  * TWO ROOT CAUSES FIXED HERE (2026-07-30) — both required to actually
  * stop the "freeze after NIFTY" symptom, not just one:
  *
  *   #1 — INTER-UNDERLYING throttling. The old loop ran straight through
- *   every underlying with zero delay between them. Now scoped to just
- *   indices (5) + commodities (6) = 11 underlyings (equities excluded, see
- *   above), each fully logged, with INTER_UNDERLYING_DELAY_MS between them.
+ *   every underlying with zero delay between them. At the time of this fix
+ *   (2026-07-30) that meant indices (5) + commodities (6) = 11 underlyings;
+ *   equities were added later (2026-08-11, see above) and go through this
+ *   same throttling unmodified — each underlying fully logged, with
+ *   INTER_UNDERLYING_DELAY_MS between them.
  *
  *   #2 — INTER-STRIKE throttling, the deeper cause that #1 alone does NOT
  *   fix. NIFTY is dual-cycle (weekly+monthly), so discoverStrikes() can
@@ -78,11 +91,14 @@ const OPTION_LOOKBACK_DAYS_DEFAULT = 5; // for an already-tracked symbol, just c
 const RETROACTIVE_BACKFILL_LOOKBACK_DAYS = 90; // for a BRAND NEW symbol, pull as much real history as the broker will give (contract is still live — confirmed elsewhere this only works pre-expiry)
 
 // INTER-UNDERLYING DELAY — same conservative spirit as server.js's
-// curatedSymbolCatchUp (3-concurrent / 1000ms batches). This checkpoint
-// only ever covers indices (5) + MCX commodities (6) — equities are
-// excluded (see file header) — so it doesn't need batching, just a small
-// stagger between underlyings so one underlying's burst of futures+options
-// calls doesn't land on the broker in the same instant as the next one's.
+// curatedSymbolCatchUp (3-concurrent / 1000ms batches). Originally sized for
+// indices (5) + MCX commodities (6) = 11 underlyings; equities were added
+// 2026-08-11 (see file header) bringing startup/nse_bse_close up to ~208-214
+// — this delay applies per-underlying regardless of asset class, so it
+// doesn't need batching, just a small stagger so one underlying's burst of
+// futures+options calls doesn't land on the broker in the same instant as
+// the next one's. SCALE WARNING (file header): not yet benchmarked at the
+// new ~200-underlying count.
 const INTER_UNDERLYING_DELAY_MS = 400;
 
 // INTER-STRIKE DELAY — root cause #2 (see file header). A single
@@ -245,6 +261,13 @@ async function discoverStrikesSinceCheckpoint(entry, atmBandWidth, label, deps =
   const chainFn = deps.fetchOptionChain || fetchOptionChain;
   const fetchFn = deps.fetchCandles || fetchCandles;
   const log = deps.log || ((msg) => console.log(msg));
+  // Same delayFn construction as runGapFillCheckpoint (deps.sleep || sleep)
+  // — reused here, not reimplemented, to pace this function's own up-to-4
+  // back-to-back broker calls per underlying (probe chain, price history,
+  // wide chain, optional monthly chain). Uses the existing INTER_STRIKE_DELAY_MS
+  // constant (same one backfillStrikesForEntry already uses for same-underlying
+  // pacing) rather than a new number.
+  const delayFn = deps.sleep || sleep;
   const lookupSymbol = resolveChainLookupSymbol(entry);
 
   // Step A — one narrow live call, purely to derive today's real strike
@@ -268,6 +291,8 @@ async function discoverStrikesSinceCheckpoint(entry, atmBandWidth, label, deps =
   const priceSymbol = entry.assetClass === "COMMODITY" ? lookupSymbol : entry.spotSymbol;
   const lookbackDays = STRIKE_WINDOW_LOOKBACK_DAYS[label] ?? STRIKE_WINDOW_LOOKBACK_DAYS.startup;
   const sinceMs = Date.now() - lookbackDays * 86400000;
+
+  await delayFn(INTER_STRIKE_DELAY_MS);
 
   let priceCandles;
   try {
@@ -307,6 +332,7 @@ async function discoverStrikesSinceCheckpoint(entry, atmBandWidth, label, deps =
   // Step D — one wide-enough chain call, filtered down to only the strikes
   // actually in `wanted`. Reuses the exact same dual-cycle (weekly+monthly)
   // classification discoverStrikes() already does — not reimplemented.
+  await delayFn(INTER_STRIKE_DELAY_MS);
   const wide = await chainFn(lookupSymbol, { strikeCount: strikesEachSide });
   if (!wide.strikes.length && !wide.expiries.length) {
     return [];
@@ -333,6 +359,7 @@ async function discoverStrikesSinceCheckpoint(entry, atmBandWidth, label, deps =
   if (monthlyDate && !nearestIsMonthly) {
     const monthlyEntry = wide.expiries.find((e) => e.date === monthlyDate);
     log(`[GapFill] ${entry.underlying} — nearest expiry wasn't monthly, fetching monthly chain separately (expiry=${monthlyDate})`);
+    await delayFn(INTER_STRIKE_DELAY_MS);
     const monthlyChain = await chainFn(lookupSymbol, { strikeCount: strikesEachSide, timestamp: monthlyEntry.expiry });
     results.push(...filterAndTag(monthlyChain, "monthly"));
   }
@@ -549,16 +576,18 @@ async function runGapFillCheckpoint(label, deps = {}) {
   const log = deps.log || ((msg) => console.log(msg));
   const delayFn = deps.sleep || sleep;
 
-  // NSE/BSE close only covers indices; MCX close only covers commodities;
-  // startup covers both, indices fully before commodities (curated JSON
-  // order is already indices-then-commodities, and `all` preserves it).
-  // EQUITIES EXCLUDED OUTRIGHT — confirmed 2026-07-30, spot-only, see file
-  // header — not left to the hasOptions/hasFutures checks below alone.
+  // NSE/BSE close covers indices AND equities (both NSE-listed, same real
+  // close ~15:30); MCX close only covers commodities; startup covers all
+  // three (curated JSON order is indices-then-commodities, equities appended
+  // separately below — see loadCuratedUnderlyings()).
+  // EQUITIES INCLUDED as of 2026-08-11 (see file header) — scoped purely by
+  // asset class + checkpoint label here; the hasOptions/hasFutures flag
+  // checks further down in this loop still gate whether each entry actually
+  // does anything, same as every index/commodity entry already goes through.
   const scoped = all.filter((entry) => {
-    if (entry.assetClass === "EQUITY") return false;
-    if (label === "nse_bse_close") return entry.assetClass === "INDEX";
+    if (label === "nse_bse_close") return entry.assetClass === "INDEX" || entry.assetClass === "EQUITY";
     if (label === "mcx_close") return entry.assetClass === "COMMODITY";
-    return true; // startup — indices, then commodities
+    return true; // startup — indices, equities, then commodities
   });
 
   let optionsDiscovered = 0, optionsBackfilled = 0, futuresBackfilled = 0;
@@ -574,7 +603,7 @@ async function runGapFillCheckpoint(label, deps = {}) {
   const discoveredFuturesSymbols = [];
   const discoveredOptionsSymbols = [];
 
-  log(`[GapFill] ${label}: starting checkpoint — ${scoped.length} underlying(s) (${scoped.filter((e) => e.assetClass === "INDEX").length} index, ${scoped.filter((e) => e.assetClass === "COMMODITY").length} commodity; equities excluded — spot-only)`);
+  log(`[GapFill] ${label}: starting checkpoint — ${scoped.length} underlying(s) (${scoped.filter((e) => e.assetClass === "INDEX").length} index, ${scoped.filter((e) => e.assetClass === "EQUITY").length} equity, ${scoped.filter((e) => e.assetClass === "COMMODITY").length} commodity)`);
 
   for (let idx = 0; idx < scoped.length; idx++) {
     const entry = scoped[idx];

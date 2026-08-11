@@ -33,14 +33,16 @@
  * derivatives-config.json overlay by `name` to reconstruct the same
  * F&O-shaped entry the rest of the derivatives pipeline already expects.
  *
- * EQUITIES ARE SPOT-ONLY (confirmed 2026-07-30, not a guess): no stock
- * futures, no stock options, ever, in the GapFill checkpoint.
- * derivatives-config.json's single `equities` block (not one entry per
- * symbol — the rule is uniform) carries hasOptions:false, hasFutures:false
- * explicitly, so this is a stated decision baked into the data, not an
- * omission every consumer has to re-derive. derivativesGapFill.js's scoped
- * filter also excludes assetClass==="EQUITY" outright rather than relying
- * on these flags alone.
+ * EQUITIES — REVERSED 2026-08-11 (explicit user go-ahead, see
+ * derivatives-config.json's equities block for the full history): equities
+ * are no longer spot-only. The originally spot-only decision (confirmed
+ * 2026-07-30) is superseded, not deleted. derivatives-config.json's single
+ * `equities` block (not one entry per symbol — the rule is uniform) now
+ * carries hasOptions:true, hasFutures:true, so this is a stated decision
+ * baked into the data, not an omission every consumer has to re-derive.
+ * derivativesGapFill.js's scoped filter now includes assetClass==="EQUITY"
+ * under startup/nse_bse_close (excluded only from mcx_close, same as
+ * indices), rather than excluding it outright.
  */
 
 const fs = require("fs");
@@ -90,9 +92,11 @@ function mergeWithConfig(plainEntries, configBlock, assetClass) {
  * Builds the normalized equity entries atmMergeService.js (and
  * derivativesGapFill.js) iterate over, from symbols/equity.json's flat
  * name/symbol pairs plus derivatives-config.json's single uniform equities
- * block (same hasOptions:false/hasFutures:false rule for every one of the
- * ~202 equities — no per-symbol config entries needed since it never
- * varies).
+ * block (same hasOptions/hasFutures rule for every one of the ~202
+ * equities — no per-symbol config entries needed since the flags don't
+ * vary; strikeGap isn't needed here either — discoverStrikesSinceCheckpoint
+ * derives it live from the real chain response per underlying, same as
+ * every index).
  */
 function loadEquityUnderlyings() {
   const { equities } = readJson(EQUITY_PATH);
@@ -108,9 +112,29 @@ function loadEquityUnderlyings() {
       spotSymbol: entry.symbol,
       hasOptions: equityCfg.hasOptions,
       hasFutures: equityCfg.hasFutures,
-      expiryTypes: [],
+      // BUG FIX (2026-08-11): this was hardcoded to [] regardless of
+      // equityCfg.hasOptions — harmless while hasOptions was always false
+      // (nothing downstream ever read it), but would have silently broken
+      // option-chain discovery the moment equities were enabled (dual-cycle
+      // check in discoverStrikes/discoverStrikesSinceCheckpoint reads
+      // expiryTypes.length, and every equity would have failed that check
+      // with an empty array). Individual stocks only ever get monthly
+      // options in India — SEBI's Oct-2024 circular limits weekly expiry
+      // to one benchmark index per exchange (NIFTY on NSE, SENSEX on BSE),
+      // confirmed already in this same config for NIFTY's own entry — so
+      // "monthly" is the correct, not-guessed value here, not a default.
+      expiryTypes: equityCfg.hasOptions ? ["monthly"] : [],
+      // NSE equity derivatives' monthly expiry day: confirmed via live web
+      // search 2026-08-11 (Groww, Dhan, Nubra, ICICIDirect, all citing the
+      // real NSE circular) — the Sept-2025 "last Tuesday" change explicitly
+      // covers BOTH index AND single-stock derivatives, not index-only.
+      // This was already the value here before equities were enabled; now
+      // independently confirmed correct rather than inherited unverified.
       expiryDayRule: { exchange: "NSE", monthly: "last Tuesday" },
       mcxAtmReference: null,
+      // No static strikeGap needed — discoverStrikesSinceCheckpoint derives
+      // the real gap live from each equity's own chain response, same as
+      // every index (all of which also have strikeGap:null in config).
       strikeGap: null,
       notes: `${equityCfg.notes} (source: symbols/equity.json "${entry.name}")`,
     };
@@ -125,10 +149,11 @@ function loadEquityUnderlyings() {
  *   hasOptions:false (SILVERMIC, GOLDPETAL) ARE included in `all` (they
  *   still need futures rolling) but atmMergeService.js's ATM merge-check
  *   specifically must skip them — see hasOptions on each entry.
- *   Equity entries are hasOptions:false AND hasFutures:false (spot-only,
- *   confirmed 2026-07-30) — derivativesGapFill.js's scoped filter excludes
- *   assetClass==="EQUITY" outright rather than relying on these flags
- *   alone.
+ *   Equity entries are hasOptions:true AND hasFutures:true as of 2026-08-11
+ *   (previously spot-only, confirmed 2026-07-30, since superseded — see
+ *   module header above) — derivativesGapFill.js's scoped filter now
+ *   includes assetClass==="EQUITY" under startup/nse_bse_close, excluded
+ *   only from mcx_close, same as indices.
  */
 function loadCuratedUnderlyings() {
   const { indices: indexMaster } = readJson(INDEX_PATH);
