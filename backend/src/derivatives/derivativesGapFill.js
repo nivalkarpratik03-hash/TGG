@@ -192,8 +192,170 @@ function classifyMonthlyExpiry(realExpiryDates, exchange) {
 }
 
 /**
+ * Extracts the real strike gap directly from a live chain response — the
+ * spacing between two adjacent real strikes Fyers just returned. NEVER a
+ * hardcoded/remembered number: derivatives-config.json's strikeGap field is
+ * null for all 6 indices (confirmed 2026-08-11, not guessed) — guessing a
+ * remembered value here (e.g. "NIFTY is 50") would repeat the exact class
+ * of mistake that caused the GOLDM expiry-day bug. This is self-correcting:
+ * if an exchange ever changes its strike interval, the next live call just
+ * derives the new one automatically, no config file to go stale.
+ * @returns {number|null} the gap, or null if fewer than 2 strikes came back
+ */
+function deriveStrikeGap(strikes) {
+  const unique = [...new Set(strikes.map((s) => s.strike_price))].sort((a, b) => a - b);
+  if (unique.length < 2) return null;
+  let minGap = Infinity;
+  for (let i = 1; i < unique.length; i++) {
+    const gap = unique[i] - unique[i - 1];
+    if (gap > 0 && gap < minGap) minGap = gap;
+  }
+  return Number.isFinite(minGap) ? minGap : null;
+}
+
+// How far back each checkpoint label scans the price-reference series for
+// ATM history. Bounded/session-based on purpose — no persistent
+// "last checkpoint ran at X" state needed. "startup" gets a generous 3-day
+// buffer (covers overnight + a full weekend in one number, cheap to ask
+// for since it's just 1-min candles). nse_bse_close/mcx_close only ever
+// need "since this same day's own session open", so 1 day is always enough
+// and keeps the ask small.
+const STRIKE_WINDOW_LOOKBACK_DAYS = { startup: 3, nse_bse_close: 1, mcx_close: 1 };
+
+/**
+ * Discovers every real ATM+-N strike that was EVER within band-width of
+ * ATM at any point since this checkpoint label's own window start — not
+ * just "ATM right now" (see discoverStrikes() above, which this replaces
+ * as the checkpoint loop's discovery call). Fixes the exact gap the user
+ * identified: a strike that briefly entered ATM+-N range between two
+ * checkpoints and reverted before the next one ran was previously never
+ * discovered at all. This reconstructs the whole window's ATM history from
+ * the price-reference symbol's own real 1-min candles (which Fyers always
+ * has complete, regardless of whether THIS server was running) — same
+ * technique already proven in backend/src/scripts/backtestOptionDataFetch.js
+ * for a whole month, just applied per-checkpoint instead.
+ *
+ * Falls back to point-in-time discoverStrikes() if the price-reference
+ * series has no data in this window (e.g. a brand-new underlying with no
+ * prior candles) or if a live strike gap can't be derived this call.
+ *
+ * @returns {Promise<Array<{symbol, strike_price, option_type, expiryType}>>}
+ */
+async function discoverStrikesSinceCheckpoint(entry, atmBandWidth, label, deps = {}) {
+  const chainFn = deps.fetchOptionChain || fetchOptionChain;
+  const fetchFn = deps.fetchCandles || fetchCandles;
+  const log = deps.log || ((msg) => console.log(msg));
+  const lookupSymbol = resolveChainLookupSymbol(entry);
+
+  // Step A — one narrow live call, purely to derive today's real strike
+  // gap (see deriveStrikeGap's own comment for why this is never a config
+  // value). Also doubles as the existing "no data this call" bail-out.
+  const probe = await chainFn(lookupSymbol, { strikeCount: atmBandWidth });
+  if (!probe.strikes.length && !probe.expiries.length) {
+    return [];
+  }
+  const gap = deriveStrikeGap(probe.strikes);
+  if (!gap) {
+    log(`[GapFill] ${entry.underlying} — fewer than 2 strikes in the live chain, can't derive a real strike gap this call — falling back to point-in-time discovery for this checkpoint`);
+    return discoverStrikes(entry, atmBandWidth, deps);
+  }
+
+  // Step B — the price-reference series to scan for ATM history. Indices
+  // use their own spot symbol. Commodities have no separate tradeable spot
+  // quote — derivatives-config.json's mcxAtmReference:"own_futures" says
+  // to use the near-month FUTURES price instead, which is exactly what
+  // resolveChainLookupSymbol(entry) already resolves to for commodities.
+  const priceSymbol = entry.assetClass === "COMMODITY" ? lookupSymbol : entry.spotSymbol;
+  const lookbackDays = STRIKE_WINDOW_LOOKBACK_DAYS[label] ?? STRIKE_WINDOW_LOOKBACK_DAYS.startup;
+  const sinceMs = Date.now() - lookbackDays * 86400000;
+
+  let priceCandles;
+  try {
+    priceCandles = await fetchFn(priceSymbol, 1, 200000, lookbackDays);
+  } catch (err) {
+    log(`[GapFill] ${entry.underlying} — couldn't fetch ${priceSymbol} price history (${err.message}) — falling back to point-in-time discovery for this checkpoint`);
+    return discoverStrikes(entry, atmBandWidth, deps);
+  }
+  const inWindow = (priceCandles || []).filter((c) => c.time >= sinceMs);
+  if (inWindow.length === 0) {
+    log(`[GapFill] ${entry.underlying} — no ${priceSymbol} candles in the last ${lookbackDays}d, nothing to derive strike history from — falling back to point-in-time discovery for this checkpoint`);
+    return discoverStrikes(entry, atmBandWidth, deps);
+  }
+
+  // Step C — union every strike that was ever within atmBandWidth steps of
+  // ATM at ANY minute in the window, not just the most recent one. This is
+  // the actual fix: a strike that was ATM+-4 for 20 minutes mid-session and
+  // reverted before the next checkpoint is now still caught here, because
+  // every minute's own ATM gets its own band added to the set.
+  const wanted = new Set();
+  for (const c of inWindow) {
+    const atm = Math.round(c.close / gap) * gap;
+    for (let i = -atmBandWidth; i <= atmBandWidth; i++) {
+      wanted.add(atm + i * gap);
+    }
+  }
+  const wantedArr = [...wanted];
+  const currentAtm = Math.round(inWindow[inWindow.length - 1].close / gap) * gap;
+  const minW = Math.min(...wantedArr);
+  const maxW = Math.max(...wantedArr);
+  // How many strikes-each-side the follow-up chain call needs to guarantee
+  // covering the full derived range, not just the current atmBandWidth.
+  const strikesEachSide = Math.max(atmBandWidth, Math.ceil(Math.max(currentAtm - minW, maxW - currentAtm) / gap) + 2);
+
+  log(`[GapFill] ${entry.underlying} — ${inWindow.length} price candle(s) since last checkpoint, ATM ranged across ${wantedArr.length} strike(s) (gap=${gap}, strikeCount=${strikesEachSide} for follow-up chain call)`);
+
+  // Step D — one wide-enough chain call, filtered down to only the strikes
+  // actually in `wanted`. Reuses the exact same dual-cycle (weekly+monthly)
+  // classification discoverStrikes() already does — not reimplemented.
+  const wide = await chainFn(lookupSymbol, { strikeCount: strikesEachSide });
+  if (!wide.strikes.length && !wide.expiries.length) {
+    return [];
+  }
+
+  function filterAndTag(chainResult, expiryType) {
+    return chainResult.strikes.filter((s) => wanted.has(s.strike_price)).map((s) => ({ ...s, expiryType }));
+  }
+
+  if (entry.expiryTypes.length === 1) {
+    const results = filterAndTag(wide, entry.expiryTypes[0]);
+    logMissingStrikes(entry, wantedArr, results, log);
+    return results;
+  }
+
+  // Dual-cycle (NIFTY/SENSEX) — same classify-then-fetch-monthly-separately
+  // pattern as discoverStrikes(), just filtered against `wanted` instead of
+  // returned as-is.
+  const realDates = wide.expiries.map((e) => e.date);
+  const monthlyDate = classifyMonthlyExpiry(realDates, entry.exchange);
+  const nearestIsMonthly = monthlyDate && wide.expiries[0] && wide.expiries[0].date === monthlyDate;
+  const results = filterAndTag(wide, nearestIsMonthly ? "monthly" : "weekly");
+
+  if (monthlyDate && !nearestIsMonthly) {
+    const monthlyEntry = wide.expiries.find((e) => e.date === monthlyDate);
+    log(`[GapFill] ${entry.underlying} — nearest expiry wasn't monthly, fetching monthly chain separately (expiry=${monthlyDate})`);
+    const monthlyChain = await chainFn(lookupSymbol, { strikeCount: strikesEachSide, timestamp: monthlyEntry.expiry });
+    results.push(...filterAndTag(monthlyChain, "monthly"));
+  }
+
+  logMissingStrikes(entry, wantedArr, results, log);
+  return results;
+}
+
+function logMissingStrikes(entry, wantedArr, results, log) {
+  const found = new Set(results.map((r) => r.strike_price));
+  const missing = wantedArr.filter((w) => !found.has(w));
+  if (missing.length) {
+    log(`[GapFill] ${entry.underlying} — ${missing.length} derived strike(s) not returned by the live chain (likely outside what's currently listed, or already expired within the window): ${missing.join(", ")}`);
+  }
+}
+
+/**
  * Discovers real ATM+-N strikes for one underlying, for every expiry type
- * it needs (1 or 2 fetchOptionChain calls, per entry.expiryTypes).
+ * it needs (1 or 2 fetchOptionChain calls, per entry.expiryTypes), at THIS
+ * EXACT MOMENT only. Kept as the fallback path discoverStrikesSinceCheckpoint
+ * above uses when it can't derive a real strike gap or has no price history
+ * to scan — the checkpoint loop itself calls discoverStrikesSinceCheckpoint,
+ * not this, directly (see runGapFillCheckpoint below).
  * @returns {Promise<Array<{symbol, strike_price, option_type, expiryType}>>}
  */
 async function discoverStrikes(entry, atmBandWidth, deps = {}) {
@@ -463,7 +625,7 @@ async function runGapFillCheckpoint(label, deps = {}) {
     // (excludes SILVERMIC/GOLDPETAL via hasOptions:false).
     if (entry.hasOptions !== false) {
       try {
-        const strikes = await discoverStrikes(entry, atmBandWidth, deps);
+        const strikes = await discoverStrikesSinceCheckpoint(entry, atmBandWidth, label, deps);
         entryOptionsFound = strikes.length;
         optionsDiscovered += strikes.length;
         log(`[GapFill] ${label}: ${entry.underlying} — ${strikes.length} real strike(s) discovered, backfilling one at a time (${INTER_STRIKE_DELAY_MS}ms apart)`);
@@ -516,6 +678,8 @@ async function runGapFillCheckpoint(label, deps = {}) {
 module.exports = {
   runGapFillCheckpoint,
   discoverStrikes,
+  discoverStrikesSinceCheckpoint,
+  deriveStrikeGap,
   classifyMonthlyExpiry,
   resolveChainLookupSymbol,
   resolveFuturesSymbols,

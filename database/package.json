@@ -8,10 +8,18 @@
     "test": "node src/scripts/healthcheck.js",
     "backfill:derivatives": "node src/scripts/backfillDerivatives.js",
     "test:symbolParser": "node src/parsing/symbolParser.test.js",
-    "test:integration": "node src/integration.test.js"
+    "test:integration": "node src/integration.test.js",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
+    "drizzle-orm": "^0.45.2",
     "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.10"
   }
 }
