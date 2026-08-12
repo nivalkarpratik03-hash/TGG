@@ -1,84 +1,184 @@
 // OptionsChainModal.js
 // ─────────────────────────────────────────────────────────────────────────
 // TradingView-style options chain: expiry-month tabs + Calls/Strike/Puts
-// ladder. 100% offline — no Fyers API calls. Strike ladder is centered on
-// the spot price the caller passes in (the underlying's last known close,
-// already available from chart data — never fetched separately here).
+// ladder.
+//
+// ROOT-CAUSE FIX (2026-08-11): this used to build everything OFFLINE —
+// guessing the strike step/ladder locally (buildStrikeLadder) and hand-
+// encoding Fyers' expiry date format (nextMonthlyExpiries + optionSymbol).
+// That guessed encoding is frequently rejected by Fyers as "Invalid symbol
+// provided" (confirmed live: MCX:GOLDM26AUG152800CE — a guessed strike/
+// expiry combo that was never actually listed), which is the exact same
+// class of bug AtmWorkspace.js's Ctrl+Q flow and ChartsPage.js's Auto-ATM
+// were already fixed for by going through GET /api/options/chain instead
+// of guessing. This modal now does the same: it fetches the REAL expiry
+// list and REAL per-strike symbol strings straight from Fyers (via the
+// backend's /api/options/chain route → fyers/client.js's fetchOptionChain),
+// and never constructs a symbol string itself. See utils/optionsChain.js —
+// buildStrikeLadder/optionSymbol/nextMonthlyExpiries and their private
+// helpers were deleted there since this was their only caller.
+//
 // Supports: NSE equities, NSE/BSE indices, MCX commodities.
 // ─────────────────────────────────────────────────────────────────────────
 
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import "./OptionsChainModal.css";
-import {
-  nextMonthlyExpiries,
-  buildStrikeLadder,
-  getOptionRoot,
-  optionSymbol,
-  MCX_COMMODITIES,
-  WEEKLY_EXPIRY_COMMODITIES,
-} from "../../utils/optionsChain";
+import { getOptionRoot, MCX_COMMODITIES, WEEKLY_EXPIRY_COMMODITIES } from "../../utils/optionsChain";
+import { BACKEND } from "../../config";
+
+const MONTH_CODES = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+
+// Fyers' expiryData[].date has been observed in both ISO ("YYYY-MM-DD") and
+// "DD-MM-YYYY" form — try ISO first, then DD-MM-YYYY, and fall back to null
+// (never an Invalid Date) rather than guess. Mirrors the same dual-format
+// parsing backend/src/derivatives/derivativesGapFill.js already uses for
+// this exact field, kept separate here since browser code can't import that
+// Node module (same pattern as holidays.js/holidayCalendar.js).
+function parseExpiryDateString(dateStr) {
+  if (!dateStr || typeof dateStr !== "string") return null;
+  const iso = new Date(dateStr + "T00:00:00");
+  if (!isNaN(iso.getTime())) return iso;
+  const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(dateStr);
+  if (m) {
+    const [, dd, mm, yyyy] = m;
+    const d = new Date(Number(yyyy), Number(mm) - 1, Number(dd));
+    if (!isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+
+function formatExpiryLabel(dateStr) {
+  const d = parseExpiryDateString(dateStr);
+  if (!d) return dateStr || "?"; // never seen a fresh sample — show the raw string rather than hide it
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${dd} ${MONTH_CODES[d.getMonth()]}`;
+}
 
 // Props:
 //   isOpen      — boolean
 //   onClose     — () => void
 //   underlying  — { symbol, name } of the equity/index/commodity
-//   spot        — number | null — last close price
+//   spot        — number | null — last close price (cosmetic ATM highlight
+//                 + spot line only; never used to build or guess a symbol)
 //   onSelect    — (optionSymbolString) => void
 export default function OptionsChainModal({ isOpen, onClose, underlying, spot, loading, onSelect }) {
+  const [expiries, setExpiries] = useState([]); // [{date, expiry}] straight from Fyers
   const [expiryIdx, setExpiryIdx] = useState(0);
+  const [rows, setRows] = useState({ ce: new Map(), pe: new Map() }); // strike_price -> real symbol, for the ACTIVE tab only
+  const [chainLoading, setChainLoading] = useState(false);
+  const [chainErr, setChainErr] = useState(null);
 
-  useEffect(() => { if (isOpen) setExpiryIdx(0); }, [isOpen, underlying?.symbol]);
+  // Cache of already-fetched expiries, keyed by that expiry's `expiry`
+  // timestamp — switching tabs back and forth never re-hits the network.
+  const cacheRef = useRef(new Map());
 
-  // eslint-disable-next-line no-unused-vars
-  const { exch, root, isIndex, isCommodity, strikeStep, commodityName } = useMemo(
-    () => (underlying ? getOptionRoot(underlying.symbol) : { exch: "NSE", root: "", isIndex: false, isCommodity: false, strikeStep: 50, decimals: 0 }),
+  const { root, isIndex, isCommodity } = useMemo(
+    () => (underlying ? getOptionRoot(underlying.symbol) : { root: "", isIndex: false, isCommodity: false }),
     [underlying]
   );
 
   const isWeeklyExpiry = isCommodity && WEEKLY_EXPIRY_COMMODITIES.has(root);
+  const commCfg = isCommodity ? MCX_COMMODITIES[root] : null;
 
-  // nextMonthlyExpiries uses the same roll logic as symbolsRouter so the
-  // first expiry tab always matches the contract month shown in search results.
-  //
-  // BUG FIX: this call never passed the 3rd arg (indexRoot), so the
-  // "NIFTY/SENSEX trade weekly" branch inside nextMonthlyExpiries() was
-  // never reached from the real UI — NIFTY and SENSEX silently fell through
-  // to the generic monthly-only path, showing the wrong expiry tabs (missing
-  // every weekly expiry, and using the wrong weekday for the monthly one).
-  // Passing `isIndex ? root : null` lets nextMonthlyExpiries look up
-  // INDEX_WEEKLY_EXPIRY_DAY[root] itself — it already no-ops correctly for
-  // every other index (BANKNIFTY/FINNIFTY/MIDCPNIFTY/NIFTYIT), which aren't
-  // in that table and fall through to the monthly-only path as intended.
-  const expiries = useMemo(
-    () => nextMonthlyExpiries(isWeeklyExpiry ? 4 : 3, isCommodity ? root : null, isIndex ? root : null),
-    [isCommodity, isIndex, isWeeklyExpiry, root]
-  );
+  const fetchChain = useCallback((timestamp) => {
+    const params = new URLSearchParams({ symbol: underlying.symbol, strikeCount: "20" });
+    if (timestamp) params.set("timestamp", String(timestamp));
+    return fetch(`${BACKEND}/api/options/chain?${params.toString()}`).then(async (res) => {
+      if (res.ok) return res.json();
+      if (res.status === 401) throw new Error("Session expired — please re-authenticate with Fyers");
+      let message = `Request failed (HTTP ${res.status})`;
+      try {
+        const body = await res.json();
+        if (body?.error) message = body.error;
+      } catch { /* body wasn't JSON — keep the fallback message */ }
+      throw new Error(message);
+    });
+  }, [underlying]);
 
-  // Pass override step for commodities; for indices pass the root so INDEX_STRIKE_STEPS kicks in
-  const { strikes, atm } = useMemo(
-    () => buildStrikeLadder(
-      spot,
-      isIndex ? root : null,
-      14,
-      isCommodity ? strikeStep : null
-    ),
-    [spot, isIndex, isCommodity, root, strikeStep]
-  );
+  const applyChainData = useCallback((data) => {
+    const ce = new Map();
+    const pe = new Map();
+    for (const s of data.strikes || []) {
+      if (s.option_type === "CE") ce.set(s.strike_price, s.symbol);
+      else if (s.option_type === "PE") pe.set(s.strike_price, s.symbol);
+    }
+    setRows({ ce, pe });
+  }, []);
+
+  // Full reset + fetch the nearest expiry whenever the modal opens on a new
+  // underlying — gives us both the real expiry list (for tabs) and that
+  // first tab's real strikes in one call.
+  useEffect(() => {
+    if (!isOpen || !underlying) return;
+    let cancelled = false;
+    setExpiryIdx(0);
+    setExpiries([]);
+    setRows({ ce: new Map(), pe: new Map() });
+    setChainErr(null);
+    cacheRef.current = new Map();
+    setChainLoading(true);
+
+    fetchChain(null)
+      .then((data) => {
+        if (cancelled) return;
+        const exps = data.expiries || [];
+        setExpiries(exps);
+        applyChainData(data);
+        if (exps[0]) cacheRef.current.set(exps[0].expiry, data);
+      })
+      .catch((err) => { if (!cancelled) setChainErr(err.message); })
+      .finally(() => { if (!cancelled) setChainLoading(false); });
+
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, underlying?.symbol]);
+
+  // Switch tab → use the cache if we already have this expiry's real
+  // strikes, otherwise fetch that specific expiry's timestamp.
+  const selectExpiry = useCallback((idx) => {
+    setExpiryIdx(idx);
+    const exp = expiries[idx];
+    if (!exp) return;
+    const cached = cacheRef.current.get(exp.expiry);
+    if (cached) {
+      applyChainData(cached);
+      setChainErr(null);
+      return;
+    }
+    let cancelled = false;
+    setChainLoading(true);
+    setChainErr(null);
+    fetchChain(exp.expiry)
+      .then((data) => {
+        if (cancelled) return;
+        cacheRef.current.set(exp.expiry, data);
+        applyChainData(data);
+      })
+      .catch((err) => { if (!cancelled) setChainErr(err.message); })
+      .finally(() => { if (!cancelled) setChainLoading(false); });
+    return () => { cancelled = true; };
+  }, [expiries, fetchChain, applyChainData]);
 
   if (!isOpen || !underlying) return null;
 
   const expiry = expiries[expiryIdx];
-  const noSpot = !spot || spot <= 0;
 
-  // Commodity config for the unit badge
-  const commCfg = isCommodity ? MCX_COMMODITIES[root] : null;
+  // Merge CE/PE strike sets — real data occasionally lists a strike on only
+  // one side near the edges of the ladder, so union rather than assume both
+  // sides always match.
+  const strikes = Array.from(new Set([...rows.ce.keys(), ...rows.pe.keys()])).sort((a, b) => a - b);
+
+  const atm = (spot && strikes.length)
+    ? strikes.reduce((best, s) => (Math.abs(s - spot) < Math.abs(best - spot) ? s : best))
+    : null;
 
   function handleOverlayDown(e) {
     if (e.target === e.currentTarget) onClose();
   }
 
   function pick(strike, kind) {
-    const sym = optionSymbol(exch, root, expiry.code, strike, kind);
+    const sym = kind === "CE" ? rows.ce.get(strike) : rows.pe.get(strike);
+    if (!sym) return; // shouldn't happen — button only renders when the symbol exists
     onSelect(sym);
     onClose();
   }
@@ -110,22 +210,18 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
             </button>
           </div>
 
-          {/* Expiry tabs */}
-          <div className="oc-expiry-tabs">
-            {expiries.map((e, i) => (
-              <button
-                key={e.code + i}
-                className={`oc-expiry-tab${i === expiryIdx ? " oc-expiry-tab-active" : ""}`}
-                onClick={() => setExpiryIdx(i)}
-                title={e.approx ? "Approximate — verify exact expiry date with your broker before expiry day" : undefined}
-              >
-                {e.label}
-              </button>
-            ))}
-          </div>
-          {expiry?.approx && (
-            <div className="oc-expiry-approx-note">
-              ~ Approximate date — {isWeeklyExpiry ? "Silver Micro expires every Friday; confirm exact date with your broker" : "MCX confirms the exact expiry a few days ahead each month"}
+          {/* Expiry tabs — real dates straight from Fyers, no guessing */}
+          {expiries.length > 0 && (
+            <div className="oc-expiry-tabs">
+              {expiries.map((e, i) => (
+                <button
+                  key={e.expiry ?? i}
+                  className={`oc-expiry-tab${i === expiryIdx ? " oc-expiry-tab-active" : ""}`}
+                  onClick={() => selectExpiry(i)}
+                >
+                  {formatExpiryLabel(e.date)}
+                </button>
+              ))}
             </div>
           )}
 
@@ -141,26 +237,29 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
 
         {/* Body */}
         <div className="oc-body">
-          {noSpot ? (
-            loading ? (
-              <div className="oc-empty">
-                <div className="oc-empty-msg">Loading {underlying.name} price…</div>
-                <div className="oc-empty-sub">Fetching the latest data to build the strike range.</div>
-              </div>
-            ) : (
-              <div className="oc-empty">
-                <div className="oc-empty-msg">No price data loaded yet for {underlying.name}</div>
-                <div className="oc-empty-sub">Open this symbol's chart first so a strike range can be built around its last price.</div>
-              </div>
-            )
+          {chainErr ? (
+            <div className="oc-empty">
+              <div className="oc-empty-msg">Couldn't load the options chain</div>
+              <div className="oc-empty-sub">{chainErr}</div>
+            </div>
+          ) : chainLoading && strikes.length === 0 ? (
+            <div className="oc-empty">
+              <div className="oc-empty-msg">Loading {underlying.name} options…</div>
+              <div className="oc-empty-sub">Fetching the real chain from Fyers.</div>
+            </div>
+          ) : loading && !spot ? (
+            <div className="oc-empty">
+              <div className="oc-empty-msg">Loading {underlying.name} price…</div>
+              <div className="oc-empty-sub">Fetching the latest data for the spot line.</div>
+            </div>
           ) : strikes.length === 0 ? (
             <div className="oc-empty">
-              <div className="oc-empty-msg">Couldn't build a strike ladder</div>
+              <div className="oc-empty-msg">No strikes available for {expiry ? formatExpiryLabel(expiry.date) : "this expiry"}</div>
             </div>
           ) : (
             strikes.map((strike, idx) => {
-              const callSym = optionSymbol(exch, root, expiry.code, strike, "CE");
-              const putSym = optionSymbol(exch, root, expiry.code, strike, "PE");
+              const callSym = rows.ce.get(strike);
+              const putSym = rows.pe.get(strike);
               const isAtm = strike === atm;
 
               const nextStrike = strikes[idx + 1];
@@ -173,13 +272,17 @@ export default function OptionsChainModal({ isOpen, onClose, underlying, spot, l
               return (
                 <React.Fragment key={strike}>
                   <div className={`oc-row${isAtm ? " oc-row-atm" : ""}`}>
-                    <button className="oc-cell oc-call" onClick={() => pick(strike, "CE")} title={callSym}>
-                      Call {strikeFmt}
-                    </button>
+                    {callSym ? (
+                      <button className="oc-cell oc-call" onClick={() => pick(strike, "CE")} title={callSym}>
+                        Call {strikeFmt}
+                      </button>
+                    ) : <span className="oc-cell" />}
                     <span className="oc-strike">{strikeFmt}</span>
-                    <button className="oc-cell oc-put" onClick={() => pick(strike, "PE")} title={putSym}>
-                      Put {strikeFmt}
-                    </button>
+                    {putSym ? (
+                      <button className="oc-cell oc-put" onClick={() => pick(strike, "PE")} title={putSym}>
+                        Put {strikeFmt}
+                      </button>
+                    ) : <span className="oc-cell" />}
                   </div>
                   {showSpotLine && (
                     <div className="oc-spot-line-row">

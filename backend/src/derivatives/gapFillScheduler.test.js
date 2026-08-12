@@ -81,6 +81,12 @@ async function main() {
   // scheduler's exposed _state, using the same threshold constants this
   // file itself now correctly exports.
   const { NSE_CLOSE_MIN, MCX_CLOSE_MIN } = require("../fyers/tickStream");
+  // UPDATED 2026-08-12: checkpoints now fire GAP_MIN after the real close,
+  // not exactly at it — mirrors gapFillScheduler.js's own
+  // CHECKPOINT_CLOSE_GAP_MIN (kept as a literal here rather than exported,
+  // since it's an internal implementation detail of the fire-time check,
+  // not part of the module's public contract).
+  const GAP_MIN = 10;
   check("tickStream.js actually exports NSE_CLOSE_MIN/MCX_CLOSE_MIN (regression guard for the root-cause export bug)", () => {
     assert.strictEqual(typeof NSE_CLOSE_MIN, "number", "NSE_CLOSE_MIN must be a real exported number, not undefined");
     assert.strictEqual(typeof MCX_CLOSE_MIN, "number", "MCX_CLOSE_MIN must be a real exported number, not undefined");
@@ -91,11 +97,11 @@ async function main() {
     // by the fake clock instead of the real one.
     const { mins, dow } = fakeNowIST();
     const today = "2026-07-01"; // fixed simulated date for this test run
-    if (mins >= NSE_CLOSE_MIN && scheduler._state.nse_bse_close !== today) {
+    if (mins >= NSE_CLOSE_MIN + GAP_MIN && scheduler._state.nse_bse_close !== today) {
       scheduler._state.nse_bse_close = today;
       fired.push("nse_bse_close");
     }
-    const mcxThreshold = dow === 6 ? 14 * 60 : MCX_CLOSE_MIN;
+    const mcxThreshold = (dow === 6 ? 14 * 60 : MCX_CLOSE_MIN) + GAP_MIN;
     if (mins >= mcxThreshold && scheduler._state.mcx_close !== today) {
       scheduler._state.mcx_close = today;
       fired.push("mcx_close");
@@ -104,29 +110,35 @@ async function main() {
 
   fakeMins = 9 * 60; // 09:00 — before any close
   simulateTick();
-  check("nothing fires before either close threshold", () => {
+  check("nothing fires before either close+gap threshold", () => {
     assert.deepStrictEqual(fired, ["startup"]);
   });
 
-  fakeMins = NSE_CLOSE_MIN; // exactly 15:30
+  fakeMins = NSE_CLOSE_MIN; // exactly the real close (15:40) — gap not yet elapsed
   simulateTick();
-  check("nse_bse_close fires the instant the clock reaches 15:30", () => {
+  check("nse_bse_close does NOT fire at the real close — must wait for the 10min gap", () => {
+    assert.deepStrictEqual(fired, ["startup"]);
+  });
+
+  fakeMins = NSE_CLOSE_MIN + GAP_MIN; // 15:50 — real close + 10min gap
+  simulateTick();
+  check("nse_bse_close fires the instant the clock reaches real-close+10min (15:50)", () => {
     assert.deepStrictEqual(fired, ["startup", "nse_bse_close"]);
   });
 
-  fakeMins = NSE_CLOSE_MIN + 5; // 15:35 — still past close
+  fakeMins = NSE_CLOSE_MIN + GAP_MIN + 5; // 15:55 — still past close+gap
   simulateTick();
   check("nse_bse_close does NOT fire again later the same day", () => {
     assert.deepStrictEqual(fired, ["startup", "nse_bse_close"], "must not double-fire within the same day");
   });
 
-  fakeMins = MCX_CLOSE_MIN; // 23:30
+  fakeMins = MCX_CLOSE_MIN + GAP_MIN; // 23:40 — real close (23:30) + 10min gap
   simulateTick();
-  check("mcx_close fires separately, the instant the clock reaches 23:30", () => {
+  check("mcx_close fires separately, the instant the clock reaches real-close+10min (23:40)", () => {
     assert.deepStrictEqual(fired, ["startup", "nse_bse_close", "mcx_close"]);
   });
 
-  fakeMins = MCX_CLOSE_MIN + 10;
+  fakeMins = MCX_CLOSE_MIN + GAP_MIN + 10;
   simulateTick();
   check("mcx_close does NOT fire again later the same day either", () => {
     assert.deepStrictEqual(fired, ["startup", "nse_bse_close", "mcx_close"]);

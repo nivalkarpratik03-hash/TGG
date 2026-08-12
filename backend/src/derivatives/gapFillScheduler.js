@@ -22,10 +22,13 @@
  *                        fireStartupCheckpoint below) — the caller
  *                        (scheduler.js) triggers it explicitly.
  *   - "nse_bse_close"  — once per day, the first time the clock crosses
- *                        NSE/BSE's real close (15:30 IST)
+ *                        NSE/BSE's real close + a 10min buffer (real close
+ *                        15:40 IST → fires 15:50 IST). See
+ *                        CHECKPOINT_CLOSE_GAP_MIN below.
  *   - "mcx_close"      — once per day, the first time the clock crosses
- *                        MCX's real close (23:30 IST weekdays, 14:00 IST
- *                        Saturday)
+ *                        MCX's real close + the same 10min buffer (real
+ *                        close 23:30 IST weekdays → fires 23:40 IST; 14:00
+ *                        IST Saturday → fires 14:10 IST).
  *   - "reauth"         — via fireReauthCheckpoint(), whenever a Fyers
  *                        token goes from invalid to valid again (see
  *                        chartRouter.js). Deliberately NOT subject to the
@@ -60,6 +63,15 @@ const { nowIST, NSE_CLOSE_MIN, MCX_CLOSE_MIN, MCX_SAT_CLOSE } = require("../fyer
 const { runGapFillCheckpoint } = require("./derivativesGapFill");
 
 const CHECK_INTERVAL_MS = 60 * 1000; // check once a minute — cheap, no broker calls happen here, only the eventual checkpoint run does
+
+// UPDATED 2026-08-12: checkpoints now fire 10min AFTER each exchange's real
+// close (NSE_CLOSE_MIN/MCX_CLOSE_MIN/MCX_SAT_CLOSE above), not exactly at
+// it — a buffer so the exchange's own final candle has actually landed
+// before the checkpoint runs. Deliberately kept as its own constant here,
+// separate from the close-time constants in tickStream.js, since those are
+// also used by isLiveMarket()/isAnyMarketLive() and must keep reflecting
+// the REAL close time, not the checkpoint's delayed fire time.
+const CHECKPOINT_CLOSE_GAP_MIN = 10;
 
 function istDateString() {
   const d = new Date();
@@ -134,12 +146,12 @@ function wireGapFillScheduler(deps = {}) {
     const { mins, dow } = nowFn();
     const today = istDateString();
 
-    if (mins >= NSE_CLOSE_MIN && lastRunDate.nse_bse_close !== today) {
+    if (mins >= NSE_CLOSE_MIN + CHECKPOINT_CLOSE_GAP_MIN && lastRunDate.nse_bse_close !== today) {
       lastRunDate.nse_bse_close = today;
       fire("nse_bse_close");
     }
 
-    const mcxCloseThreshold = dow === 6 ? MCX_SAT_CLOSE : MCX_CLOSE_MIN;
+    const mcxCloseThreshold = (dow === 6 ? MCX_SAT_CLOSE : MCX_CLOSE_MIN) + CHECKPOINT_CLOSE_GAP_MIN;
     if (mins >= mcxCloseThreshold && lastRunDate.mcx_close !== today) {
       lastRunDate.mcx_close = today;
       fire("mcx_close");
