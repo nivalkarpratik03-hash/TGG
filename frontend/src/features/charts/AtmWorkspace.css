@@ -55,7 +55,6 @@
   padding: 5px 10px;
   cursor: pointer;
 }
-
 .atm-workspace-closeall:hover {
   color: var(--text);
   border-color: var(--accent);
@@ -68,18 +67,9 @@
   gap: 1px;
   background: var(--border);
 }
-
-.atm-workspace-grid-1 {
-  grid-template-columns: 1fr;
-}
-
-.atm-workspace-grid-2 {
-  grid-template-columns: 1fr 1fr;
-}
-
-.atm-workspace-grid-3 {
-  grid-template-columns: 1fr 1fr 1fr;
-}
+.atm-workspace-grid-1 { grid-template-columns: 1fr; }
+.atm-workspace-grid-2 { grid-template-columns: 1fr 1fr; }
+.atm-workspace-grid-3 { grid-template-columns: 1fr 1fr 1fr; }
 
 .atm-col {
   display: flex;
@@ -90,7 +80,6 @@
   border: 2px solid transparent;
   cursor: pointer;
 }
-
 .atm-col-focused {
   border-color: var(--accent);
 }
@@ -129,21 +118,9 @@
   border-radius: 5px;
   white-space: nowrap;
 }
-
-.atm-col-badge-ce {
-  background: var(--green-dim);
-  color: var(--green);
-}
-
-.atm-col-badge-pe {
-  background: var(--red-dim);
-  color: var(--red);
-}
-
-.atm-col-badge-mid {
-  background: var(--accent-dim);
-  color: var(--accent);
-}
+.atm-col-badge-ce { background: var(--green-dim); color: var(--green); }
+.atm-col-badge-pe { background: var(--red-dim); color: var(--red); }
+.atm-col-badge-mid { background: var(--accent-dim); color: var(--accent); }
 
 .atm-col-symbol {
   font-size: 11px;
@@ -211,7 +188,6 @@
   padding: 2px 4px;
   border-radius: 4px;
 }
-
 .atm-col-close:hover {
   color: var(--red);
   background: var(--red-dim);
