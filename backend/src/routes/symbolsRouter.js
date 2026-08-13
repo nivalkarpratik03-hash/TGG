@@ -1,20 +1,56 @@
 /**
  * symbolsRouter.js
  * ─────────────────────────────────────────────────────────────────
- * Provides REST endpoints that merge symbols from:
- *   1. frontend/src/symbols.json  — curated indices + NSE equities
- *   2. frontend/src/stocks.xlsx   — 203 NSE equities (EQ sheet)
- *   3. frontend/src/NIFTY.xlsx    — Nifty-specific list
- *   4. frontend/src/mcx.json      — MCX commodity ROOTS (names only —
- *                                   the actual tradable symbols are
- *                                   generated, see "Futures generation")
+ * REPOINTED 2026-07-31 — provides REST endpoints that merge symbols from
+ * the root `symbols/` master (sibling to backend/, frontend/, database/)
+ * instead of reaching into frontend/src/:
+ *   1. symbols/index.json      — 5 curated indices (plain: name/symbol/exchange/type)
+ *   2. symbols/equity.json     — ~202 NSE equities (plain: name/symbol/exchange/type/displayName)
+ *   3. symbols/commodity.json  — 6 curated MCX commodity ROOTS (GapFill-curated
+ *                                list, NOT frontend/src/mcx.json's broader 18 —
+ *                                names only, the actual tradable symbols are
+ *                                generated, see "Futures generation")
+ *
+ * This replaces the previous 4-source read (frontend/src/symbols.json,
+ * stocks.xlsx, NIFTY.xlsx, mcx.json) — this is the fix for the confirmed
+ * backend→frontend coupling flagged earlier this session. frontend/src/
+ * symbols.json was confirmed byte-identical to noExpirySymbols.json (which
+ * equity.json is itself sourced from) plus 5 stale hardcoded dated MCX
+ * futures contracts, and stocks.xlsx/NIFTY.xlsx together produced the same
+ * ~202/205-equity set now already carried verbatim in equity.json — so no
+ * xlsx parsing is needed here any more either.
+ *
+ * DISPLAY-NAME NOTE (flagged, not silently patched): the old mcx.json had
+ * human-readable names for 5 of the 6 curated commodities (e.g. "Gold Mini
+ * (MCX)") but had NO entry at all for NATGASMINI (it only listed the
+ * non-mini "NATURALGAS-I"). Rather than invent prose for the one gap while
+ * keeping hand-written names for the other 5, symbol search below uses
+ * commodity.json's own `name` field (the bare ticker root, e.g.
+ * "CRUDEOILM") uniformly for all 6. This is a cosmetic display-text change
+ * from before — if a prettier label is wanted, add a `displayName` field to
+ * symbols/commodity.json (same pattern equity.json already uses) rather
+ * than reintroducing a second source of truth here.
+ *
+ * INDEX DISPLAY-NAME NOTE (also flagged): symbols.json used to show "NIFTY
+ * 50" / "NIFTY BANK" / "SENSEX" for the 3 indices it carried. index.json's
+ * own `name` field is the shorter "NIFTY" / "BANKNIFTY" / "SENSEX". To
+ * avoid silently changing established search-result text, the 3 legacy
+ * names are preserved via INDEX_DISPLAY_NAME_OVERRIDES below; FINNIFTY and
+ * MIDCPNIFTY are new to symbol search (symbols.json never carried them) so
+ * they use index.json's own `name` field as-is — there's no prior
+ * convention to preserve for those two. BANKEX (added 2026-08-06) is the
+ * same situation as FINNIFTY/MIDCPNIFTY — no legacy display text ever
+ * existed for it, so it's deliberately NOT in the overrides map below and
+ * falls through to index.json's own `name` field ("BANKEX") via the
+ * `INDEX_DISPLAY_NAME_OVERRIDES[s.name] || s.name` fallback in
+ * loadIndices() — confirmed correct output, not an oversight.
  *
  * PLUS dynamically generated, always-current-month contracts:
  *   - NSE equity futures      e.g. NSE:RELIANCE26JUNFUT
  *   - NIFTY / BANKNIFTY futures
  *   - MCX commodity futures   e.g. MCX:CRUDEOIL26JULFUT
  * These are computed fresh from today's date on every cache rebuild
- * (see CACHE_TTL_MS below) so they never go stale.
+ * (see CACHE_TTL_MS below) so they never go stale. UNCHANGED from before.
  *
  * Every returned entry includes a `type` field:
  *   "index" | "equity" | "commodity" | "future" | "option" | "etf"
@@ -39,40 +75,55 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const { previousTradingDay } = require("../data/holidays");
+const { loadIndexSpotSymbols } = require("../derivatives/curatedUnderlyingsLoader");
 
 const router = express.Router();
 
-const FRONTEND_SRC = path.resolve(__dirname, "../../../frontend/src");
-const SYMBOLS_JSON = path.join(FRONTEND_SRC, "symbols.json");
-const MCX_JSON = path.join(FRONTEND_SRC, "mcx.json");
-const STOCKS_XLSX = path.join(FRONTEND_SRC, "stocks.xlsx");
-const NIFTY_XLSX = path.join(FRONTEND_SRC, "NIFTY.xlsx");
+// backend/src/routes -> backend/src -> backend -> repo root -> symbols
+const SYMBOLS_DIR = path.resolve(__dirname, "../../../symbols");
+const INDEX_JSON = path.join(SYMBOLS_DIR, "index.json");
+const EQUITY_JSON = path.join(SYMBOLS_DIR, "equity.json");
+const COMMODITY_JSON = path.join(SYMBOLS_DIR, "commodity.json");
+const EQUITY_FO_EXCLUSIONS_JSON = path.join(SYMBOLS_DIR, "equity-fo-exclusions.json");
+
+/**
+ * equity.json is the general NSE board list, NOT the (smaller) NSE
+ * F&O-eligible list -- most equities in it have no listed derivatives at
+ * all. Loads the live-verified exclusion set (see
+ * symbols/equity-fo-exclusions.json's own _readme/coverage block for
+ * exactly what's been checked and what hasn't -- only 9 of 202 as of
+ * 2026-08-01, NOT a complete eligibility table). Returns a Set of
+ * excluded underlyings, or an empty Set if the file is missing/unreadable
+ * (fails open to current behavior rather than silently blocking futures
+ * generation for everything).
+ */
+function loadEquityFoExclusions() {
+  try {
+    const { excluded } = JSON.parse(fs.readFileSync(EQUITY_FO_EXCLUSIONS_JSON, "utf8"));
+    return new Set((excluded || []).map((e) => e.underlying));
+  } catch (err) {
+    console.warn(`[Symbols] Could not read equity-fo-exclusions.json: ${err.message} — proceeding with zero exclusions`);
+    return new Set();
+  }
+}
+
+// See "INDEX DISPLAY-NAME NOTE" above.
+const INDEX_DISPLAY_NAME_OVERRIDES = {
+  NIFTY: "NIFTY 50",
+  BANKNIFTY: "NIFTY BANK",
+  SENSEX: "SENSEX",
+};
 
 let _cachedSymbols = null;
 let _cacheTime = 0;
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
-
-// ── Type inference ──────────────────────────────────────────────────────────
-function inferType(sym, existingType) {
-  if (existingType) return existingType;
-  const s = sym.toUpperCase();
-  // Options: ...26JUN3000CE / ...26JUN3000PE (checked before FUT/MCX so it
-  // never gets misclassified just because it also starts with an exchange).
-  if (/\d{2}[A-Z]{3}\d+(CE|PE)$/.test(s)) return "option";
-  // Futures: ...26JUNFUT / ...26JULFUT
-  if (/\d{2}[A-Z]{3}FUT$/.test(s)) return "future";
-  if (s.startsWith("MCX:")) return "commodity";
-  if (s.includes("INDEX") || s.includes("SENSEX")) return "index";
-  if (s.endsWith("-ETF") || s.endsWith("-EF")) return "etf";
-  return "equity";
-}
 
 // ── Futures generation ───────────────────────────────────────────────────────
 // Fyers symbols for futures are DATED contracts, e.g. "NSE:RELIANCE26JUNFUT"
 // or "MCX:CRUDEOIL26JULFUT" — there is no "-I" continuous-contract ticker in
 // Fyers' symbol master (that convention belongs to other data vendors). We
 // compute the live contract months from today's date so these never go
-// stale and never need manual monthly edits.
+// stale and never need manual monthly edits. UNCHANGED from before.
 const MONTH_CODES = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 const FUT_MONTHS_AHEAD = 3; // near / next / far contract months shown in search
 
@@ -91,12 +142,13 @@ const FUT_MONTHS_AHEAD = 3; // near / next / far contract months shown in search
 // that expires on (say) the 22nd still shows up through the 23rd, in case
 // MCX's actual circular date lands a day later than our approximation.
 // Source: MCX settlement/expiry circulars (rules vary by commodity).
+// UNCHANGED from before.
 const MCX_EXPIRY_DAY = {
   CRUDEOIL: 19, CRUDEOILM: 19,                 // ~19th–20th
   NATURALGAS: 23, NATGASMINI: 23,                  // ~23rd (NATGASMINI is Fyers root for Nat Gas Mini)
   COPPER: 22, ZINC: 22, ZINCMINI: 22,
   ALUMINIUM: 22, LEAD: 22, LEADMINI: 22, NICKEL: 22,
-  GOLD: 5, GOLDM: 29, GOLDPETAL: 29,       // bullion: early/late month, varies
+  GOLD: 5, GOLDM: 5, GOLDPETAL: 29,       // bullion: GOLD/GOLDM expire early-month (~4th-5th, live-confirmed via Fyers symbol search 2026-08-10 — GOLDM26AUG had already rolled off by the 10th, nearest listed was 26SEP expiring 4 Sep); GOLDPETAL unconfirmed, left as-is
   SILVER: 27, SILVERM: 27, SILVERMIC: 27,
   MENTHAOIL: 29,
   COTTON: 29, CASTORSEED: 29,                  // agri: near month-end
@@ -109,7 +161,7 @@ const EXPIRY_GRACE_DAYS = 1; // roll over this many days AFTER the approx expiry
 // it only lists contracts in a fixed cycle. Building "...26JULFUT" for these
 // roots produces a symbol that was never listed, which Fyers correctly
 // rejects with "Invalid symbol provided" — confirmed via MCX expiry
-// circulars: Feb, Apr, Jun, Aug, Nov, Dec.
+// circulars: Feb, Apr, Jun, Aug, Nov, Dec. UNCHANGED from before.
 const RESTRICTED_MONTH_CYCLE = {
   SILVER: [1, 3, 5, 7, 10, 11],     // 0-based: Feb, Apr, Jun, Aug, Nov, Dec
   SILVERM: [1, 3, 5, 7, 10, 11],
@@ -175,11 +227,19 @@ function monthCodesFromOffset(n, offset, from = new Date()) {
   return nextMonthCodes(n, new Date(y, m, 1));
 }
 
-// The futures-ticker root sometimes differs from the index's spot ticker.
-const INDEX_FUT_ROOTS = {
-  "NIFTY50-INDEX": "NIFTY",
-  "NIFTYBANK-INDEX": "BANKNIFTY",
-};
+// The futures-ticker root sometimes differs from the index's spot ticker
+// (e.g. spot ticker "NIFTY50-INDEX" but the futures contract root is
+// "NIFTY"). Built dynamically from symbols/index.json — the same root
+// master curatedUnderlyingsLoader.js reads — instead of a hand-maintained
+// table. This works uniformly for all 6 curated indices because each
+// index's futures root IS simply its `name` field in index.json
+// (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX, BANKEX all match their
+// own name exactly) — confirmed by inspecting every entry, not assumed.
+// No per-index override table needed, and this can't go stale again if a
+// 7th index is ever curated.
+const INDEX_FUT_ROOTS = Object.fromEntries(
+  loadIndexSpotSymbols().map((e) => [e.symbol.split(":")[1], e.name])
+);
 
 // ── NSE F&O expiry rollover ──────────────────────────────────────────────────
 // NSE monthly F&O contracts expire on the LAST TUESDAY of the month (NSE
@@ -191,7 +251,7 @@ const INDEX_FUT_ROOTS = {
 // already-dead contract (e.g. still offering "...26JUNFUT" days after it
 // expired) — Fyers rejects those as invalid, and that's what was showing
 // up as a broken/invalid result in the search box. This mirrors the same
-// offset pattern already used for MCX commodities below.
+// offset pattern already used for MCX commodities below. UNCHANGED from before.
 const NSE_EXPIRY_DOW = 2; // Tuesday
 function nseNearMonthOffset(from = new Date()) {
   // Last Tuesday of the current month, at midnight.
@@ -207,16 +267,40 @@ function nseNearMonthOffset(from = new Date()) {
   return from.getTime() > expiryClose.getTime() ? 1 : 0;
 }
 
+// ── BSE F&O expiry rollover ──────────────────────────────────────────────────
+// NEW 2026-08-03 — BSE (SENSEX/BANKEX) monthly F&O contracts expire on the
+// LAST THURSDAY of the month, NOT NSE's last-Tuesday rule — this mirrors
+// exactly the same last-Thursday convention already relied on elsewhere in
+// this codebase (database/src/symbolParser.js's lastThursdayOfMonth(), used
+// by derivativesGapFill.js's classifyMonthlyExpiry() with
+// `exchange === "BSE" ? lastThursdayOfMonth : lastTuesdayOfMonth`). Added
+// because derivativesGapFill.js's resolveFuturesSymbols() previously called
+// nseNearMonthOffset() unconditionally for every non-MCX exchange, including
+// BSE — silently assuming SENSEX rolls on NSE's Tuesday schedule. Follows
+// the identical structure to nseNearMonthOffset() below, including the same
+// holiday-adjustment step, just with Thursday as the target weekday.
+const BSE_EXPIRY_DOW = 4; // Thursday
+function bseNearMonthOffset(from = new Date()) {
+  let lastThu = new Date(from.getFullYear(), from.getMonth() + 1, 0); // last calendar day of month
+  while (lastThu.getDay() !== BSE_EXPIRY_DOW) lastThu.setDate(lastThu.getDate() - 1);
+  lastThu = previousTradingDay(lastThu, "BSE");
+  const expiryClose = new Date(lastThu);
+  expiryClose.setHours(15, 30, 0, 0);
+  return from.getTime() > expiryClose.getTime() ? 1 : 0;
+}
+
 /**
- * mcx.json is treated as a list of commodity ROOTS + display names (not
- * literal tradable symbols) — its old "-I" suffixed symbols are not valid
- * Fyers tickers and would return no historical data. We strip the suffix
- * and build real dated contracts from the root instead.
+ * symbols/commodity.json already gives bare exchange:root strings (e.g.
+ * "MCX:CRUDEOILM", no "-I" suffix) — unlike the old mcx.json, which used
+ * "-I" continuous-contract tickers that aren't real Fyers symbols. The
+ * "-I" strip below is kept as a no-op safety net only, in case that file
+ * is ever hand-edited back to the old convention; it does nothing to the
+ * current data.
  */
 function loadCommodityRoots(filePath) {
   try {
-    const arr = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return arr
+    const { commodities } = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return commodities
       .filter((s) => s.symbol && s.name)
       .map((s) => {
         const ticker = String(s.symbol).trim();
@@ -231,8 +315,34 @@ function loadCommodityRoots(filePath) {
 
 /**
  * Builds live FUT contracts for:
- *   - NSE equities + the two liquid index futures (NIFTY, BANKNIFTY)
- *   - MCX commodities (roots taken from mcx.json)
+ *   - NSE equities
+ *   - All 6 curated index futures (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY —
+ *     NSE; SENSEX, BANKEX — BSE), each on its own exchange's real expiry
+ *     calendar
+ *   - MCX commodities (roots taken from symbols/commodity.json)
+ *
+ * ROOT-CAUSE FIX (2026-08-01): equity.json is the general NSE board list,
+ * not the F&O-eligible subset — most equities in it have no listed
+ * derivatives at all. This used to generate a futures contract for every
+ * single one, producing confirmed-invalid symbols for stocks with no real
+ * F&O (EXIDEIND, HUDCO, PPLPHARMA, SAMMAANCAP, SYNGENE, TATATECH,
+ * TORNTPOWER, NUVAMA — each individually live-verified in the Fyers app,
+ * see symbols/equity-fo-exclusions.json). Those 8 are now skipped.
+ * IMPORTANT: only 9 of 202 equities have been checked this way — this is
+ * a partial, honestly-scoped exclusion list, not a complete eligibility
+ * table. See that file's own coverage/warning block before assuming any
+ * other equity is confirmed either way.
+ *
+ * ROOT-CAUSE FIX (this session): this function used to hard-skip every
+ * symbol whose exchange wasn't NSE (`if (exch !== "NSE") continue`), so
+ * SENSEX and BANKEX (both BSE) never generated futures no matter what
+ * INDEX_FUT_ROOTS contained — and it also called nseNearMonthOffset()
+ * unconditionally, which is the wrong (Tuesday) expiry rule for BSE
+ * (Thursday — see bseNearMonthOffset() above, already used correctly
+ * elsewhere in this codebase, just never wired in here). Now equities stay
+ * NSE-only (real constraint — equity F&O only exists on NSE), while index
+ * futures are generated per the index's own real exchange, each using that
+ * exchange's own expiry calendar.
  *
  * The nearest commodity month is tagged type "commodity" so it keeps
  * appearing (and working) under the existing Commodity tab using a real,
@@ -240,21 +350,29 @@ function loadCommodityRoots(filePath) {
  * also tagged "future" so it shows under the new Futures tab.
  */
 function buildFutures(equityAndIndexSymbols, commodityRoots) {
-  const nseOffset = nseNearMonthOffset();
-  const monthCodes = monthCodesFromOffset(FUT_MONTHS_AHEAD, nseOffset);
+  const nseMonthCodes = monthCodesFromOffset(FUT_MONTHS_AHEAD, nseNearMonthOffset());
+  const bseMonthCodes = monthCodesFromOffset(FUT_MONTHS_AHEAD, bseNearMonthOffset());
+  const foExclusions = loadEquityFoExclusions();
   const out = [];
 
   for (const s of equityAndIndexSymbols) {
     const [exch, rawTicker] = s.symbol.split(":");
-    if (exch !== "NSE") continue; // F&O is an NSE-only segment
 
     let base = null;
-    if (s.type === "equity") base = rawTicker.replace(/-EQ$/i, "");
-    else if (s.type === "index" && INDEX_FUT_ROOTS[rawTicker]) base = INDEX_FUT_ROOTS[rawTicker];
+    let monthCodes = null;
+    if (s.type === "equity") {
+      if (exch !== "NSE") continue; // equity F&O is an NSE-only segment
+      base = rawTicker.replace(/-EQ$/i, "");
+      monthCodes = nseMonthCodes;
+    } else if (s.type === "index" && INDEX_FUT_ROOTS[rawTicker]) {
+      base = INDEX_FUT_ROOTS[rawTicker];
+      monthCodes = exch === "BSE" ? bseMonthCodes : nseMonthCodes;
+    }
     if (!base) continue;
+    if (s.type === "equity" && foExclusions.has(base)) continue; // live-verified: no real F&O for this one
 
     for (const mc of monthCodes) {
-      out.push({ symbol: `NSE:${base}${mc}FUT`, name: `${s.name} FUT (${mc})`, type: "future" });
+      out.push({ symbol: `${exch}:${base}${mc}FUT`, name: `${s.name} FUT (${mc})`, type: "future" });
     }
   }
 
@@ -280,18 +398,17 @@ function buildFutures(equityAndIndexSymbols, commodityRoots) {
 }
 
 // ── Loaders ─────────────────────────────────────────────────────────────────
-function loadExcel(filePath) {
+
+/** symbols/index.json's 5 curated indices → flat {symbol, name, type}. */
+function loadIndices(filePath) {
   try {
-    const XLSX = require("xlsx");
-    const wb = XLSX.readFile(filePath);
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws);
-    return rows
-      .filter((r) => r.symbol && r.Name)
-      .map((r) => ({
-        symbol: String(r.symbol).trim(),
-        name: String(r.Name).trim(),
-        type: inferType(String(r.symbol).trim(), null),
+    const { indices } = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return indices
+      .filter((s) => s.symbol && s.name)
+      .map((s) => ({
+        symbol: String(s.symbol).trim(),
+        name: INDEX_DISPLAY_NAME_OVERRIDES[s.name] || String(s.name).trim(),
+        type: "index",
       }));
   } catch (err) {
     console.warn(`[Symbols] Could not read ${path.basename(filePath)}: ${err.message}`);
@@ -299,15 +416,22 @@ function loadExcel(filePath) {
   }
 }
 
-function loadJson(filePath) {
+/**
+ * symbols/equity.json's ~202 curated equities → flat {symbol, name, type}.
+ * Uses `displayName` (the full company name, e.g. "360 ONE WAM LIMITED"),
+ * confirmed byte-identical to what frontend/src/symbols.json's `name` field
+ * used to carry for these same symbols — not `name` (equity.json's short
+ * ticker-style field, e.g. "360ONE").
+ */
+function loadEquities(filePath) {
   try {
-    const arr = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return arr
-      .filter((s) => s.symbol && s.name)
+    const { equities } = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return equities
+      .filter((s) => s.symbol && (s.displayName || s.name))
       .map((s) => ({
         symbol: String(s.symbol).trim(),
-        name: String(s.name).trim(),
-        type: inferType(String(s.symbol).trim(), s.type || null),
+        name: String(s.displayName || s.name).trim(),
+        type: "equity",
       }));
   } catch (err) {
     console.warn(`[Symbols] Could not read ${path.basename(filePath)}: ${err.message}`);
@@ -320,9 +444,8 @@ function buildSymbolList() {
   const seen = new Map(); // symbol → entry
 
   const sources = [
-    ...loadJson(SYMBOLS_JSON),
-    ...loadExcel(STOCKS_XLSX),
-    ...loadExcel(NIFTY_XLSX),
+    ...loadIndices(INDEX_JSON),
+    ...loadEquities(EQUITY_JSON),
   ];
 
   for (const s of sources) {
@@ -335,7 +458,7 @@ function buildSymbolList() {
   const equityAndIndex = Array.from(seen.values()).filter(
     (s) => s.type === "equity" || s.type === "index"
   );
-  const commodityRoots = loadCommodityRoots(MCX_JSON);
+  const commodityRoots = loadCommodityRoots(COMMODITY_JSON);
   const generated = buildFutures(equityAndIndex, commodityRoots);
 
   for (const g of generated) {
@@ -372,12 +495,19 @@ function exchangeOf(sym) {
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 
-/** GET /api/symbols[?exchange=NSE|MCX|BSE] */
+/** GET /api/symbols[?exchange=NSE|MCX|BSE][&type=index|equity|commodity|future] */
 router.get("/", (req, res) => {
   try {
     let symbols = getSymbols();
     const exch = (req.query.exchange || "").toUpperCase();
     if (exch) symbols = symbols.filter(s => exchangeOf(s) === exch);
+    // NEW 2026-08-02 — category filter for the Scanner UI's symbol/category
+    // dropdown (All/Index/Commodity/Equity). "commodity" here means the
+    // near-month tradable contract buildFutures() already tags type
+    // "commodity" (not "future") specifically so this filter works without
+    // any extra logic — see buildFutures()'s own comment on why.
+    const type = (req.query.type || "").toLowerCase();
+    if (type) symbols = symbols.filter(s => s.type === type);
     res.json(symbols);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -428,6 +558,29 @@ module.exports = router;
 // file, which is exactly the kind of silent-drift risk flagged
 // repeatedly during this project's design phase.
 module.exports.nseNearMonthOffset = nseNearMonthOffset;
+// NEW 2026-08-03 — see the function's own comment above for the bug this
+// fixes (derivativesGapFill.js's resolveFuturesSymbols() defaulting every
+// non-MCX exchange, including BSE, to NSE's Tuesday rule).
+module.exports.bseNearMonthOffset = bseNearMonthOffset;
 module.exports.mcxNearMonthOffset = mcxNearMonthOffset;
 module.exports.nextMonthCodes = nextMonthCodes;
 module.exports.monthCodesFromOffset = monthCodesFromOffset;
+// NEW 2026-08-01 — exported so derivativesGapFill.js's resolveFuturesSymbols()
+// can respect RESTRICTED_MONTH_CYCLE (SILVERM/SILVERMIC only list Feb/Apr/
+// Jun/Aug/Nov/Dec) instead of generating calendar-sequential months that
+// were never listed. Previously this function existed but was never
+// exported, so GapFill had no way to reach it and used the unrestricted
+// monthCodesFromOffset() for every MCX root — root cause of the confirmed
+// "MCX:SILVERM26SEPFUT ... Invalid symbol provided" failure.
+module.exports.nextValidMonthCodes = nextValidMonthCodes;
+// NEW 2026-07-31 — exposed so server.js's Scanner+Backtest symbol loading
+// (previously its own duplicate loadScanSymbols(), now deleted, see
+// server.js) can reuse this exact parser instead of re-reading the same
+// files with a second, simpler implementation. Returns the same cached/
+// refreshed list getSymbols() above uses — one parser, one cache, no drift.
+module.exports.getSymbols = getSymbols;
+// NEW (this session) — exported so instrumentTypeResolver.js's
+// INDEX_FUT_BASES_IN_FUTURE_TYPE can derive itself from this exact map
+// instead of keeping its own separate hardcoded copy of "which bases get
+// type:'future' index entries here." One source of truth for that fact.
+module.exports.INDEX_FUT_ROOTS = INDEX_FUT_ROOTS;

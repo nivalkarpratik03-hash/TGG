@@ -1,0 +1,1238 @@
+/* ─── FibDashboardPage.css — Fibonacci Wave·Entry Dashboard ─────────────────────── */
+
+/* ── Page shell ── */
+.fdb-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono), 'Segoe UI', Arial, sans-serif;
+  overflow: hidden;
+}
+
+/* ── Topbar ── */
+.fdb-topbar {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  height: 52px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  padding-right: 12px;
+}
+
+.fdb-back-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 100%;
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  color: var(--text3);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+
+.fdb-back-btn:hover {
+  color: var(--text);
+  background: var(--bg3);
+}
+
+.fdb-back-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.fdb-logo-wrap {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  border-right: 1px solid var(--border);
+  height: 100%;
+  flex-shrink: 0;
+}
+
+.fdb-logo-img {
+  height: 28px;
+  width: auto;
+  object-fit: contain;
+  display: block;
+}
+
+.fdb-theme-btn {
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: 5px;
+  color: var(--text2);
+  font-size: 15px;
+  padding: 4px 10px;
+  cursor: pointer;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+  margin-left: 8px;
+}
+
+.fdb-theme-btn:hover {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.fdb-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  flex: 1;
+  min-width: 0;
+}
+
+.fdb-symbol-label {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.fdb-title-label {
+  font-size: 13px;
+  color: var(--text2);
+  white-space: nowrap;
+}
+
+.fdb-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* CHUNK 4 (2026-08-03): .fdb-sym-select removed — was the old always-visible
+   inline input+dropdown, replaced by the icon-only modal trigger below. */
+.fdb-symbol-search-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: 5px;
+  color: var(--text2);
+  padding: 5px 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.fdb-symbol-search-btn:hover {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.fdb-get-btn {
+  background: var(--bg3);
+  color: var(--accent);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.fdb-get-btn:hover {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.fdb-get-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Dashboard grid ── */
+.fdb-dash {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 10px;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* ── Column card ── */
+.fdb-col {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+/* ── Column header ── */
+.fdb-col-head {
+  font-size: 11px;
+  color: var(--text3);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fdb-col-head span {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 3px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* ── Timeframe tabs ── */
+.fdb-tf-row {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.fdb-tf {
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 3px;
+  border: 1px solid var(--border2);
+  color: var(--text3);
+  cursor: pointer;
+  background: transparent;
+  font-family: inherit;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.fdb-tf:hover {
+  color: var(--text2);
+  border-color: var(--border2);
+}
+
+.fdb-tf.on {
+  background: var(--blue-dim);
+  color: var(--blue);
+  border-color: var(--blue-dim);
+}
+
+/* ── Bias pill row ── */
+.fdb-bias-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text3);
+}
+
+.fdb-pill {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 11px;
+  border-radius: 3px;
+}
+
+.fdb-p-bear {
+  background: var(--red-dim);
+  color: var(--red);
+  border: 1px solid var(--border);
+}
+
+.fdb-p-bull {
+  background: var(--green-dim);
+  color: var(--green);
+  border: 1px solid var(--border);
+}
+
+.fdb-p-neutral {
+  background: var(--border);
+  color: var(--text3);
+  border: 1px solid var(--border2);
+}
+
+/* ── Section title ── */
+.fdb-sec-title {
+  font-size: 12px;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+/* ── Separator ── */
+.fdb-sep {
+  height: 1px;
+  background: var(--bg3);
+  flex-shrink: 0;
+}
+
+/* ── Wave card ── */
+.fdb-wave-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--red);
+  border-radius: 4px;
+  padding: 10px 12px;
+  position: relative;
+}
+
+.fdb-wave-card.fdb-wave-card-clickable {
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+
+.fdb-wave-card.fdb-wave-card-clickable:hover {
+  background: var(--bg2);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.fdb-wave-card.bull.fdb-wave-card-clickable:hover {
+  box-shadow: 0 0 0 1px var(--green);
+}
+
+.fdb-wave-chart-hint {
+  font-size: 9px;
+  color: var(--text3);
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.fdb-wave-card.fdb-wave-card-clickable:hover .fdb-wave-chart-hint {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.fdb-wave-card.bull {
+  border-left-color: var(--green);
+}
+
+.fdb-wave-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.fdb-wave-range {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.01em;
+}
+
+.fdb-wave-dir {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 3px;
+}
+
+.fdb-bear-dir {
+  background: var(--red-dim);
+  color: var(--red);
+}
+
+.fdb-bull-dir {
+  background: var(--green-dim);
+  color: var(--green);
+}
+
+.fdb-wave-num {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--yellow);
+  background: var(--yellow-dim);
+  border: 1px solid var(--border2);
+  padding: 2px 9px;
+  border-radius: 3px;
+}
+
+.fdb-wave-pts {
+  font-size: 13px;
+  color: var(--text2);
+  margin-top: 4px;
+  font-weight: 500;
+}
+
+/* ── Fibonacci table ── */
+.fdb-fib-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.fdb-fib-tbl th {
+  color: var(--text3);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 0 6px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-weight: 500;
+}
+
+.fdb-fib-tbl th:last-child {
+  text-align: right;
+}
+
+.fdb-fib-tbl td {
+  padding: 5px 0;
+  color: var(--text2);
+}
+
+.fdb-fib-tbl td:last-child {
+  text-align: right;
+  color: var(--text);
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.fdb-fib-tbl tr:hover td {
+  color: var(--text);
+}
+
+.fdb-lvl-num {
+  color: var(--text3);
+  font-size: 13px;
+}
+
+.fdb-badge {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 2px;
+  margin-left: 4px;
+  font-weight: 600;
+}
+
+.fdb-b-sup {
+  background: var(--green-dim);
+  color: var(--green);
+}
+
+.fdb-b-mid {
+  background: var(--yellow-dim);
+  color: var(--yellow);
+}
+
+.fdb-b-gold {
+  background: var(--red-dim);
+  color: var(--red);
+}
+
+/* ── Entry column ── */
+.fdb-align-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text3);
+}
+
+.fdb-align-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--red);
+  flex-shrink: 0;
+}
+
+.fdb-align-dot.bull {
+  background: var(--green);
+}
+
+/* ── Entry blocks ── */
+.fdb-entry-block {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+
+.fdb-entry-block-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.fdb-entry-dir {
+  font-size: 13px;
+  font-weight: 700;
+  padding: 3px 11px;
+  border-radius: 3px;
+}
+
+.fdb-e-sell {
+  background: var(--red-dim);
+  color: var(--red);
+  border: 1px solid var(--border);
+}
+
+.fdb-e-buy {
+  background: var(--green-dim);
+  color: var(--green);
+  border: 1px solid var(--border);
+}
+
+.fdb-rr-tag {
+  font-size: 12px;
+  color: var(--text3);
+}
+
+.fdb-rr-tag span {
+  color: var(--yellow);
+  font-weight: 700;
+}
+
+.fdb-e-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.fdb-e-row:last-child {
+  border-bottom: none;
+}
+
+.fdb-e-row .fdb-lbl {
+  color: var(--text3);
+  font-size: 12px;
+}
+
+.fdb-e-row .val-entry {
+  color: var(--red);
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.fdb-e-row .val-sl {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.fdb-e-row .val-t1 {
+  color: var(--green);
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.fdb-e-row .val-t2 {
+  color: var(--green2);
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.fdb-e-row .val-entry-b {
+  color: var(--green);
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.fdb-e-hint {
+  font-size: 11px;
+  color: var(--text3);
+  margin-top: 6px;
+  font-style: italic;
+}
+
+/* ── Loading / error states ── */
+.fdb-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text3);
+  font-size: 13px;
+  padding: 20px;
+  flex: 1;
+}
+
+.fdb-spinner {
+  width: 26px;
+  height: 26px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: fdb-spin 0.7s linear infinite;
+}
+
+@keyframes fdb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.fdb-no-wave {
+  font-size: 13px;
+  color: var(--border2);
+  font-style: italic;
+  padding: 4px 0;
+}
+
+/* ── Scrollable column body ── */
+.fdb-col-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.fdb-col-body::-webkit-scrollbar {
+  width: 4px;
+}
+
+.fdb-col-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.fdb-col-body::-webkit-scrollbar-thumb {
+  background: var(--border2);
+  border-radius: 2px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   Support / Resistance Panel
+══════════════════════════════════════════════════════════════════════════════ */
+
+.fdb-sr-body {
+  padding-top: 0;
+}
+
+/* Sub-panel (one per TF) */
+.sr-subpanel {
+  padding: 10px 0 4px;
+}
+
+.sr-subpanel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.sr-tf-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text2);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.sr-chart-btn {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--border2);
+  border-radius: 3px;
+  color: var(--text3);
+  font-size: 11px;
+  padding: 2px 7px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.sr-chart-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ── SR Panel rows ── */
+.sr-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sr-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-radius: 4px;
+  border-left: 3px solid transparent;
+  gap: 6px;
+}
+
+.sr-row-res {
+  background: rgba(255, 68, 68, 0.07);
+  border-left-color: var(--red);
+}
+
+.sr-row-sup {
+  background: rgba(68, 204, 68, 0.07);
+  border-left-color: var(--green);
+}
+
+.sr-row-current {
+  background: rgba(100, 100, 200, 0.12);
+  border-left-color: var(--accent);
+  margin: 3px 0;
+}
+
+.sr-label-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.sr-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text2);
+  min-width: 22px;
+  letter-spacing: 0.02em;
+}
+
+.sr-label-current {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.sr-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.sr-price {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.sr-price-res {
+  color: var(--red);
+}
+
+.sr-price-sup {
+  color: var(--green);
+}
+
+.sr-price-current {
+  color: var(--text);
+  font-size: 16px;
+}
+
+.sr-touches {
+  font-size: 10px;
+  color: var(--text3);
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 3px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
+.sr-extra {
+  font-size: 9px;
+  color: var(--text3);
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+/* ── Badges ── */
+.sr-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 5px;
+  border-radius: 3px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.sr-strongest {
+  background: var(--yellow-dim);
+  color: var(--yellow);
+  border: 1px solid var(--border2);
+}
+
+.sr-cop {
+  background: var(--blue-dim);
+  color: var(--blue);
+  border: 1px solid var(--border2);
+}
+
+/* ── Change of Polarity note block ── */
+.sr-cop-note {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sr-cop-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 10px;
+  padding: 6px 8px;
+  border-radius: 3px;
+  line-height: 1.4;
+}
+
+.sr-cop-res {
+  background: rgba(255, 68, 68, 0.08);
+  border: 1px solid rgba(255, 68, 68, 0.18);
+  color: var(--red);
+}
+
+.sr-cop-sup {
+  background: rgba(68, 204, 68, 0.08);
+  border: 1px solid rgba(68, 204, 68, 0.18);
+  color: var(--green);
+}
+
+.sr-cop-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   Fib Table enhancements — extended levels, trap zone, current price
+══════════════════════════════════════════════════════════════════════════════ */
+
+.fdb-fib-trap td,
+.fdb-fib-trap .fdb-lvl-num {
+  background: rgba(255, 80, 80, 0.08);
+  color: var(--red) !important;
+}
+
+.fdb-fib-ext td,
+.fdb-fib-ext .fdb-lvl-num {
+  color: var(--blue) !important;
+  background: rgba(68, 170, 255, 0.05);
+}
+
+.fdb-fib-current td,
+.fdb-fib-current .fdb-lvl-num {
+  background: rgba(255, 200, 68, 0.12);
+  font-weight: 700;
+}
+
+.fdb-fib-price-now {
+  color: var(--yellow) !important;
+  font-weight: 700;
+}
+
+.fdb-badge.fdb-b-caution {
+  background: var(--yellow-dim);
+  color: var(--yellow);
+  border: 1px solid var(--border2);
+  font-size: 9px;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+
+.fdb-badge.fdb-b-ext {
+  background: var(--blue-dim);
+  color: var(--blue);
+  border: 1px solid var(--border2);
+  font-size: 9px;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+
+.fdb-badge.fdb-b-target {
+  background: var(--green-dim);
+  color: var(--green);
+  border: 1px solid var(--border2);
+  font-size: 9px;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+
+.fdb-badge.fdb-b-trap {
+  background: var(--red-dim);
+  color: var(--red);
+  border: 1px solid var(--border2);
+  font-size: 9px;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   SR Wave Lines — indicator-style display (not bubbles)
+══════════════════════════════════════════════════════════════════════════════ */
+
+/* Mother Wave Condition block */
+.sr-mw-condition {
+  border: 1px solid;
+  border-radius: 5px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.sr-mw-condition-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+
+.sr-mw-label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.sr-mw-tag {
+  font-size: 9px;
+  color: var(--text3);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sr-mw-desc {
+  font-size: 10px;
+  color: var(--text3);
+  line-height: 1.4;
+}
+
+/* Trap Zone Alert */
+.sr-trap-alert {
+  background: rgba(255, 60, 60, 0.08);
+  border: 1px solid rgba(255, 80, 80, 0.3);
+  border-radius: 5px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+
+.sr-trap-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+
+.sr-trap-icon {
+  font-size: 13px;
+  color: var(--red);
+}
+
+.sr-trap-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--red);
+  letter-spacing: 0.03em;
+}
+
+.sr-trap-body {
+  font-size: 10px;
+  color: var(--text2);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sr-trap-row {
+  color: var(--text2);
+}
+
+.sr-trap-bias {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 6px;
+  border-radius: 3px;
+}
+
+.sr-trap-short {
+  color: var(--red);
+  background: rgba(255, 80, 80, 0.1);
+}
+
+.sr-trap-buy {
+  color: var(--green);
+  background: rgba(68, 200, 68, 0.1);
+}
+
+.sr-trap-hint {
+  color: var(--text3);
+  font-style: italic;
+  margin-top: 2px;
+}
+
+/* Fib Alert */
+.sr-fib-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-radius: 5px;
+  padding: 7px 10px;
+  margin-bottom: 8px;
+}
+
+.sr-fib-alert-ready {
+  background: rgba(255, 200, 68, 0.08);
+  border: 1px solid rgba(255, 200, 68, 0.25);
+}
+
+.sr-fib-alert-between {
+  background: rgba(100, 100, 200, 0.08);
+  border: 1px solid rgba(100, 100, 200, 0.2);
+}
+
+.sr-fib-alert-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.sr-fib-alert-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--yellow);
+  letter-spacing: 0.03em;
+}
+
+.sr-fib-alert-between .sr-fib-alert-title {
+  color: var(--text2);
+}
+
+.sr-fib-alert-sub {
+  font-size: 9px;
+  color: var(--text3);
+  margin-top: 2px;
+}
+
+/* Section labels */
+.sr-section-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 4px 0 2px;
+  margin-top: 4px;
+}
+
+.sr-section-res {
+  color: var(--red);
+}
+
+.sr-section-sup {
+  color: var(--green);
+}
+
+/* Wave line rows — indicator style */
+.sr-wave-line {
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 3px;
+  border-left: 3px solid transparent;
+}
+
+.sr-wave-res {
+  background: rgba(255, 68, 68, 0.06);
+  border-left-color: var(--red);
+}
+
+.sr-wave-sup {
+  background: rgba(68, 204, 68, 0.06);
+  border-left-color: var(--green);
+}
+
+.sr-wave-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  gap: 6px;
+}
+
+.sr-wave-label-group {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.sr-wave-tag {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text2);
+  min-width: 22px;
+}
+
+.sr-wave-type-hint {
+  font-size: 9px;
+  color: var(--text3);
+  letter-spacing: 0.02em;
+}
+
+.sr-wave-price-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.sr-wave-price {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.sr-wave-price-res {
+  color: var(--red);
+}
+
+.sr-wave-price-sup {
+  color: var(--green);
+}
+
+.sr-wave-pct {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+/* Bar track — the indicator line visual */
+.sr-wave-bar-track {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 4px;
+  position: relative;
+}
+
+.sr-wave-bar {
+  height: 4px;
+  border-radius: 2px;
+  min-width: 6px;
+  transition: width 0.3s ease;
+}
+
+.sr-wave-bar-res {
+  background: linear-gradient(90deg, rgba(255, 68, 68, 0.6), rgba(255, 68, 68, 0.2));
+}
+
+.sr-wave-bar-sup {
+  background: linear-gradient(90deg, rgba(68, 204, 68, 0.6), rgba(68, 204, 68, 0.2));
+}
+
+.sr-wave-touches {
+  font-size: 9px;
+  color: var(--text3);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  white-space: nowrap;
+  line-height: 14px;
+  margin-left: auto;
+}
+
+/* ── Draw on Chart button ── */
+.fdb-draw-chart-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 4px 10px;
+  background: rgba(41, 98, 255, 0.1);
+  border: 1px solid rgba(41, 98, 255, 0.3);
+  border-radius: 4px;
+  color: var(--blue);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  flex-shrink: 0;
+}
+
+.fdb-draw-chart-btn:hover {
+  background: rgba(41, 98, 255, 0.22);
+  color: var(--blue);
+  border-color: rgba(41, 98, 255, 0.6);
+}
+
+.fdb-draw-chart-btn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+/* ── HTF TF row with Draw Fib button ── */
+.fdb-tf-row-htf {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+/* Draw Fib button — teal/green accent to distinguish from SR draw btn */
+.fdb-draw-fib-btn {
+  background: rgba(38, 166, 154, 0.10) !important;
+  border-color: rgba(38, 166, 154, 0.35) !important;
+  color: #26a69a !important;
+  margin-left: auto;
+}
+
+.fdb-draw-fib-btn:hover {
+  background: rgba(38, 166, 154, 0.22) !important;
+  color: #4db6ac !important;
+  border-color: rgba(38, 166, 154, 0.6) !important;
+}
+
+/* ─── Responsive ─────────────────────────────────────── */
+@media (max-width: 1100px) {
+  .fdb-dash {
+    grid-template-columns: 1fr 1fr;
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 700px) {
+  .fdb-dash {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+
+  .fdb-topbar-left {
+    display: none;
+  }
+
+  .fdb-logo-img {
+    height: 22px;
+  }
+}
+
+@media (max-width: 480px) {
+  .fdb-topbar {
+    padding-right: 6px;
+  }
+
+  .fdb-back-btn {
+    width: 38px;
+  }
+}

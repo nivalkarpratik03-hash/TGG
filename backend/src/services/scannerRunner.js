@@ -87,12 +87,32 @@ class ScannerRunner extends EventEmitter {
   getSymbols() { return [...this._symbolList]; }
 
   // ── Manual trigger ───────────────────────────────────────────────────────────
-  async triggerNow(resolution) {
+  // NEW 2026-08-02 — optional `scanSymbols`: when provided (from the Scanner
+  // UI's category dropdown), scans ONLY that subset instead of the full
+  // persistent _symbolList, and does not touch _symbolList or the persistent
+  // _retryQueue at all — a scoped scan is a one-off, it never changes what
+  // the next full scan (or another scoped scan) will cover.
+  async triggerNow(resolution, scanSymbols) {
     if (this._running) return { status: "already_running", progress: this._progress };
     if (resolution != null) this._resolution = parseInt(resolution) || DEFAULT_RESOLUTION;
     this._aborted = false;
-    await this._runScan();
-    return { status: "triggered", symbols: this._symbolList.length, resolution: this._resolution };
+
+    let scopedSymbols = null;
+    if (Array.isArray(scanSymbols) && scanSymbols.length > 0) {
+      const raw = [...new Set(scanSymbols.filter(Boolean))];
+      scopedSymbols = raw.filter(isValidScanSymbol);
+      if (scopedSymbols.length === 0) {
+        return { status: "no_valid_symbols", symbols: 0, resolution: this._resolution };
+      }
+    }
+
+    await this._runScan(scopedSymbols);
+    return {
+      status: "triggered",
+      symbols: (scopedSymbols || this._symbolList).length,
+      scoped: !!scopedSymbols,
+      resolution: this._resolution,
+    };
   }
 
   // ── Stop ─────────────────────────────────────────────────────────────────────
@@ -106,9 +126,11 @@ class ScannerRunner extends EventEmitter {
   }
 
   // ── Core scan loop ────────────────────────────────────────────────────────────
-  async _runScan() {
+  async _runScan(scopedSymbols = null) {
     if (this._running) return;
-    if (this._symbolList.length === 0) { console.log("[Scanner] No symbols — skipping"); return; }
+    const isScoped = !!scopedSymbols;
+    const baseList = isScoped ? scopedSymbols : this._symbolList;
+    if (baseList.length === 0) { console.log("[Scanner] No symbols — skipping"); return; }
 
     this._running = true;
     this._aborted = false;
@@ -117,15 +139,22 @@ class ScannerRunner extends EventEmitter {
     const startMs = Date.now();
     const resolution = this._resolution;
 
-    const toScan = [...new Set([...this._retryQueue, ...this._symbolList])];
-    this._retryQueue = [];
+    // Scoped (category-filtered) runs never merge in or write back to the
+    // persistent _retryQueue — that queue exists for the full-symbol-list
+    // scan cycle only. A scoped run gets its own local retry queue that
+    // lives and dies with this one call, same immediate-retry behavior,
+    // just not shared across runs or across scopes.
+    const retryTarget = isScoped ? [] : this._retryQueue;
+    const toScan = isScoped ? [...new Set(baseList)] : [...new Set([...this._retryQueue, ...baseList])];
+    if (!isScoped) this._retryQueue = [];
     this._progress = { total: toScan.length, done: 0, found: 0 };
 
-    console.log(`[Scanner #${scanId}] ${toScan.length} symbols × ${strategies.length} strategies @ res=${resolution}m`);
+    console.log(`[Scanner #${scanId}] ${toScan.length} symbols × ${strategies.length} strategies @ res=${resolution}m${isScoped ? " (scoped)" : ""}`);
     this.emit("scan_start", {
       scanId,
       total: toScan.length,
       resolution,
+      scoped: isScoped,
       strategies: strategies.map(s => ({ id: s.id, name: s.name })),
     });
 
@@ -135,20 +164,20 @@ class ScannerRunner extends EventEmitter {
         break;
       }
       const batch = toScan.slice(i, i + CONCURRENCY);
-      await Promise.allSettled(batch.map((sym) => this._processSymbol(sym, false, resolution)));
+      await Promise.allSettled(batch.map((sym) => this._processSymbol(sym, false, resolution, retryTarget)));
       this._progress.done = Math.min(i + CONCURRENCY, toScan.length);
       this.emit("scan_progress", { ...this._progress, scanId });
       if (i + CONCURRENCY < toScan.length) await delay(BATCH_DELAY_MS);
     }
 
     // Retry pass (only if not aborted)
-    if (!this._aborted && this._retryQueue.length > 0) {
-      const retries = [...this._retryQueue];
-      this._retryQueue = [];
+    if (!this._aborted && retryTarget.length > 0) {
+      const retries = [...retryTarget];
+      retryTarget.length = 0;
       console.log(`[Scanner #${scanId}] Retrying ${retries.length} symbols...`);
       for (const sym of retries) {
         if (this._aborted) break;
-        await this._processSymbol(sym, true, resolution);
+        await this._processSymbol(sym, true, resolution, retryTarget);
         await delay(600);
       }
     }
@@ -169,12 +198,14 @@ class ScannerRunner extends EventEmitter {
       durationMs,
       scannedAt: this._lastScanAt,
       resolution,
+      scoped: isScoped,
       summary,
     });
   }
 
   // ── Process one symbol — fetch candles ONCE, run all strategies ───────────────
-  async _processSymbol(symbol, isRetry = false, resolution = DEFAULT_RESOLUTION) {
+  async _processSymbol(symbol, isRetry = false, resolution = DEFAULT_RESOLUTION, retryTarget = null) {
+    const retryQueue = retryTarget || this._retryQueue;
     try {
       // ── DB-first: read from Postgres, fall back to Fyers if empty ─────────
       let candles = null;
@@ -249,7 +280,7 @@ class ScannerRunner extends EventEmitter {
       this._errors.set(symbol, prev);
 
       if (!isRetry && prev.count <= RETRY_LIMIT) {
-        this._retryQueue.push(symbol);
+        retryQueue.push(symbol);
         console.warn(`[Scanner] ⚠ ${symbol} fetch failed (retry): ${err.message}`);
       } else {
         console.error(`[Scanner] ✗ ${symbol} permanently failed: ${err.message}`);

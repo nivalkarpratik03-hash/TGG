@@ -74,6 +74,21 @@ function calcEMA(prices, period) {
 export function updateWavesIndicatorPure(candles, emaHighs, emaLows) {
   if (!candles?.length) return { pivots: [], segments: [] };
 
+  // CHUNK 6 investigation (2026-08-04): this fallback is NOT dead code.
+  // On the live socket-driven chart (pages/ChartsPage.js via CandleChart.js),
+  // hooks/useSocket.js only updates `candles` on each tick/new-candle event
+  // (tick_update/candle_update/new_candle) — it never touches emaHighs/emaLows
+  // in those handlers. emaHighs/emaLows are only refreshed on a full chartData
+  // replacement (initial load, manual Refresh click, symbol/resolution change,
+  // or reconnect resync). So the moment a new candle forms live, emaHighs.length
+  // falls 1+ short of candles.length, this ternary's condition goes false, and
+  // this local calcEMA runs — routinely, for the rest of that live session,
+  // until the next full refresh. Confirmed by tracing useSocket.js end to end;
+  // do not delete this fallback without also changing how live ticks update
+  // emaHighs/emaLows to keep pace with candles.
+  // (On pages/ReportsPage.js's separate, non-socket usage of this function,
+  // candles/emaHighs/emaLows are always set together from one REST response,
+  // so this fallback should rarely if ever trigger there.)
   const eH = emaHighs?.length === candles.length
     ? emaHighs : calcEMA(candles.map((c) => c.high), 9);
   const eL = emaLows?.length === candles.length

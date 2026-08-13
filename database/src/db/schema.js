@@ -82,6 +82,12 @@ const repairLog = pgTable(
 );
 
 // ─── symbol_access_log ──────────────────────────────────────────────────────
+// NOTE: this table does NOT exist in your migrations (001–004) yet — it's
+// only used by teammate's retentionCleanup.js/ohlcGuard.js, which were NOT
+// brought into this merge. Left here (inert, nothing references it) so the
+// schema file matches his 1:1; if you never add that feature, this entry is
+// simply unused and harmless. Delete it if you want the schema to strictly
+// mirror only tables that actually exist.
 const symbolAccessLog = pgTable(
   "symbol_access_log",
   {
@@ -124,6 +130,7 @@ const nseOptionsCandles = pgTable(
     low: doublePrecision("low").notNull(),
     close: doublePrecision("close").notNull(),
     volume: bigint("volume", { mode: "number" }).notNull().default(0),
+    oi: bigint("oi", { mode: "number" }), // migration 004
     symbol: text("symbol").notNull(),
     insertedAt: timestamp("inserted_at", { withTimezone: true, mode: "date" })
       .notNull()
@@ -150,6 +157,7 @@ const mcxOptionsCandles = pgTable(
     low: doublePrecision("low").notNull(),
     close: doublePrecision("close").notNull(),
     volume: bigint("volume", { mode: "number" }).notNull().default(0),
+    oi: bigint("oi", { mode: "number" }), // migration 004
     symbol: text("symbol").notNull(),
     insertedAt: timestamp("inserted_at", { withTimezone: true, mode: "date" })
       .notNull()
@@ -173,6 +181,7 @@ const nseFuturesCandles = pgTable(
     low: doublePrecision("low").notNull(),
     close: doublePrecision("close").notNull(),
     volume: bigint("volume", { mode: "number" }).notNull().default(0),
+    oi: bigint("oi", { mode: "number" }), // migration 004
     symbol: text("symbol").notNull(),
     insertedAt: timestamp("inserted_at", { withTimezone: true, mode: "date" })
       .notNull()
@@ -195,6 +204,7 @@ const mcxFuturesCandles = pgTable(
     low: doublePrecision("low").notNull(),
     close: doublePrecision("close").notNull(),
     volume: bigint("volume", { mode: "number" }).notNull().default(0),
+    oi: bigint("oi", { mode: "number" }), // migration 004
     symbol: text("symbol").notNull(),
     insertedAt: timestamp("inserted_at", { withTimezone: true, mode: "date" })
       .notNull()
@@ -203,6 +213,59 @@ const mcxFuturesCandles = pgTable(
   (t) => [
     primaryKey({ columns: [t.underlying, t.expiryDate, t.time] }),
     index("idx_mcx_futures_symbol_time").on(t.symbol, t.time.desc()),
+  ]
+);
+
+// ─── BSE derivatives tables (migration 004 — not present in teammate's schema,
+// added here so Drizzle matches your actual DB) ─────────────────────────────
+const bseOptionsCandles = pgTable(
+  "bse_options_candles",
+  {
+    underlying: text("underlying").notNull(),
+    expiryDate: date("expiry_date", { mode: "string" }).notNull(),
+    expiryType: text("expiry_type").notNull(),
+    strike: doublePrecision("strike").notNull(),
+    optionType: text("option_type").notNull(),
+    time: timestamp("time", { withTimezone: true, mode: "date" }).notNull(),
+    open: doublePrecision("open").notNull(),
+    high: doublePrecision("high").notNull(),
+    low: doublePrecision("low").notNull(),
+    close: doublePrecision("close").notNull(),
+    volume: bigint("volume", { mode: "number" }).notNull().default(0),
+    oi: bigint("oi", { mode: "number" }),
+    symbol: text("symbol").notNull(),
+    insertedAt: timestamp("inserted_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.underlying, t.expiryDate, t.strike, t.optionType, t.time] }),
+    index("idx_bse_options_symbol_time").on(t.symbol, t.time.desc()),
+    check("bse_options_expiry_type_check", sql`${t.expiryType} IN ('weekly','monthly')`),
+    check("bse_options_option_type_check", sql`${t.optionType} IN ('CE','PE')`),
+  ]
+);
+
+const bseFuturesCandles = pgTable(
+  "bse_futures_candles",
+  {
+    underlying: text("underlying").notNull(),
+    expiryDate: date("expiry_date", { mode: "string" }).notNull(),
+    time: timestamp("time", { withTimezone: true, mode: "date" }).notNull(),
+    open: doublePrecision("open").notNull(),
+    high: doublePrecision("high").notNull(),
+    low: doublePrecision("low").notNull(),
+    close: doublePrecision("close").notNull(),
+    volume: bigint("volume", { mode: "number" }).notNull().default(0),
+    oi: bigint("oi", { mode: "number" }),
+    symbol: text("symbol").notNull(),
+    insertedAt: timestamp("inserted_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.underlying, t.expiryDate, t.time] }),
+    index("idx_bse_futures_symbol_time").on(t.symbol, t.time.desc()),
   ]
 );
 
@@ -215,4 +278,6 @@ module.exports = {
   mcxOptionsCandles,
   nseFuturesCandles,
   mcxFuturesCandles,
+  bseOptionsCandles,
+  bseFuturesCandles,
 };

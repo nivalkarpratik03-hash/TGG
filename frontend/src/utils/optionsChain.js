@@ -1,13 +1,24 @@
 // utils/optionsChain.js
 // ─────────────────────────────────────────────────────────────────────────────
-// Shared helpers for OptionsChainModal.
+// Shared helpers for the options-chain modal, Ctrl+Q's ATM Workspace, and
+// Auto-ATM strike switching.
+//
+// ROOT-CAUSE NOTE (2026-08-11): this file used to also contain
+// buildStrikeLadder()/optionSymbol()/nextMonthlyExpiries() (+ their private
+// date-math helpers and the MCX_EXPIRY_DAY/RESTRICTED_MONTH_CYCLE/
+// EXPIRY_GRACE_DAYS/INDEX_WEEKLY_EXPIRY_DAY/FYERS_WEEKLY_MONTH_CHAR/
+// MONTH_CODES constants) — a fully offline strike-ladder + Fyers-expiry-
+// format guesser that OptionsChainModal.js used to build strike/expiry
+// symbols locally. That guessed encoding is frequently rejected by Fyers as
+// "Invalid symbol provided" (confirmed live). OptionsChainModal.js now
+// fetches the real chain from GET /api/options/chain instead — the same
+// endpoint Ctrl+Q's AtmWorkspace.js and Auto-ATM below already used, and
+// the reason neither of those two ever had this bug. All of the above was
+// deleted here since OptionsChainModal.js was its only caller; everything
+// remaining in this file is still actively used by Ctrl+Q / Auto-ATM /
+// OptionsChainModal's cosmetic labels.
 // Supports: NSE equities, NSE/BSE indices, MCX commodities.
 // ─────────────────────────────────────────────────────────────────────────────
-
-import { previousTradingDay } from "./holidayCalendar";
-
-// ── Month codes ───────────────────────────────────────────────────────────────
-const MONTH_CODES = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 
 // ── MCX commodity config ──────────────────────────────────────────────────────
 // strikeStep  — interval between strikes (in ₹ per unit)
@@ -36,66 +47,41 @@ export const MCX_COMMODITIES = {
   CASTORSEED: { name: "Castor Seed", strikeStep: 50, decimals: 0, unit: "100kg", exchange: "MCX" },
 };
 
-// ── MCX expiry-day approximations ─────────────────────────────────────────────
-// Used to decide which contract month to start from — MUST stay in sync with
-// symbolsRouter.js MCX_EXPIRY_DAY so commodity, futures, and options chain
-// always show the same contract month.
-// Rule: only roll forward to next month once today is PAST (expiryDay + grace)
-// — never roll early. See symbolsRouter.js for the full rationale.
-const MCX_EXPIRY_DAY = {
-  CRUDEOIL: 19, CRUDEOILM: 19,
-  NATURALGAS: 23, NATGASMINI: 23,
-  COPPER: 22, ZINC: 22, ZINCMINI: 22,
-  ALUMINIUM: 22, LEAD: 22, LEADMINI: 22, NICKEL: 22,
-  GOLD: 5, GOLDM: 29, GOLDPETAL: 29,
-  SILVER: 27, SILVERM: 27, SILVERMIC: 27,
-  MENTHAOIL: 29, COTTON: 29, CASTORSEED: 29,
-};
-const EXPIRY_GRACE_DAYS = 1; // roll this many days AFTER the approx expiry (never before)
-
-// Commodities that trade WEEKLY options (every Friday expiry on MCX)
+// Commodities that trade WEEKLY options (every Friday expiry on MCX) — used
+// only as a cosmetic "WEEKLY" badge in OptionsChainModal.js now; the real
+// expiry list/dates come from Fyers, not from this set.
 export const WEEKLY_EXPIRY_COMMODITIES = new Set(["SILVERMIC"]);
 
-// ── Restricted contract-month cycles ─────────────────────────────────────
-// MUST stay in sync with symbolsRouter.js RESTRICTED_MONTH_CYCLE. Unlike
-// CRUDEOIL/NATURALGAS/COPPER etc (which list a new contract every single
-// calendar month), MCX's silver family does NOT trade every month — it only
-// lists contracts in a fixed cycle. Building an options-chain tab for a
-// month outside this cycle produces a symbol that was never listed, which
-// Fyers correctly rejects with "Invalid symbol provided" for every strike
-// in that tab. Confirmed via MCX expiry circulars: Feb, Apr, Jun, Aug, Nov, Dec.
-// (SILVERMIC is unaffected — it's routed through WEEKLY_EXPIRY_COMMODITIES
-// above and never reaches this monthly branch.)
-const RESTRICTED_MONTH_CYCLE = {
-  SILVER: [1, 3, 5, 7, 10, 11],   // 0-based: Feb, Apr, Jun, Aug, Nov, Dec
-  SILVERM: [1, 3, 5, 7, 10, 11],
-};
-
-// ── Index weekly expiry weekday ───────────────────────────────────────────────
-// SEBI's Oct-2024 circular limited weekly index options to ONE benchmark per
-// exchange: NSE kept NIFTY, BSE kept SENSEX. Every other index (BANKNIFTY,
-// FINNIFTY, MIDCPNIFTY, NIFTYIT) now trades MONTHLY ONLY — not listed here.
-// Weekday: 0=Sun..6=Sat (JS Date.getDay()).
-//   NIFTY:  Tuesday (2) — moved from Thursday, effective 1 Sep 2025.
-//   SENSEX: Thursday (4) — BSE's weekly day, unchanged through the same
-//           Aug/Sep 2025 restructuring (BSE's monthly expiry also moved to
-//           the last Thursday of the month at the same time).
-// If either exchange changes this again, update here only — both the expiry
-// list (nextMonthlyExpiries) and the symbol builder (optionSymbol) read it.
-const INDEX_WEEKLY_EXPIRY_DAY = {
-  NIFTY: 2,
-  SENSEX: 4,
-};
-export { INDEX_WEEKLY_EXPIRY_DAY };
-
-// ── NSE index option roots ────────────────────────────────────────────────────
+// ── NSE/BSE index option roots ─────────────────────────────────────────────────
+// Frontend code can't read symbols/index.json off disk (no filesystem access
+// in the browser — would need /api/symbols to go fully dynamic), so this
+// stays a small hand-maintained map, verified against the real index.json.
+//
+// IMPORTANT — this must stay a FULL map of all 6 curated indices, not just
+// the 2 that getOptionRoot()'s forward "-INDEX"-strip fallback can't handle
+// on its own. NSE_INDEX_TICKERS below is the REVERSE of this map (root name
+// → full ticker), and ChartsPage.js uses that reverse map in 3 places to
+// rebuild a full underlying symbol from just a parsed option's root — with
+// a fallback that assumes `${root}-EQ` (equity) for anything not found here.
+// An earlier pass trimmed this to just NIFTY/BANKNIFTY on the theory that
+// the forward fallback alone was enough — that was correct for
+// getOptionRoot() but silently broke ChartsPage.js's Auto-ATM lookups for
+// FINNIFTY/MIDCPNIFTY/SENSEX/BANKEX (each would have resolved to a bogus
+// "...-EQ" equity symbol instead of "...-INDEX"). Caught and fixed by
+// actually testing that consumer, not just getOptionRoot() in isolation.
+//
+// Previously this also carried a stale "CNXFINANCE-INDEX": "FINNIFTY" entry
+// (FINNIFTY's spot symbol changed to NSE:FINNIFTY-INDEX on 2026-08-06 — see
+// symbols/index.json's own _readme — CNXFINANCE-INDEX is no longer a real
+// symbol anywhere in this codebase) and a "CNXIT-INDEX": "NIFTYIT" orphan
+// (NIFTYIT was never one of the 6 curated indices). Both dropped.
 const NSE_INDEX_ROOTS = {
   "NIFTY50-INDEX": "NIFTY",
   "NIFTYBANK-INDEX": "BANKNIFTY",
-  "CNXFINANCE-INDEX": "FINNIFTY",
-  "CNXIT-INDEX": "NIFTYIT",
+  "FINNIFTY-INDEX": "FINNIFTY",
   "MIDCPNIFTY-INDEX": "MIDCPNIFTY",
   "SENSEX-INDEX": "SENSEX",   // BSE
+  "BANKEX-INDEX": "BANKEX",   // BSE
 };
 
 // Inverse of NSE_INDEX_ROOTS (option root → index ticker), derived once so the
@@ -144,189 +130,14 @@ export function getOptionRoot(symbolStr) {
   return { exch, root, isIndex: false, isCommodity: false, strikeStep: 50, decimals: 0 };
 }
 
-// ── Unified expiry roll logic ─────────────────────────────────────────────────
-// Returns the month offset (0 = this month, 1 = next, ...) for the NEAR
-// contract of a given MCX root — IDENTICAL to symbolsRouter.js mcxNearMonthOffset
-// so the commodity tab, futures tab, and options chain all show the same month.
-function mcxNearMonthOffset(root, now = new Date()) {
-  const expiryDay = MCX_EXPIRY_DAY[root];
-  if (!expiryDay) return 0;
-  return now.getDate() > (expiryDay + EXPIRY_GRACE_DAYS) ? 1 : 0;
-}
-
-// ── Build expiry list ─────────────────────────────────────────────────────────
-// Returns `count` upcoming expiry objects { label, code, date, approx, weekly }
-//
-// KEY DESIGN: For MCX commodities, the starting month is determined by
-// mcxNearMonthOffset() — the SAME roll logic as symbolsRouter.js — so
-// the first expiry shown here always matches the contract month shown
-// in the Commodity tab and Futures tab of the search bar.
-//
-// NSE equities/indices (monthly-only underlyings — BANKNIFTY, FINNIFTY,
-// MIDCPNIFTY, NIFTYIT, and all single-stock F&O): last TUESDAY of the month,
-// holiday-adjusted. NSE moved its monthly/quarterly/half-yearly expiry from
-// the last Thursday to the last Tuesday of the month effective contracts
-// expiring on/after 1 Sep 2025 (NSE circular Ref. 111/2025). If that
-// computed last-Tuesday falls on an exchange holiday, actual expiry shifts
-// to the previous trading day — see holidayCalendar.js.
-// EXCEPT NIFTY/SENSEX, which also trade WEEKLY (see INDEX_WEEKLY_EXPIRY_DAY)
-// and so must list every week's expiry, not just the monthly one. Before this
-// fix, nextMonthlyExpiries always jumped straight to lastThursdayOfMonth(),
-// which used the WRONG weekday (Thursday, pre-Sep-2025 rule) AND skipped
-// every weekly expiry before the month-end one — e.g. on 26 Jun 2026 it
-// returned "30 JUL" as the nearest SENSEX expiry, when the true nearest
-// expiry is the next Thursday, "02 JUL".
-// MCX commodities: approximate expiry day per commodity (MCX publishes exact
-// date via monthly circular; `approx: true` flags this in the UI). Holiday
-// adjustment is applied here too (MCX's own 4 full-closure holidays only),
-// which only ever refines the approximation — never makes it less accurate.
-export function nextMonthlyExpiries(count = 3, commodityRoot = null, indexRoot = null) {
-  // Silver Micro uses WEEKLY expiries (every Friday), not monthly
-  if (commodityRoot && WEEKLY_EXPIRY_COMMODITIES.has(commodityRoot)) {
-    return nextWeeklyExpiries(count, 5, { fyersWeeklyCode: false });
-  }
-  // NIFTY/SENSEX trade weekly — every Tuesday/Thursday is a real, separately
-  // tradeable expiry, including the one that happens to also be month-end.
-  if (indexRoot && INDEX_WEEKLY_EXPIRY_DAY[indexRoot] != null) {
-    return nextWeeklyExpiries(count, INDEX_WEEKLY_EXPIRY_DAY[indexRoot], { fyersWeeklyCode: true });
-  }
-
-  const now = new Date();
-  const results = [];
-
-  const approxDay = commodityRoot ? MCX_EXPIRY_DAY[commodityRoot] : null;
-  const cycle = commodityRoot ? RESTRICTED_MONTH_CYCLE[commodityRoot] : null;
-
-  // For unrestricted MCX roots (every calendar month lists a contract): start
-  // from the near-month offset so we match symbolsRouter.
-  // For restricted-cycle roots (SILVER/SILVERM): don't pre-jump via
-  // mcxNearMonthOffset — that offset only knows about day-of-month, not which
-  // months are even valid. Instead walk forward from the current month and
-  // let the `cycle` check below skip non-listed months, and the cutoff check
-  // skip cycle months whose expiry has already passed this year.
-  // For NSE: start offset = 0 (current month), let the cutoff skip if passed.
-  let year = now.getFullYear();
-  let month = now.getMonth();
-  if (commodityRoot && !cycle) {
-    month += mcxNearMonthOffset(commodityRoot, now);
-    year += Math.floor(month / 12);
-    month = month % 12;
-  }
-
-  let guard = 0;
-  for (let i = 0; results.length < count && guard < 60; i++, guard++) {
-    let m = month + i;
-    let y = year + Math.floor(m / 12);
-    m = m % 12;
-
-    // Restricted-cycle commodities only list contracts in specific months —
-    // skip any month that was never a real listed contract.
-    if (cycle && !cycle.includes(m)) continue;
-
-    let expDate = approxDay
-      ? clampToLastDayOfMonth(y, m, approxDay)
-      : lastWeekdayOfMonth(y, m, 2); // 2 = Tuesday (NSE rule since 1 Sep 2025)
-
-    // Holiday-adjust: if the computed date lands on an exchange holiday,
-    // the exchange itself shifts expiry to the previous trading day.
-    expDate = previousTradingDay(expDate, approxDay ? "MCX" : "NSE");
-
-    // Skip months whose expiry (+ grace period for MCX) has already passed.
-    // For unrestricted MCX roots this never actually triggers (offset above
-    // already starts on a fresh month), but for restricted-cycle roots this
-    // is essential — e.g. if today is just past Aug's expiry, Aug must be
-    // skipped in favour of Nov, not re-shown.
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - (approxDay ? (1 + EXPIRY_GRACE_DAYS) : 1));
-    if (expDate < cutoff) continue;
-
-    const dd = String(expDate.getDate()).padStart(2, "0");
-    const mon = MONTH_CODES[m];
-    const yy = String(y).slice(-2);
-
-    results.push({
-      label: `${approxDay ? "~" : ""}${dd} ${mon}`,
-      code: `${yy}${mon}`,  // e.g. "26JUL" — used in Fyers option symbol
-      date: expDate,
-      approx: !!approxDay,
-      weekly: false,
-    });
-  }
-  return results;
-}
-
-// ── Fyers weekly-contract month character ─────────────────────────────────────
-// Confirmed against real Fyers symbols: months 1-9 are the bare digit, and
-// Oct/Nov/Dec are single letters O/N/D (e.g. "NIFTY24D2622700CE" = 26 Dec 2024).
-// This is ONLY used for the weekly date-coded format — monthly contracts keep
-// the existing 3-letter MONTH_CODES (e.g. "26JAN") untouched.
-const FYERS_WEEKLY_MONTH_CHAR = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "O", "N", "D"];
-
-// Returns upcoming expiry dates for a given weekday (0=Sun..6=Sat).
-// Used for: MCX weekly commodities (Friday, fyersWeeklyCode:false — keeps the
-// existing YYMON-style code since that path was already working and hasn't
-// been verified against a real MCX weekly symbol) and NSE/BSE weekly index
-// options (Tuesday/Thursday, fyersWeeklyCode:true — uses Fyers' actual
-// {YY}{monthChar}{DD} weekly symbol format, confirmed against real examples).
-function nextWeeklyExpiries(count, weekday, { fyersWeeklyCode }) {
-  // Holiday adjustment: index weekly (fyersWeeklyCode:true) is exact
-  // per-exchange — Tuesday belongs to NSE, Thursday to BSE. MCX weekly
-  // (Friday, SILVERMIC) uses MCX's own 4-holiday calendar. If neither
-  // applies (shouldn't happen given current callers) skip adjustment.
-  const exchange = fyersWeeklyCode
-    ? (weekday === 4 ? "BSE" : "NSE")
-    : "MCX";
-  const seenKeys = new Set();
-
-  const results = [];
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() + 1); // start from tomorrow
-  while (results.length < count) {
-    if (d.getDay() === weekday) {
-      const adjusted = previousTradingDay(d, exchange);
-      const key = adjusted.toISOString().slice(0, 10);
-      if (!seenKeys.has(key)) {
-        seenKeys.add(key);
-        const dd = String(adjusted.getDate()).padStart(2, "0");
-        const mon = MONTH_CODES[adjusted.getMonth()];
-        const yy = String(adjusted.getFullYear()).slice(-2);
-        results.push({
-          label: `${dd} ${mon}`,
-          code: fyersWeeklyCode ? `${yy}${FYERS_WEEKLY_MONTH_CHAR[adjusted.getMonth()]}${dd}` : `${yy}${mon}`,
-          date: adjusted,
-          approx: !fyersWeeklyCode, // MCX weekly stays "approx" as before; index weekly is exact (exchange-published rule)
-          weekly: true,
-        });
-      }
-    }
-    d.setDate(d.getDate() + 1);
-  }
-  return results;
-}
-
-function clampToLastDayOfMonth(year, month, day) {
-  const lastDay = new Date(year, month + 1, 0).getDate();
-  return new Date(year, month, Math.min(day, lastDay));
-}
-
-// Generic "last <weekday> of month" finder — weekday: 0=Sun..6=Sat.
-// Replaces the old hardcoded lastThursdayOfMonth() now that the NSE monthly
-// rule is Tuesday (2), not Thursday (4). BSE monthly (Thursday) is handled
-// via the weekly-expiry branch for SENSEX (INDEX_WEEKLY_EXPIRY_DAY), since
-// SENSEX is the only BSE underlying with options in this codebase.
-function lastWeekdayOfMonth(year, month, weekday) {
-  const d = new Date(year, month + 1, 0); // last day of month
-  while (d.getDay() !== weekday) d.setDate(d.getDate() - 1);
-  return new Date(d);
-}
-
 // ── Resolve the correct strike step for a root, regardless of underlying type ─
 // getOptionRoot() above always reports strikeStep:50 for indices (the real
-// per-index step is applied later inside buildStrikeLadder via
-// INDEX_STRIKE_STEPS) — kept as-is there to avoid changing existing callers.
-// Auto-ATM needs the REAL step up front, so resolve it the same way
-// buildStrikeLadder does: commodity override → index table → guessed step.
+// per-index step is applied below via INDEX_STRIKE_STEPS) — kept as-is
+// there to avoid changing existing callers. Auto-ATM needs the REAL step to
+// decide how far a hysteresis breach must move before suggesting a switch:
+// commodity override → index table → guessed step. The actual strike/symbol
+// itself always comes from the live /api/options/chain-fetched map, never
+// from this step value directly (see ChartsPage.js's autoAtmStrikeMap).
 export function getStrikeStep(spot, parsed) {
   if (!parsed) return guessStep(spot);
   if (parsed.isCommodity) return parsed.strikeStep;
@@ -334,33 +145,24 @@ export function getStrikeStep(spot, parsed) {
   return guessStep(spot);
 }
 
-// ── Build strike ladder centred on spot ───────────────────────────────────────
-export function buildStrikeLadder(spot, indexRoot, stepsEachSide = 14, overrideStep = null) {
-  if (!spot || spot <= 0) return { strikes: [], atm: null };
-
-  let step = overrideStep;
-  if (!step) {
-    step = indexRoot
-      ? (INDEX_STRIKE_STEPS[indexRoot] || guessStep(spot))
-      : guessStep(spot);
-  }
-
-  const atm = Math.round(spot / step) * step;
-  const strikes = [];
-  for (let i = -stepsEachSide; i <= stepsEachSide; i++) {
-    const s = atm + i * step;
-    if (s > 0) strikes.push(Math.round(s * 100) / 100);
-  }
-  return { strikes, atm };
-}
-
+// One entry per curated index (all 6). NIFTYIT's old entry was dropped:
+// it's not one of the 6 curated indices, and with the CNXIT-INDEX orphan
+// removed from NSE_INDEX_ROOTS above, no code path can ever produce
+// root:"NIFTYIT" here any more anyway — it was already dead.
+//
+// BANKEX: live-confirmed 100, via a real BSE Option Chain screenshot
+// (27 Aug 26 expiry) showing 12 consecutive sorted strikes from 64,900
+// to 66,000, every adjacent pair exactly 100 apart. This replaces the
+// earlier guessStep(spot) fallback, which had been outputting 500 for
+// BANKEX's ~64,000–65,000 range — that was never a confirmed real strike
+// gap, just what the generic price-bucket heuristic happened to produce.
 const INDEX_STRIKE_STEPS = {
   NIFTY: 50,
   BANKNIFTY: 100,
   FINNIFTY: 50,
   MIDCPNIFTY: 25,
-  NIFTYIT: 50,
   SENSEX: 100,
+  BANKEX: 100,
 };
 
 function guessStep(price) {
@@ -377,18 +179,9 @@ function guessStep(price) {
   return 0.1;
 }
 
-// ── Build Fyers option symbol string ─────────────────────────────────────────
-// NSE equity:    NSE:RELIANCE26JUL3200CE
-// NSE index:     NSE:NIFTY26JUL24000CE
-// MCX commodity: MCX:CRUDEOIL26JUL5000CE
-//                MCX:NATGASMINI26JUN310CE
-export function optionSymbol(exch, root, expiryCode, strike, kind) {
-  const strikeStr = Number.isInteger(strike) ? String(strike) : strike.toFixed(1);
-  return `${exch}:${root}${expiryCode}${strikeStr}${kind}`;
-}
-
 // ── Recognize + parse an option contract symbol ───────────────────────────────
-// Matches the shape produced by optionSymbol() above:
+// Parses a REAL Fyers-issued option symbol string (never constructs one —
+// see the file header note on why symbol construction was removed):
 //   EXCH:ROOT + YYMON + STRIKE + (CE|PE)
 // e.g. "BSE:SENSEX25JUL77000CE" → { exch:"BSE", root:"SENSEX", expiryCode:"25JUL", strike:77000, kind:"CE" }
 // Matches BOTH Fyers expiry encodings:

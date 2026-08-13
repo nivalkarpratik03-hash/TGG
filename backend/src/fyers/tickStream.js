@@ -39,7 +39,8 @@ const { loadToken } = require("./client");
 
 // Market hours IST
 const NSE_OPEN_MIN = 9 * 60 + 15;   // 555  — NSE/BSE open
-const NSE_CLOSE_MIN = 15 * 60 + 30;  // 930  — NSE/BSE close
+// UPDATED 2026-08-12: real NSE/BSE close moved from 15:30 to 15:40.
+const NSE_CLOSE_MIN = 15 * 60 + 40;  // 940  — NSE/BSE close
 const MCX_OPEN_MIN = 9 * 60 + 0;    // 540  — MCX open (Mon–Fri)
 const MCX_CLOSE_MIN = 23 * 60 + 30;  // 1410 — MCX weekday close
 const MCX_SAT_CLOSE = 14 * 60 + 0;   // 840  — MCX Saturday close

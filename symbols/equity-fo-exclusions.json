@@ -1,0 +1,49 @@
+{
+  "_readme": "F&O-eligibility exceptions for symbols/equity.json's 202 curated equities. equity.json is the general NSE board list (all stocks), NOT the smaller NSE F&O-eligible list -- generating a futures contract for every equity in equity.json produces invalid symbols for stocks that have no listed derivatives at all. This file is a live-verified EXCLUSION list, not a full eligibility table.",
+  "coverage": {
+    "verified": 202,
+    "totalEquities": 202,
+    "method": "Original 9: individually checked live in the Fyers mobile app on 2026-08-01 (search results + Option Chain button check). Remaining 193 + full re-check of the original 9: verified live via Fyers' getOptionChain API using backend/src/scripts/verifyEquityFoEligibility.js on 2026-08-06 -- 0 real CE/PE strikes returned means no listed F&O for that underlying. The 2026-08-06 run re-checked all 8 originally-excluded equities as a known-answer test of the script's method: all 8 matched the 2026-08-01 manual result exactly (0 mismatches), confirming the automated method is reliable.",
+    "warning": "All 202 equities are now verified one way or another -- either excluded below (confirmed no F&O) or confirmed eligible by omission (real CE/PE strikes returned live on 2026-08-06). Re-verify periodically -- Fyers listings do change over time (see DALBHARAT below for a live example of that drift)."
+  },
+  "excluded": [
+    {
+      "underlying": "EXIDEIND",
+      "reason": "Fyers search: 2 results (NSE/BSE stock only), no Fut/Option entries. No Option Chain button on stock page. Re-confirmed 2026-08-06 via live getOptionChain call: \"There are no expiry contracts.\""
+    },
+    {
+      "underlying": "HUDCO",
+      "reason": "Fyers search: the '-F' tickers returned (e.g. BSE:838HUDCO29-F) are bond/FD instruments, not equity derivatives -- confirmed not real F&O. Re-confirmed 2026-08-06 via live getOptionChain call: \"There are no expiry contracts.\""
+    },
+    {
+      "underlying": "PPLPHARMA",
+      "reason": "Now trades as Piramal Pharma on Fyers. Search: 2 results, stock only, no Option Chain button. Re-confirmed 2026-08-06 via live getOptionChain call: \"There are no expiry contracts.\""
+    },
+    {
+      "underlying": "SAMMAANCAP",
+      "reason": "Fyers search: the 'NSE:975SCL27-Z9' hit is a bond instrument, not equity F&O -- confirmed not real F&O. Re-confirmed 2026-08-06 via live getOptionChain call: \"There are no expiry contracts.\""
+    },
+    {
+      "underlying": "SYNGENE",
+      "reason": "Fyers search: 2 results, stock only, no Option Chain button. Re-confirmed 2026-08-06 via live getOptionChain call: \"There are no expiry contracts.\""
+    },
+    {
+      "underlying": "TATATECH",
+      "reason": "Fyers search: 2 results, stock only, no Option Chain button. Re-confirmed 2026-08-06 via live getOptionChain call: \"There are no expiry contracts.\""
+    },
+    {
+      "underlying": "TORNTPOWER",
+      "reason": "Fyers search: 2 results, stock only, no Option Chain button. Re-confirmed 2026-08-06 via live getOptionChain call: \"There are no expiry contracts.\""
+    },
+    {
+      "underlying": "NUVAMA",
+      "reason": "Fyers search: 2 results, stock only, no Option Chain button. Re-confirmed 2026-08-06 via live getOptionChain call: \"There are no expiry contracts.\""
+    }
+  ],
+  "confirmedEligibleButPartiallyListed": [
+    {
+      "underlying": "DALBHARAT",
+      "note": "CONFIRMED real F&O. 2026-08-01 (manual check): only the Aug26 contract was listed, Sep/Oct26 not yet listed. 2026-08-06 (live getOptionChain re-check): still only 1 expiry listed (vs. 3 for fully-listed names), but that expiry now returns a full 82-strike chain -- more has been listed since the original check, still not fully caught up to the standard 3-expiry pattern. This is a listing-lead-time issue, not an eligibility issue, same class as MCX SILVERM/SILVERMIC's restricted month cycle. Do not pre-filter -- attempt and let a genuine 'invalid symbol' response be the signal for any not-yet-listed expiry."
+    }
+  ]
+}

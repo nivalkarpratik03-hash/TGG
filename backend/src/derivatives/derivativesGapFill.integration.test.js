@@ -16,7 +16,7 @@
 
 const assert = require("assert");
 const { query } = require("../../../database/src/pool");
-const derivativesStore = require("../../../database/src/derivativesStore");
+const derivativesStore = require("../../../database/src/store/derivativesStore");
 const {
   runGapFillCheckpoint,
   discoverStrikes,
@@ -72,9 +72,17 @@ async function main() {
     assert.strictEqual(resolveChainLookupSymbol(entry), "NSE:NIFTY50-INDEX");
   });
 
-  await check("resolveChainLookupSymbol returns the confirmed bare-root format for commodities", () => {
-    const entry = { spotSymbol: null, assetClass: "COMMODITY", exchange: "MCX", underlying: "CRUDEOILM" };
-    assert.strictEqual(resolveChainLookupSymbol(entry), "MCX:CRUDEOILM");
+  await check("resolveChainLookupSymbol returns the near-month FUTURES symbol for commodities (2026-08-07 fix)", () => {
+    // ROOT-CAUSE FIX (2026-08-07): the bare-root format ("MCX:CRUDEOILM")
+    // was live-confirmed BROKEN via retestFlags.js -- Fyers' option-chain
+    // endpoint returned "Please provide a valid symbol" for all 4
+    // commodities tested. The near-month futures symbol format is what
+    // Fyers actually accepts (confirmed live, real strikes returned for
+    // all 4). This test now asserts the corrected behavior.
+    const entry = { spotSymbol: "MCX:CRUDEOILM", assetClass: "COMMODITY", exchange: "MCX", underlying: "CRUDEOILM" };
+    const result = resolveChainLookupSymbol(entry);
+    assert.ok(result.startsWith("MCX:CRUDEOILM"), `expected a CRUDEOILM futures symbol, got "${result}"`);
+    assert.ok(result.endsWith("FUT"), `expected a futures symbol ending in FUT, got "${result}"`);
   });
 
   await check("resolveFuturesSymbols builds real current+next month symbols for an NSE index entry", () => {

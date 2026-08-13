@@ -28,7 +28,7 @@
  * calling convention.
  */
 
-const derivativesStore = require("./derivativesStore");
+const derivativesStore = require("./store/derivativesStore");
 
 const EXCHANGES = ["NSE", "MCX", "BSE"];
 const INSTRUMENT_TYPES = ["option", "future"];
