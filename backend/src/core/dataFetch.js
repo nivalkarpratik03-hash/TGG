@@ -214,7 +214,12 @@ function createDataFetch({ io, tickEngine }) {
     try {
       let oneMinCandles;
       if (resolution === 1440 || resolution === 10080) {
-        oneMinCandles = await state.db.loadCandles(symbol, 1, { limit: 100000 });
+        // FIX (2026-08-13): must be the NEWEST 100000 1m rows, not the
+        // oldest — without mostRecent:true, any symbol whose full 1m
+        // history exceeds 100000 rows silently lost its most recent
+        // months from Daily/Weekly (ASC-from-start was the default). See
+        // candleStore.js's loadCandles() for the full explanation.
+        oneMinCandles = await state.db.loadCandles(symbol, 1, { limit: 100000, mostRecent: true });
       } else {
         const windowMs = CHART_DB_WINDOW_DAYS * 24 * 60 * 60 * 1000;
         oneMinCandles = await state.db.loadCandles(symbol, 1, {

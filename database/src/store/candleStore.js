@@ -222,7 +222,7 @@ async function deleteAllCandles(symbol, resolution = null) {
  * @param {Date|string} [opts.to]
  * @returns {Promise<Array<{time,open,high,low,close,volume}>>}  time in ms
  */
-async function loadCandles(symbol, resolution, { limit = 10000, from, to } = {}) {
+async function loadCandles(symbol, resolution, { limit = 10000, from, to, mostRecent = false } = {}) {
   const params = [symbol, resolution];
   let whereClauses = "symbol=$1 AND resolution=$2";
   let p = 3;
@@ -230,17 +230,30 @@ async function loadCandles(symbol, resolution, { limit = 10000, from, to } = {})
   if (from) { whereClauses += ` AND time >= $${p++}`; params.push(new Date(from).toISOString()); }
   if (to) { whereClauses += ` AND time <= $${p++}`; params.push(new Date(to).toISOString()); }
 
+  // BUG FIX (2026-08-13): callers that pass only `limit` (no from/to) — e.g.
+  // dataFetch.js's Daily/Weekly derivation, which wants "however many 1m
+  // rows exist, up to limit, for full calendar-day/week boundaries" —
+  // previously always got ORDER BY time ASC, i.e. the OLDEST `limit` rows.
+  // For any symbol whose full 1m history exceeds `limit`, that silently
+  // returned ancient history and dropped the newest months entirely, which
+  // is the opposite of what Daily/Weekly needs. `mostRecent: true` orders
+  // DESC to grab the newest `limit` rows instead, then re-sorts ASC before
+  // returning so every existing caller still gets chronological order.
+  // Ignored when `from`/`to` are given — an explicit range already states
+  // intent and ASC-from-start is correct there.
+  const useDesc = mostRecent && !from && !to;
+
   const rows = await query(
     `SELECT extract(epoch from time)*1000 AS time,
             open, high, low, close, volume
      FROM candles
      WHERE ${whereClauses}
-     ORDER BY time ASC
+     ORDER BY time ${useDesc ? "DESC" : "ASC"}
      LIMIT $${p}`,
     [...params, limit]
   );
 
-  return rows.map(r => ({
+  const mapped = rows.map(r => ({
     time: Math.round(Number(r.time)),
     open: Number(r.open),
     high: Number(r.high),
@@ -248,6 +261,8 @@ async function loadCandles(symbol, resolution, { limit = 10000, from, to } = {})
     close: Number(r.close),
     volume: Number(r.volume),
   }));
+
+  return useDesc ? mapped.reverse() : mapped;
 }
 
 /**
