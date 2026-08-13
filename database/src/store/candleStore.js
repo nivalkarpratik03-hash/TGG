@@ -275,6 +275,59 @@ async function getLatestCandle(symbol, resolution) {
 }
 
 /**
+ * Load candles strictly OLDER than a cutoff — used by the spot retention
+ * job (pruneOldSpot.js) to read exactly the rows it's about to archive,
+ * oldest first, before deleting them. Distinct from loadCandles() (which
+ * takes optional from/to bounds) so the retention job's intent — "give me
+ * everything before this date, I'm about to move it to Parquet" — is
+ * explicit at the call site rather than expressed as loadCandles(symbol,
+ * resolution, { to: cutoff }), which reads the same but doesn't say why.
+ *
+ * @param {string} symbol
+ * @param {number} resolution
+ * @param {Date|string} cutoff
+ * @param {number} [limit=1000000]
+ */
+async function loadCandlesBefore(symbol, resolution, cutoff, limit = 1_000_000) {
+  const rows = await query(
+    `SELECT extract(epoch from time)*1000 AS time,
+            open, high, low, close, volume
+     FROM candles
+     WHERE symbol=$1 AND resolution=$2 AND time < $3
+     ORDER BY time ASC
+     LIMIT $4`,
+    [symbol, resolution, new Date(cutoff).toISOString(), limit]
+  );
+  return rows.map(r => ({
+    time: Math.round(Number(r.time)),
+    open: Number(r.open),
+    high: Number(r.high),
+    low: Number(r.low),
+    close: Number(r.close),
+    volume: Number(r.volume),
+  }));
+}
+
+/**
+ * Delete candles strictly OLDER than a cutoff for one symbol+resolution.
+ * Companion to loadCandlesBefore() — the retention job calls that first,
+ * archives what it gets, confirms the archive write, and only then calls
+ * this. Never call this without a confirmed prior archive write.
+ *
+ * @param {string} symbol
+ * @param {number} resolution
+ * @param {Date|string} cutoff
+ * @returns {Promise<number>} rows deleted
+ */
+async function deleteCandlesBefore(symbol, resolution, cutoff) {
+  const rows = await query(
+    `DELETE FROM candles WHERE symbol=$1 AND resolution=$2 AND time < $3 RETURNING 1`,
+    [symbol, resolution, new Date(cutoff).toISOString()]
+  );
+  return rows.length;
+}
+
+/**
  * Count candles stored for a symbol+resolution within a date range.
  */
 async function countCandles(symbol, resolution, from, to) {
@@ -534,6 +587,8 @@ module.exports = {
   extractContractExpiry,
   isContractExpired,
   loadCandles,
+  loadCandlesBefore,
+  deleteCandlesBefore,
   getLatestCandle,
   countCandles,
   isValidCandle,
