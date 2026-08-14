@@ -17,6 +17,8 @@
  *   GET  /api/auth/status
  *   GET  /api/auth/url
  *   POST /api/auth/token
+ *   GET  /api/auth/callback   (added 2026-08-13 — auto-redirect flow)
+ *   POST /api/admin/verify-pin (added 2026-08-13 — /admin page gate)
  *   GET  /api/chart
  *   POST /api/chart/refresh
  *   GET  /api/signals
@@ -63,6 +65,10 @@ function createChartRouter(deps) {
     getAuthURL, generateToken, validateToken, bustTokenCache,
     detectMotherWaveForAPI,
     markBroadcastSymbol,
+    // Added 2026-08-13 — admin auto-redirect auth flow (see /api/auth/callback
+    // and /api/admin/verify-pin below). FRONTEND_URL is where the browser
+    // lands after Fyers redirects back into our backend.
+    FRONTEND_URL,
     // UPDATED 2026-08-06 (items 2, 3, 4, 6): this now fires the FULL
     // Staleness→GapFill→Validator/Recovery chain via
     // gapFillScheduler.fireReauthCheckpoint() (passed in as
@@ -125,6 +131,54 @@ function createChartRouter(deps) {
 
       res.json({ success: true, message: "Token saved successfully" });
     } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Added 2026-08-13 — auto-redirect callback. Only fires once
+  // PUBLIC_BACKEND_URL is set and registered as the Fyers app's Redirect
+  // URL (see client.js getRedirectUri()). Fyers redirects the browser here
+  // with ?auth_code=... after login instead of the generic Fyers page, so
+  // the admin never has to copy-paste anything — just does the exchange
+  // itself and bounces the browser straight back to the frontend admin page.
+  router.get("/api/auth/callback", async (req, res) => {
+    const feUrl = (FRONTEND_URL || "").replace(/\/$/, "");
+    const authCode = req.query.auth_code || req.query.code;
+
+    if (!feUrl) {
+      // Misconfigured — nowhere sensible to redirect to, so fail loudly
+      // instead of silently bouncing to a blank/broken URL.
+      return res.status(500).send(
+        "FRONTEND_URL is not set in backend/.env — cannot complete the redirect back to the app."
+      );
+    }
+    if (!authCode) {
+      return res.redirect(`${feUrl}/admin?auth=error&msg=${encodeURIComponent("No auth_code received from Fyers")}`);
+    }
+
+    try {
+      await generateToken(authCode);
+      if (bustTokenCache) bustTokenCache();
+      await deps.maybeStartTickStream();
+      if (runReauthCheckpoint) {
+        runReauthCheckpoint().catch((err) => {
+          console.warn("[GapFill] Re-auth checkpoint chain failed:", err.message);
+        });
+      }
+      res.redirect(`${feUrl}/admin?auth=success`);
+    } catch (err) {
+      res.redirect(`${feUrl}/admin?auth=error&msg=${encodeURIComponent(err.message)}`);
+    }
+  });
+
+  // Added 2026-08-13 — lightweight gate for the /admin page. Checks the PIN
+  // server-side against .env so the real value never ships in the frontend
+  // bundle (which is public). This is a casual deterrent, not real auth —
+  // fine for a single-owner tool, but don't reuse this pattern if the app
+  // ever has multiple real users who need separate accounts.
+  router.post("/api/admin/verify-pin", (req, res) => {
+    const { pin } = req.body || {};
+    const expected = process.env.PIN;
+    if (!expected) return res.status(500).json({ ok: false, error: "PIN not set in backend .env" });
+    res.json({ ok: pin === expected });
   });
 
   // ── Chart ───────────────────────────────────────────────────────────────────

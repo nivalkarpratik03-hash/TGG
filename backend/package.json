@@ -1,12 +1,11 @@
 {
   "name": "tgg-backend",
   "version": "1.0.0",
-  "description": "TGG EMA9 NH/NL/BC Signal Backend",
+  "description": "TGG EMA9",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "generate": "node src/generate.js",
     "db:migrate": "node ../database/src/migrate.js",
     "db:health": "node ../database/src/healthcheck.js"
   },

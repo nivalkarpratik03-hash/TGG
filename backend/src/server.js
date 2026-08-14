@@ -90,6 +90,10 @@ app.use(createChartRouter({
   // router is already constructed (async health-check happens inside the
   // listen() callback, after routes are set up).
   runReauthCheckpoint: (...args) => getFireReauthCheckpoint()(...args),
+  // Added 2026-08-13 — where /api/auth/callback sends the browser back to
+  // after Fyers login (the frontend's /admin page). Must be set in .env
+  // once the frontend has a stable deployed URL (e.g. https://tgg-liard.vercel.app).
+  FRONTEND_URL: process.env.FRONTEND_URL,
 }));
 
 app.use("/api/symbols", symbolsRouter);

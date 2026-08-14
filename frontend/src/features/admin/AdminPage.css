@@ -1,0 +1,193 @@
+/* AdminPage.css — reuses the app's existing --bg/--text/etc theme variables
+   (see styles/index.css) so this matches dark/light mode automatically. */
+
+.admin-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  padding: 24px;
+  font-family: var(--font-mono);
+}
+
+.admin-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius2);
+  padding: 28px;
+  box-shadow: 0 8px 24px var(--shadow);
+}
+
+.admin-card-wide {
+  max-width: 520px;
+}
+
+.admin-card h1 {
+  font-family: var(--font-display);
+  font-size: 22px;
+  color: var(--text);
+  margin: 0 0 6px;
+}
+
+.admin-sub {
+  color: var(--text2);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0 0 18px;
+}
+
+.admin-input {
+  width: 100%;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-size: 15px;
+  letter-spacing: 2px;
+  margin-bottom: 12px;
+  box-sizing: border-box;
+}
+
+.admin-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.admin-error {
+  color: var(--red);
+  font-size: 12px;
+  margin: -6px 0 12px;
+}
+
+.admin-btn {
+  width: 100%;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+
+.admin-btn:hover:not(:disabled) { border-color: var(--accent); }
+.admin-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.admin-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.admin-link {
+  background: none;
+  border: none;
+  color: var(--text2);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.admin-link:hover { color: var(--accent); }
+
+.admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.admin-header-actions {
+  display: flex;
+  gap: 14px;
+}
+
+.admin-banner {
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.admin-banner-success {
+  background: var(--green-dim);
+  color: var(--green);
+  border: 1px solid var(--green2);
+}
+
+.admin-banner-error {
+  background: var(--red-dim);
+  color: var(--red);
+  border: 1px solid var(--red2);
+}
+
+.admin-banner-close {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.admin-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.admin-status-label {
+  color: var(--text2);
+  font-size: 13px;
+}
+
+.admin-status-pill {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+
+.admin-status-ok {
+  background: var(--green-dim);
+  color: var(--green);
+}
+
+.admin-status-bad {
+  background: var(--red-dim);
+  color: var(--red);
+}
+
+.admin-status-pending {
+  background: var(--yellow-dim);
+  color: var(--yellow);
+}
+
+.admin-note {
+  margin-top: 16px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text3);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+
+.admin-note code {
+  color: var(--text2);
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+}

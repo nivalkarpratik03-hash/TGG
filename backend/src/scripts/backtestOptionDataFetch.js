@@ -34,7 +34,7 @@
  *   - --expiry / --expiryCode must match the CURRENTLY LIVE monthly
  *     contract's real expiry date + Fyers code (e.g. NIFTY26JUL...).
  *   - Requires a valid Fyers access token already generated via
- *     generate.js, exactly like every other script in backend/src.
+ *     /admin in the frontend, exactly like every other script in backend/src.
  *   - Only ever targets the CURRENT, not-yet-expired contract.
  * ─────────────────────────────────────────────────────────────────────────
  */

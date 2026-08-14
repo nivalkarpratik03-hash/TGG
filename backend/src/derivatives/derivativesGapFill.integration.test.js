@@ -194,7 +194,7 @@ async function main() {
         { symbol: "MCX:CRUDEOILM26AUG8700PE", strike_price: 8700, option_type: "PE", ltp: 400, oi: 800 },
       ],
     });
-    const result = await runGapFillCheckpoint("mcx_close", { fetchCandles: mockCandles, fetchOptionChain: mockChain });
+    const result = await runGapFillCheckpoint("mcx_close", { fetchCandles: mockCandles, fetchOptionChain: mockChain, validateToken: async () => true });
 
     assert.strictEqual(result.skipped.length, 0, "nothing should be skipped now that the commodity lookup format is confirmed");
     assert.ok(result.failed.length === 0, `expected 0 real failures, got: ${JSON.stringify(result.failed)}`);

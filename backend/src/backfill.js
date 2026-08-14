@@ -83,7 +83,7 @@ async function runBackfill() {
   // Verify token exists
   const token = loadToken();
   if (!token) {
-    console.error("[Backfill] ❌ No Fyers access token found. Run: node src/generate.js first.");
+    console.error("[Backfill] ❌ No Fyers access token found. Visit /admin in the frontend to connect to Fyers first.");
     process.exit(1);
   }
 
