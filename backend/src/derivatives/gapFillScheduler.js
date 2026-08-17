@@ -64,6 +64,28 @@ const { runGapFillCheckpoint } = require("./derivativesGapFill");
 
 const CHECK_INTERVAL_MS = 60 * 1000; // check once a minute — cheap, no broker calls happen here, only the eventual checkpoint run does
 
+// ADDED 2026-08-17 — one on/off flag for the two CLOCK-TRIGGERED recurring
+// checkpoints only (nse_bse_close, mcx_close). Same pattern as
+// VERBOSE_LOGS in verboseLog.js: an env var, off is the exception not the
+// default, no code edits needed to flip it.
+//
+// Deliberately does NOT touch "startup" (fireStartupCheckpoint) or
+// "reauth" (fireReauthCheckpoint) — those are one-off/user-triggered, not
+// clock-driven, so they were never the thing this flag needs to stop.
+// This exists for a specific situation: a startup chain that's still
+// running (e.g. after a restart mid-morning) when the clock crosses the
+// nse_bse_close threshold later the same day — runGapFillCheckpoint has no
+// "already running" guard (unlike sweepCuratedStaleness and
+// runValidatorRecovery, which do), so an unwanted second fire can overlap
+// the still-running first one. Setting this to false for the rest of that
+// one day avoids that, without touching the startup chain already in
+// flight.
+//
+// Defaults to true (checkpoints run normally) unless explicitly set to
+// the string "false" — same true-by-default convention as every other
+// env flag in this codebase (see chartRouter.js's other env checks).
+const CHECKPOINTS_ENABLED = process.env.CHECKPOINTS_ENABLED !== "false";
+
 // UPDATED 2026-08-12: checkpoints now fire 10min AFTER each exchange's real
 // close (NSE_CLOSE_MIN/MCX_CLOSE_MIN/MCX_SAT_CLOSE above), not exactly at
 // it — a buffer so the exchange's own final candle has actually landed
@@ -148,13 +170,21 @@ function wireGapFillScheduler(deps = {}) {
 
     if (mins >= NSE_CLOSE_MIN + CHECKPOINT_CLOSE_GAP_MIN && lastRunDate.nse_bse_close !== today) {
       lastRunDate.nse_bse_close = today;
-      fire("nse_bse_close");
+      if (CHECKPOINTS_ENABLED) {
+        fire("nse_bse_close");
+      } else {
+        log("[GapFill] nse_bse_close: skipped — CHECKPOINTS_ENABLED=false (won't fire again today; startup/reauth are unaffected by this flag)");
+      }
     }
 
     const mcxCloseThreshold = (dow === 6 ? MCX_SAT_CLOSE : MCX_CLOSE_MIN) + CHECKPOINT_CLOSE_GAP_MIN;
     if (mins >= mcxCloseThreshold && lastRunDate.mcx_close !== today) {
       lastRunDate.mcx_close = today;
-      fire("mcx_close");
+      if (CHECKPOINTS_ENABLED) {
+        fire("mcx_close");
+      } else {
+        log("[GapFill] mcx_close: skipped — CHECKPOINTS_ENABLED=false (won't fire again today; startup/reauth are unaffected by this flag)");
+      }
     }
   }, CHECK_INTERVAL_MS);
 
