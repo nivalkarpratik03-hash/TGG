@@ -8,6 +8,7 @@
 const fs = require("fs");
 const path = require("path");
 const { fyersModel } = require("fyers-api-v3");
+const { vlog } = require("../utils/verboseLog");
 
 const ROOT = path.resolve(__dirname, "../..");
 const TOKEN_FILE = path.join(ROOT, "fyers_access_token.txt");
@@ -409,7 +410,7 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
 
   const deduped = dedupSortCandles(allCandles);
 
-  console.log(`[Fyers] ${symbol} ${fyersResolution}: ${deduped.length} candles over ${lookbackDays}d (${chunks.length} chunk${chunks.length > 1 ? "s" : ""})`);
+  vlog(`[Fyers] ${symbol} ${fyersResolution}: ${deduped.length} candles over ${lookbackDays}d (${chunks.length} chunk${chunks.length > 1 ? "s" : ""})`);
   return deduped;
 }
 

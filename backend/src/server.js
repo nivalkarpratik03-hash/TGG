@@ -1,3 +1,4 @@
+require("./utils/fileLogger"); // MUST be first — mirrors every console line to backend/logs/run-*.log
 require("dotenv").config();
 const express = require("express");
 const http = require("http");
@@ -133,7 +134,10 @@ server.listen(PORT, async () => {
   console.log(`   Symbols    : http://localhost:${PORT}/api/symbols`);
   console.log(`   Scanner    : http://localhost:${PORT}/api/scanner/signals\n`);
 
-  // ── 2. Symbol-check ────────────────────────────────────────────────────────
+  // ── 2. Symbol-check — wait for a valid Fyers token first (fixes the ──────
+  // permanent-exclusion bug: SymbolCheck must not run against an expired
+  // token, see symbolCheck.js's waitForValidToken() for the full story).
+  await symbolCheck.waitForValidToken();
   await symbolCheck.runSymbolCheck();
 
   // ── 3/4. Arm fallback timer + watchdog (instant, no real waiting) ────────

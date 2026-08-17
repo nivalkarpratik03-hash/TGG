@@ -37,6 +37,7 @@
 const { fetchCandles } = require("../fyers/client");
 const { loadIndexSpotSymbols, loadStockSpotSymbols } = require("../derivatives/curatedUnderlyingsLoader");
 const state = require("./state");
+const { vlog } = require("../utils/verboseLog");
 
 // Same IST-offset arithmetic already used in fyers/tickStream.js's nowIST()
 // and derivatives/gapFillScheduler.js's istDateString() — reused here, not
@@ -148,14 +149,14 @@ function createCatchUp({ dataFetch }) {
                 const tradingDay = new Date(gapIssue.time || Date.now());
                 const todayStr = new Date().toISOString().slice(0, 10);
                 if (tradingDay.toISOString().slice(0, 10) >= todayStr) {
-                  console.log(`[Recovery] ${symbol}: skipping today's in-progress candles (not a real gap)`);
+                  vlog(`[Recovery] ${symbol}: skipping today's in-progress candles (not a real gap)`);
                   clean++;
                   return;
                 }
 
                 const alreadyRepaired = await state.db.wasDayAlreadyRepaired(symbol, tradingDay, 3).catch(() => false);
                 if (alreadyRepaired) {
-                  console.log(`[Recovery] ${symbol}: ${tradingDay.toISOString().slice(0, 10)} already repaired recently and still flagged — likely a genuine short broker day, skipping re-repair`);
+                  vlog(`[Recovery] ${symbol}: ${tradingDay.toISOString().slice(0, 10)} already repaired recently and still flagged — likely a genuine short broker day, skipping re-repair`);
                   skippedKnown++;
                   return;
                 }

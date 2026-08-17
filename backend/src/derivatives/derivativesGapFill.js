@@ -86,6 +86,7 @@ const derivativesStore = require("../../../database/src/store/derivativesStore")
 const { lastTuesdayOfMonth, lastThursdayOfMonth, parseDerivativeSymbol } = require("../../../database/src/parsing/symbolParser");
 const symbolsRouter = require("../routes/symbolsRouter");
 const { loadCuratedUnderlyings } = require("./curatedUnderlyingsLoader");
+const { VERBOSE } = require("../utils/verboseLog");
 
 const RESOLUTION = "1"; // 1-minute candles, same convention as every other fetchCandles caller in this repo
 const OPTION_LOOKBACK_DAYS_DEFAULT = 5; // for an already-tracked symbol, just catch up recent gaps
@@ -563,7 +564,9 @@ async function backfillStrikesForEntry(entry, strikes, label, log, delayFn, deps
         storedRows += r.stored;
         symbolsBackfilled++;
       }
-      log(`[GapFill] ${label}: ${entry.underlying} — strike (${i + 1}/${strikes.length}) ${s.symbol}: ${r.isNew ? "new, retroactive backfill" : "existing, gap catch-up"}, ${r.stored} candle row(s) stored`);
+      // Per-strike success line — noisy at full scale (can be hundreds per
+      // checkpoint), gated behind VERBOSE_LOGS. Failures below stay always-on.
+      if (VERBOSE) log(`[GapFill] ${label}: ${entry.underlying} — strike (${i + 1}/${strikes.length}) ${s.symbol}: ${r.isNew ? "new, retroactive backfill" : "existing, gap catch-up"}, ${r.stored} candle row(s) stored`);
     } catch (err) {
       strikesFailed++;
       log(`[GapFill] ${label}: ${entry.underlying} — strike (${i + 1}/${strikes.length}) ${s.symbol}: FAILED (${err.message}) — skipping, continuing to remaining strikes`);
