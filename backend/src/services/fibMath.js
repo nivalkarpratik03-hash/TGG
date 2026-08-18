@@ -18,6 +18,20 @@
  * real implementation existed) so Chunk 10 (test_motherwave.js) has a
  * single place to repoint to later, instead of two.
  *
+ * 2026-08-13 (Mother Wave / Driver Wave engine merge — motherwave.js
+ * replaced with the full-history/succession-rule/Driver-Wave engine):
+ * fibPrice() gained a tipPrice/originPrice fallback, and buildFibLevels()
+ * is now computed from fibPrice() at each ratio instead of hand-duplicated
+ * per-direction arithmetic. Both changes are purely additive for every
+ * existing caller — any wave already exposing fromPrice/toPrice/toSide
+ * gets byte-identical numbers to before. They only add support for the new
+ * engine's raw wave records (services/motherwave.js's computeSegments() /
+ * buildMwdwState()), which use originPrice/tipPrice instead of
+ * fromPrice/toPrice. buildFibLevels also now includes the "1.234" ratio
+ * (Driver Wave invalidation / S3 succession level — see motherwave.js's
+ * MWDW_CFG.fibS3Ratio / fibDwInvalidationRatio), which the old
+ * per-direction formulas didn't have.
+ *
  * All backend call sites now import from here instead of keeping their own
  * copy. This is also the intended eventual backend-supplied source for the
  * frontend's `computeFibLevels` (FibDashboardPage.js) cross-repo pair —
@@ -30,7 +44,9 @@
 /**
  * price at a given fib ratio for a wave segment.
  * Accepts either a wave object directly, or a `{ wave }`-wrapped result
- * object (e.g. the full return value of detectMotherWaveForAPI).
+ * object (e.g. the full return value of detectMotherWaveForAPI). Also
+ * accepts the MW/DW engine's raw wave records (originPrice/tipPrice field
+ * names) via the tipPrice/originPrice fallback below.
  *
  * @param {object} mw - wave object, or object with a `.wave` property
  * @param {number} ratio
@@ -38,8 +54,8 @@
  */
 function fibPrice(mw, ratio) {
   const w = mw.wave || mw;
-  const to = w.toPrice ?? w.endPrice;
-  const from = w.fromPrice ?? w.startPrice;
+  const to = w.toPrice ?? w.tipPrice ?? w.endPrice;
+  const from = w.fromPrice ?? w.originPrice ?? w.startPrice;
   return to + ratio * (from - to);
 }
 
@@ -54,54 +70,44 @@ function calcTrapZone(mw) {
   const w = mw.wave || mw;
   const tip = fibPrice(w, 0);
   const ret = fibPrice(w, 0.236);
+  const to = w.toPrice ?? w.tipPrice;
+  const from = w.fromPrice ?? w.originPrice;
   return {
     high: Math.max(tip, ret),
     low: Math.min(tip, ret),
     center: (tip + ret) / 2,
-    range: Math.abs(w.toPrice - w.fromPrice),
+    range: Math.abs(to - from),
   };
 }
 
 /**
- * Build the full fib-levels object from a wave segment
- * (segment shape: { fromPrice, toPrice, toSide, ... }).
+ * Build the full fib-levels object from a wave segment (segment shape:
+ * { fromPrice, toPrice, toSide, ... } OR the MW/DW engine's raw wave shape:
+ * { originPrice, tipPrice, toSide, ... } — both work via fibPrice()'s
+ * fallback). Computed as fibPrice(seg, ratio) per level rather than
+ * hand-duplicated per-direction arithmetic — numerically identical to the
+ * old hardcoded formulas for every existing bull/bear wave shape, but also
+ * correct for the new engine's raw wave records, and adds "1.234" (Driver
+ * Wave invalidation / S3 succession level), which the old formulas omitted.
  *
  * @param {object} seg
  * @returns {object} ratio-string → price map
  */
 function buildFibLevels(seg) {
-  const isBull = seg.toSide === "high";
-  const span = Math.abs(seg.toPrice - seg.fromPrice);
-  const origin = seg.fromPrice;
-  const end = seg.toPrice;
-
-  return isBull
-    ? {
-      "-1.618": end + 1.618 * span,   // extension above tip
-      "-1.0": end + 1.0 * span,   // extension above tip
-      "-0.618": end + 0.618 * span,   // invalidation — extension above tip
-      "-0.236": end + 0.236 * span,   // extension above tip (trap zone upper edge)
-      "0.0": end,
-      "0.236": end - 0.236 * span,   // trap zone lower edge
-      "0.382": end - 0.382 * span,
-      "0.5": end - 0.5 * span,
-      "0.618": end - 0.618 * span,
-      "0.786": end - 0.786 * span,
-      "1.0": origin,               // invalidation — origin / base
-    }
-    : {
-      "1.0": origin,               // invalidation — origin / base
-      "0.786": origin - 0.214 * span,
-      "0.618": origin - 0.382 * span,
-      "0.5": origin - 0.5 * span,
-      "0.382": origin - 0.618 * span,
-      "0.236": origin - 0.764 * span,
-      "0.0": end,
-      "-0.236": end - 0.236 * span,   // extension below tip (trap zone upper edge)
-      "-0.618": end - 0.618 * span,   // invalidation — extension below tip
-      "-1.0": end - 1.0 * span,   // extension below tip
-      "-1.618": end - 1.618 * span,   // extension below tip
-    };
+  return {
+    "-1.618": fibPrice(seg, -1.618),
+    "-1.0": fibPrice(seg, -1.0),
+    "-0.618": fibPrice(seg, -0.618),
+    "-0.236": fibPrice(seg, -0.236),
+    "0.0": fibPrice(seg, 0.0),
+    "0.236": fibPrice(seg, 0.236),
+    "0.382": fibPrice(seg, 0.382),
+    "0.5": fibPrice(seg, 0.5),
+    "0.618": fibPrice(seg, 0.618),
+    "0.786": fibPrice(seg, 0.786),
+    "1.0": fibPrice(seg, 1.0),
+    "1.234": fibPrice(seg, 1.234),
+  };
 }
 
 module.exports = {

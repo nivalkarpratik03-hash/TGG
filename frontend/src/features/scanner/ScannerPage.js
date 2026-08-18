@@ -157,7 +157,17 @@ function ZoneTray({ label, subLabel, items, colorClass, timeframe }) {
 }
 
 // ─── SignalsTable — shared by Results (S3 shown) and Upcoming (S3 omitted) ────
-function SignalsTable({ title, sub, rows, showS3, emptyLabel, timeframe }) {
+// 2026-08-13 (Type E/R/F strategies added) — this table originally only knew
+// how to render scannerS1.S2.S3.js's shape (r.s1/r.s2/r.s3 raw candles).
+// typeREF.js's rows don't have those fields at all — every symbol can have
+// MULTIPLE Type E/R/F events over time, so `rows` for that family are
+// flattened EVENTS (one per trigger→exit), not one row per symbol; see
+// typeEventRows() below. `variant="typeref"` switches the column set to
+// match that shape instead of showing S1/S2/S3 columns full of "—".
+// Reuses the exact same scanner-signals-* CSS classes either way — no new
+// CSS needed.
+function SignalsTable({ title, sub, rows, showS3, emptyLabel, timeframe, variant = "s1s2s3" }) {
+  const isTypeVariant = variant === "typeref";
   return (
     <div className="scanner-signals-col">
       <div className="scanner-signals-col-header">
@@ -170,18 +180,72 @@ function SignalsTable({ title, sub, rows, showS3, emptyLabel, timeframe }) {
         <div className="scanner-signals-table-wrap">
           <table className="scanner-signals-table">
             <thead>
-              <tr>
-                <th>Sr.No</th>
-                <th>Symbol</th>
-                <th>S1</th>
-                <th>S2</th>
-                {showS3 && <th>S3</th>}
-                <th>MW</th>
-                <th>Timestamp</th>
-              </tr>
+              {isTypeVariant ? (
+                <tr>
+                  <th>Sr.No</th>
+                  <th>Symbol</th>
+                  <th>Type</th>
+                  <th>Entry</th>
+                  {showS3 && <th>Exit</th>}
+                  <th>MW / DW</th>
+                  <th>Timestamp</th>
+                </tr>
+              ) : (
+                <tr>
+                  <th>Sr.No</th>
+                  <th>Symbol</th>
+                  <th>S1</th>
+                  <th>S2</th>
+                  {showS3 && <th>S3</th>}
+                  <th>MW</th>
+                  <th>Timestamp</th>
+                </tr>
+              )}
             </thead>
             <tbody>
-              {rows.map((r, i) => {
+              {isTypeVariant ? rows.map((r, i) => {
+                const bull = r.trigger?.refDirection === "bull";
+                return (
+                  <tr
+                    key={`${r.symbol}-${r.entryIndex}-${r.type}`}
+                    className="scanner-signals-row"
+                    onClick={() => openChart(r.symbol, timeframe, r.motherwave)}
+                    title="Open chart with Fib drawn"
+                  >
+                    <td>{i + 1}</td>
+                    <td className="scanner-signals-sym">{tickerOf(r.symbol)}</td>
+                    <td className="scanner-signals-flag on">
+                      <div className="scanner-signals-stage">
+                        <span className="scanner-signals-stage-check">{r.type}</span>
+                      </div>
+                    </td>
+                    <td className={`scanner-signals-flag ${r.entryTime ? "on" : ""}`}>
+                      {r.entryTime ? (
+                        <div className="scanner-signals-stage">
+                          <span className="scanner-signals-stage-check">✓ {fmt(r.entryPrice)}</span>
+                          <span className="scanner-signals-stage-ts">{formatDateTimeIST(r.entryTime)}</span>
+                        </div>
+                      ) : "—"}
+                    </td>
+                    {showS3 && (
+                      <td className={`scanner-signals-flag ${r.exited ? "on" : ""}`}>
+                        {r.exited ? (
+                          <div className="scanner-signals-stage">
+                            <span className="scanner-signals-stage-check">✓ {fmt(r.exitPrice)}</span>
+                            <span className="scanner-signals-stage-ts">{formatDateTimeIST(r.exitTime)}</span>
+                          </div>
+                        ) : "—"}
+                      </td>
+                    )}
+                    <td>
+                      <span className={`scanner-signals-mw ${bull ? "bull" : "bear"}`}>
+                        {bull ? "▲ Bull" : "▼ Bear"}
+                      </span>
+                    </td>
+                    <td className="scanner-signals-ts">{formatDateTimeIST(r.entryTime)}</td>
+                  </tr>
+                );
+              }) : rows.map((r, i) => {
                 const bull = isMWBull(r);
                 return (
                   <tr
@@ -410,28 +474,64 @@ export default function ScannerPage() {
   const near382Items = useMemo(() => downWithZone.filter(r => getZoneTray(r) === "near382"), [downWithZone]);
   const near618Items = useMemo(() => downWithZone.filter(r => getZoneTray(r) === "hot618"), [downWithZone]);
 
+  // FIX (2026-08-13, Type E/R/F strategies added) — "signals"/resultsTable
+  // previously hardcoded `patternStage === "s3_complete"`, which is
+  // scannerS1.S2.S3.js's own vocabulary for "fully confirmed". typeREF.js
+  // (strategies: type-ref/type-e/type-r/type-f) reports "completed"
+  // instead — so Type E/R/F signals were silently filtered out of both the
+  // stat and the Results table even though the backend log showed them
+  // completing (`[Scanner] ✅ type-ref | SYMBOL — SIGNAL (completed)`).
+  //
+  // Beyond the stage-string mismatch: typeREF.js's rows are one per SYMBOL
+  // but each carries a full `events[]` history (a symbol can fire multiple
+  // Type E/R/F events over time — see typeREF.js's scanForType()), whereas
+  // scannerS1.S2.S3.js is naturally one signal per symbol. Showing typeREF
+  // rows through the old per-symbol S1/S2/S3 table would only ever surface
+  // each symbol's LATEST event and render "—" in the S1/S2/S3 columns
+  // (fields that don't exist on typeREF rows). So for the type-* family,
+  // flatten every symbol's events[] into individual rows instead — same
+  // approach TGGD's own frontend (frontend/src/pages/ScannerPage.js) uses
+  // for this strategy family — and SignalsTable's `variant="typeref"` (see
+  // that component above) renders Type/Entry/Exit/MW-DW columns for them.
+  const isTypeStrategy = activeStrategy && activeStrategy !== "s1s2s3";
+
+  const typeEventRows = useMemo(() => {
+    if (!isTypeStrategy) return [];
+    const rows = [];
+    for (const r of results) {
+      for (const ev of (r.events || [])) {
+        rows.push({ ...ev, symbol: r.symbol, motherwave: r.motherwave });
+      }
+    }
+    return rows;
+  }, [results, isTypeStrategy]);
+
   const counts = useMemo(() => ({
-    signals: results.filter(r => r.patternStage === "s3_complete").length,
+    signals: isTypeStrategy ? typeEventRows.filter(r => r.exited).length : results.filter(r => r.found).length,
     partial: results.filter(r => r.patternStage === "s2").length,
     s1: results.filter(r => r.patternStage === "s1").length,
-  }), [results]);
+  }), [results, isTypeStrategy, typeEventRows]);
 
-  // Results table — fully confirmed (S1→S2→S3) signals, latest 10
+  // Results table — fully confirmed signals, latest 10. `r.found` (not a
+  // hardcoded stage string) covers scannerS1.S2.S3.js; typeEventRows
+  // (`exited === true`) covers the type-* family — see fix note above.
   const resultsTable = useMemo(() =>
-    results
-      .filter(r => r.patternStage === "s3_complete")
-      .sort((a, b) => new Date(b.scannedAt) - new Date(a.scannedAt))
+    (isTypeStrategy ? typeEventRows.filter(r => r.exited) : results.filter(r => r.found))
+      .sort((a, b) => new Date(b.entryTime || b.scannedAt || 0) - new Date(a.entryTime || a.scannedAt || 0))
       .slice(0, 10),
-    [results]
+    [results, isTypeStrategy, typeEventRows]
   );
 
-  // Upcoming table — S1→S2 confirmed, S3 not yet triggered, latest 10
+  // Upcoming table — in-progress (not yet fully confirmed), latest 10.
+  // scannerS1.S2.S3.js's own "S1→S2 confirmed, S3 not yet" stage is "s2" —
+  // kept as-is, a real curated sub-stage that strategy already reports.
+  // typeREF.js's strategies don't have that sub-staging — an in-progress
+  // (triggered, not yet exited) event is `exited === false` on typeEventRows.
   const upcomingTable = useMemo(() =>
-    results
-      .filter(r => r.patternStage === "s2")
-      .sort((a, b) => new Date(b.scannedAt) - new Date(a.scannedAt))
+    (isTypeStrategy ? typeEventRows.filter(r => !r.exited) : results.filter(r => r.patternStage === "s2"))
+      .sort((a, b) => new Date(b.entryTime || b.scannedAt || 0) - new Date(a.entryTime || a.scannedAt || 0))
       .slice(0, 10),
-    [results]
+    [results, isTypeStrategy, typeEventRows]
   );
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -585,20 +685,22 @@ export default function ScannerPage() {
             {signalsTab === "results" ? (
               <SignalsTable
                 title="Results"
-                sub="S1 → S2 → S3 confirmed — latest 10"
+                sub={isTypeStrategy ? "Type events — entry → exit confirmed — latest 10" : "S1 → S2 → S3 confirmed — latest 10"}
                 rows={resultsTable}
                 showS3={true}
                 emptyLabel="No completed signals yet"
                 timeframe={timeframe}
+                variant={isTypeStrategy ? "typeref" : "s1s2s3"}
               />
             ) : (
               <SignalsTable
                 title="Upcoming"
-                sub="S1 → S2 confirmed, S3 pending — latest 10"
+                sub={isTypeStrategy ? "Type events — active, no exit yet — latest 10" : "S1 → S2 confirmed, S3 pending — latest 10"}
                 rows={upcomingTable}
                 showS3={false}
                 emptyLabel="No forming signals yet"
                 timeframe={timeframe}
+                variant={isTypeStrategy ? "typeref" : "s1s2s3"}
               />
             )}
           </div>

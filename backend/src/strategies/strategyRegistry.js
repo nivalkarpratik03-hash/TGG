@@ -24,6 +24,16 @@
 const strategies = [
   require("./scannerS1.S2.S3"),
 
+  // ── "Type" strategies (combined + R/E/F) ────────────────────────
+  // All 4 live together in one file, typeREF.js, which exports an array
+  // of 4 strategy objects — spread it in here. `variant: "combined"`
+  // (type-ref) shows up in the Scanner UI's Strategy dropdown as a single
+  // flat "Type E,R,F" entry; `variant: "single"` (type-e/type-r/type-f)
+  // is excluded from the dropdown and only reachable via the Type E/R/F
+  // tab buttons next to Results/Upcoming (frontend wiring not included
+  // here — backend only, see typeREF.js header).
+  ...require("./typeREF"),
+
   // ── Add new strategies below ──────────────────────────────────
   // require("./breakoutStrategy"),
   // require("./divergenceStrategy"),
