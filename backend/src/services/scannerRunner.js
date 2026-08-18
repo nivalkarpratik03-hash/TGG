@@ -320,8 +320,18 @@ class ScannerRunner extends EventEmitter {
     return out;
   }
 
+  // group/variant are needed by the Scanner UI to pick the right stats/
+  // table rendering per strategy family — different strategy families use
+  // different patternStage vocabularies (s1s2s3: "s1"/"s2"/"s3_complete",
+  // type E/R/F: "none"/"active"/"completed", T5 (upcoming): its own set),
+  // so the frontend can no longer assume s1s2s3's shape everywhere. Prior
+  // to this fix, ScannerPage.js hardcoded s1s2s3's patternStage strings
+  // for stats + tables regardless of which strategy was selected, so
+  // switching to "Type E,R,F" showed 0 signals / "No completed signals
+  // yet" even when the backend log showed hundreds of real completions —
+  // group lets the frontend tell strategy families apart and branch.
   getStrategies() {
-    return strategies.map((s) => ({ id: s.id, name: s.name, description: s.description }));
+    return strategies.map((s) => ({ id: s.id, name: s.name, description: s.description, group: s.group || null, variant: s.variant || null }));
   }
 
   getStatus() {

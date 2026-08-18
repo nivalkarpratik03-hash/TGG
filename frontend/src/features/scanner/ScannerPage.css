@@ -1401,6 +1401,39 @@
   color: #fff;
 }
 
+/* R/E/F sub-filter — sits beside Results/Upcoming, only shown when the
+   combined "Type E,R,F" strategy is active (see ScannerPage.js). Smaller
+   and pushed right so it doesn't compete visually with the primary
+   Results/Upcoming tabs. */
+.scanner-signals-typefilter {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+  align-items: center;
+}
+
+.scanner-signals-typefilter-btn {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.scanner-signals-typefilter-btn:hover {
+  background: var(--bg3, var(--bg2));
+}
+
+.scanner-signals-typefilter-btn.active {
+  background: var(--accent-soft, var(--accent));
+  border-color: var(--accent);
+  color: var(--accent-text, #fff);
+}
+
 .scanner-signals-col {
   border-radius: 8px;
   overflow: hidden;

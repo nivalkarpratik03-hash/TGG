@@ -1,117 +1,147 @@
 /**
- * backend/src/services/fibMath.js
+ * backend/src/services/indicatorMath.js
  *
- * SINGLE SOURCE OF TRUTH for fib-price / trap-zone math.
+ * SINGLE SOURCE OF TRUTH for shared indicator math.
  *
- * Previously fibPrice() and calcTrapZone() were independently copy-pasted
- * into services/motherwave.js and strategies/scannerS1.S2.S3.js. Both
- * copies were functionally equivalent for every real call site in this
- * repo — motherwave.js's version additionally unwraps a `{ wave }`-shaped
- * argument and falls back to `endPrice`/`startPrice` aliases, neither of
- * which scannerS1.S2.S3.js's copy handled, but neither path was ever hit
- * by scannerS1.S2.S3.js since it always calls with an already-unwrapped
- * wave object (see scannerRunner.js: `calcTrapZone(mwResult.wave)` there
- * vs `calcTrapZone(mwResult)` in scannerRunner.js's own direct call to
- * motherwave.js's version) — kept the more defensive version as canonical.
+ * Previously calcEMA() was independently copy-pasted into 4 backend files
+ * (motherwave.js, backtestRunner.js, strategies/scannerS1.S2.S3.js,
+ * services/signalEngine.js). Three of the four copies were the safe,
+ * NaN/null-skipping version; signalEngine.js's copy had no such guard, so a
+ * single bad candle (null/NaN close) would poison every EMA value after it
+ * for the rest of that day's chart — silently killing NH/NL/BC signals and
+ * corrupting the emaHighs/emaLows arrays sent to the frontend (which feed
+ * WavesIndicator.js, SRZonesIndicator.js, ConsolidationIndicator.js).
  *
- * buildFibLevels() also moved here from motherwave.js (same file, only one
- * real implementation existed) so Chunk 10 (test_motherwave.js) has a
- * single place to repoint to later, instead of two.
- *
- * 2026-08-13 (Mother Wave / Driver Wave engine merge — motherwave.js
- * replaced with the full-history/succession-rule/Driver-Wave engine):
- * fibPrice() gained a tipPrice/originPrice fallback, and buildFibLevels()
- * is now computed from fibPrice() at each ratio instead of hand-duplicated
- * per-direction arithmetic. Both changes are purely additive for every
- * existing caller — any wave already exposing fromPrice/toPrice/toSide
- * gets byte-identical numbers to before. They only add support for the new
- * engine's raw wave records (services/motherwave.js's computeSegments() /
- * buildMwdwState()), which use originPrice/tipPrice instead of
- * fromPrice/toPrice. buildFibLevels also now includes the "1.234" ratio
- * (Driver Wave invalidation / S3 succession level — see motherwave.js's
- * MWDW_CFG.fibS3Ratio / fibDwInvalidationRatio), which the old
- * per-direction formulas didn't have.
- *
- * All backend call sites now import from here instead of keeping their own
- * copy. This is also the intended eventual backend-supplied source for the
- * frontend's `computeFibLevels` (FibDashboardPage.js) cross-repo pair —
- * see TGG-project-plan.md Section 5 / Item 16 — not wired up yet, backend-
- * internal consolidation only for now.
+ * All backend call sites now import calcEMA from here instead of keeping
+ * their own copy. Add any future shared indicator math (VWAP, ATR, Bollinger,
+ * etc. — Phase 1) here too, so there's exactly one place to update.
  */
 
 "use strict";
 
 /**
- * price at a given fib ratio for a wave segment.
- * Accepts either a wave object directly, or a `{ wave }`-wrapped result
- * object (e.g. the full return value of detectMotherWaveForAPI). Also
- * accepts the MW/DW engine's raw wave records (originPrice/tipPrice field
- * names) via the tipPrice/originPrice fallback below.
+ * Exponential Moving Average — skips null/NaN input values instead of
+ * letting them poison every subsequent value.
  *
- * @param {object} mw - wave object, or object with a `.wave` property
- * @param {number} ratio
- * @returns {number}
+ * @param {Array<number|null|undefined>} prices - oldest first
+ * @param {number} period
+ * @returns {Array<number|null>} ema values, same length as input;
+ *   entries before the first valid price are null.
  */
-function fibPrice(mw, ratio) {
-  const w = mw.wave || mw;
-  const to = w.toPrice ?? w.tipPrice ?? w.endPrice;
-  const from = w.fromPrice ?? w.originPrice ?? w.startPrice;
-  return to + ratio * (from - to);
+function calcEMA(prices, period) {
+  const k = 2 / (period + 1);
+  const out = new Array(prices.length).fill(null);
+  let ema = null;
+  for (let i = 0; i < prices.length; i++) {
+    const p = prices[i];
+    if (p == null || isNaN(p)) continue;
+    ema = ema === null ? p : p * k + ema * (1 - k);
+    out[i] = ema;
+  }
+  return out;
 }
 
 /**
- * Trap zone (0 / 0.236 fib band) for a wave.
- * Same input shape as fibPrice.
+ * Direct port of w_mw_dw_logic_py/indicators/atr.py — true_ranges() + wilder_atr().
+ * Was genuinely missing from this file before; required by the new Mother
+ * Wave "qualifying cut" rule (body must be >= 0.6x ATR14-exclusive) and by
+ * Driver Wave's strong-body test.
  *
- * @param {object} mw
- * @returns {{high:number, low:number, center:number, range:number}}
+ * @param {number[]} highs
+ * @param {number[]} lows
+ * @param {number[]} closes
+ * @returns {number[]} true range per bar, same length as input
  */
-function calcTrapZone(mw) {
-  const w = mw.wave || mw;
-  const tip = fibPrice(w, 0);
-  const ret = fibPrice(w, 0.236);
-  const to = w.toPrice ?? w.tipPrice;
-  const from = w.fromPrice ?? w.originPrice;
-  return {
-    high: Math.max(tip, ret),
-    low: Math.min(tip, ret),
-    center: (tip + ret) / 2,
-    range: Math.abs(to - from),
-  };
+function trueRanges(highs, lows, closes) {
+  const n = highs.length;
+  if (!n) return [];
+  const out = [highs[0] - lows[0]];
+  for (let i = 1; i < n; i++) {
+    out.push(Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i - 1]),
+      Math.abs(lows[i] - closes[i - 1]),
+    ));
+  }
+  return out;
 }
 
 /**
- * Build the full fib-levels object from a wave segment (segment shape:
- * { fromPrice, toPrice, toSide, ... } OR the MW/DW engine's raw wave shape:
- * { originPrice, tipPrice, toSide, ... } — both work via fibPrice()'s
- * fallback). Computed as fibPrice(seg, ratio) per level rather than
- * hand-duplicated per-direction arithmetic — numerically identical to the
- * old hardcoded formulas for every existing bull/bear wave shape, but also
- * correct for the new engine's raw wave records, and adds "1.234" (Driver
- * Wave invalidation / S3 succession level), which the old formulas omitted.
+ * Wilder's ATR — seeded with a simple average of the first `length` true
+ * ranges, then smoothed. Returns null for every bar before the seed.
  *
- * @param {object} seg
- * @returns {object} ratio-string → price map
+ * @param {number[]} trueRangeValues
+ * @param {number} length
+ * @returns {Array<number|null>}
  */
-function buildFibLevels(seg) {
-  return {
-    "-1.618": fibPrice(seg, -1.618),
-    "-1.0": fibPrice(seg, -1.0),
-    "-0.618": fibPrice(seg, -0.618),
-    "-0.236": fibPrice(seg, -0.236),
-    "0.0": fibPrice(seg, 0.0),
-    "0.236": fibPrice(seg, 0.236),
-    "0.382": fibPrice(seg, 0.382),
-    "0.5": fibPrice(seg, 0.5),
-    "0.618": fibPrice(seg, 0.618),
-    "0.786": fibPrice(seg, 0.786),
-    "1.0": fibPrice(seg, 1.0),
-    "1.234": fibPrice(seg, 1.234),
-  };
+function wilderATR(trueRangeValues, length) {
+  if (length <= 0) throw new Error("ATR length must be positive");
+  const n = trueRangeValues.length;
+  const out = new Array(n).fill(null);
+  if (n < length) return out;
+  let seed = 0;
+  for (let i = 0; i < length; i++) seed += trueRangeValues[i];
+  seed /= length;
+  out[length - 1] = seed;
+  let prev = seed;
+  for (let i = length; i < n; i++) {
+    prev = ((length - 1) * prev + trueRangeValues[i]) / length;
+    out[i] = prev;
+  }
+  return out;
 }
+
+/**
+ * Pine's ta.pivothigh(source, leftbars, rightbars) / ta.pivotlow(...).
+ *
+ * A bar at index i is a pivot high iff its value is STRICTLY greater than
+ * every value in the `leftbars` bars before it AND every value in the
+ * `rightbars` bars after it (ties do NOT count as a pivot — matches Pine).
+ * Because it needs `rightbars` bars of future data to confirm, the pivot
+ * is only knowable once bar (i + rightbars) has closed — same as Pine,
+ * where ta.pivothigh(2,2) read on bar N reports (if any) the pivot that
+ * sits at bar N-2.
+ *
+ * @param {number[]} values - highs (for pivotHigh) or lows (for pivotLow), oldest first
+ * @param {number} left
+ * @param {number} right
+ * @param {"high"|"low"} kind
+ * @returns {Array<number|null>} same length as `values`; out[i] is non-null
+ *   only at i = (pivotBarIndex + right) — i.e. the bar where Pine's
+ *   ta.pivothigh/pivotlow call would first return that price. Read
+ *   out[i] on bar i, and if non-null the actual pivot bar is (i - right).
+ */
+function pivotExtreme(values, left, right, kind) {
+  const n = values.length;
+  const out = new Array(n).fill(null);
+  const better = kind === "high"
+    ? (a, b) => a > b
+    : (a, b) => a < b;
+
+  for (let p = left; p <= n - 1 - right; p++) {
+    const v = values[p];
+    if (v == null || isNaN(v)) continue;
+    let isPivot = true;
+    for (let k = p - left; k < p; k++) {
+      if (values[k] == null || !better(v, values[k])) { isPivot = false; break; }
+    }
+    if (isPivot) {
+      for (let k = p + 1; k <= p + right; k++) {
+        if (values[k] == null || !better(v, values[k])) { isPivot = false; break; }
+      }
+    }
+    if (isPivot) out[p + right] = v;
+  }
+  return out;
+}
+
+function pivotHigh(highs, left, right) { return pivotExtreme(highs, left, right, "high"); }
+function pivotLow(lows, left, right) { return pivotExtreme(lows, left, right, "low"); }
 
 module.exports = {
-  fibPrice,
-  calcTrapZone,
-  buildFibLevels,
+  calcEMA,
+  trueRanges,
+  wilderATR,
+  pivotHigh,
+  pivotLow,
 };
