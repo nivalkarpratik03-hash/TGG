@@ -581,22 +581,23 @@ export default function ScannerPage() {
     };
   }, [results, isTypeGroup]);
 
-  // Results table — fully confirmed signals, latest 10
+  // Results table — fully confirmed signals, ALL of them (no 10-row cap —
+  // the table wrapper itself scrolls after ~10 visible rows via CSS
+  // max-height, see .scanner-signals-table-wrap in ScannerPage.css).
   const resultsTable = useMemo(() => {
     const stage = isTypeGroup ? "completed" : "s3_complete";
     return results
       .filter(r => r.patternStage === stage)
-      .sort((a, b) => new Date(b.scannedAt) - new Date(a.scannedAt))
-      .slice(0, 10);
+      .sort((a, b) => new Date(b.scannedAt) - new Date(a.scannedAt));
   }, [results, isTypeGroup]);
 
-  // Upcoming table — in-progress, not yet fully confirmed, latest 10
+  // Upcoming table — in-progress, not yet fully confirmed, ALL of them
+  // (same scroll-not-truncate behaviour as resultsTable above).
   const upcomingTable = useMemo(() => {
     const stage = isTypeGroup ? "active" : "s2";
     return results
       .filter(r => r.patternStage === stage)
-      .sort((a, b) => new Date(b.scannedAt) - new Date(a.scannedAt))
-      .slice(0, 10);
+      .sort((a, b) => new Date(b.scannedAt) - new Date(a.scannedAt));
   }, [results, isTypeGroup]);
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -774,7 +775,7 @@ export default function ScannerPage() {
               signalsTab === "results" ? (
                 <TypeSignalsTable
                   title="Results"
-                  sub="Entry → exit confirmed — latest 10"
+                  sub="Entry → exit confirmed — all, scroll for more"
                   rows={resultsTable}
                   showExit={true}
                   emptyLabel="No completed signals yet"
@@ -783,7 +784,7 @@ export default function ScannerPage() {
               ) : (
                 <TypeSignalsTable
                   title="Upcoming"
-                  sub="Entry fired, still active — latest 10"
+                  sub="Entry fired, still active — all, scroll for more"
                   rows={upcomingTable}
                   showExit={false}
                   emptyLabel="No active signals yet"
@@ -793,7 +794,7 @@ export default function ScannerPage() {
             ) : signalsTab === "results" ? (
               <SignalsTable
                 title="Results"
-                sub="S1 → S2 → S3 confirmed — latest 10"
+                sub="S1 → S2 → S3 confirmed — all, scroll for more"
                 rows={resultsTable}
                 showS3={true}
                 emptyLabel="No completed signals yet"
@@ -802,7 +803,7 @@ export default function ScannerPage() {
             ) : (
               <SignalsTable
                 title="Upcoming"
-                sub="S1 → S2 confirmed, S3 pending — latest 10"
+                sub="S1 → S2 confirmed, S3 pending — all, scroll for more"
                 rows={upcomingTable}
                 showS3={false}
                 emptyLabel="No forming signals yet"

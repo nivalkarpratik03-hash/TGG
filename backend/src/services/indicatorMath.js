@@ -91,8 +91,97 @@ function wilderATR(trueRangeValues, length) {
   return out;
 }
 
+/**
+ * pivotHigh / pivotLow — port of Pine's ta.pivothigh(source, leftbars,
+ * rightbars) / ta.pivotlow(source, leftbars, rightbars), for the TG T5
+ * engine (Node Port Plan, Chunk 1).
+ *
+ * PARITY NOTE (flagging, not guessing — verify against a real
+ * TradingView chart in Chunk 8): Pine's own pivot implementation isn't
+ * published source, so this ports the standard, widely-used definition —
+ * the centre bar must be STRICTLY greater (pivotHigh) / STRICTLY less
+ * (pivotLow) than every bar in the left+right window, both sides. Real
+ * OHLC data essentially never produces an exact tie at a pivot, so this
+ * should match bar-for-bar, but it's still an assumption, not a
+ * confirmed fact, until it's diffed against a live chart.
+ *
+ * OFFSET SEMANTICS (this is the part that's load-bearing and IS a
+ * documented Pine fact, not an assumption): a pivot centred at bar
+ * index `p` only becomes KNOWABLE once `rightbars` further bars exist —
+ * you can't know bar p was a local high until you've seen the bars
+ * after it. So the result is indexed like Pine's own series: entry
+ * `p + rightbars` holds the pivot (an object with the pivot's own price
+ * + the bar index `p` it actually happened on), every other entry is
+ * null. This mirrors exactly how ta.pivothigh/ta.pivotlow only return a
+ * non-na value on the bar where the pivot is confirmed, never earlier —
+ * which is exactly the "zero staleness / exact candle" contract the
+ * whole T5 port has to satisfy.
+ *
+ * @param {number[]} values - e.g. candle highs (for pivotHigh) or lows
+ *   (for pivotLow), oldest first, one per bar.
+ * @param {number} left  - bars required strictly beyond the centre bar
+ *   on the left (Pine's leftbars).
+ * @param {number} right - bars required strictly beyond the centre bar
+ *   on the right (Pine's rightbars) — also the confirmation lag.
+ * @returns {Array<{price:number, pivotIndex:number}|null>} same length
+ *   as `values`; non-null only at index `pivotIndex + right`.
+ */
+function pivotHigh(values, left, right) {
+  if (left < 0 || right < 0) throw new Error("pivotHigh: left/right must be >= 0");
+  const n = values.length;
+  const out = new Array(n).fill(null);
+  for (let centre = left; centre <= n - 1 - right; centre++) {
+    const v = values[centre];
+    if (v == null || isNaN(v)) continue;
+    let isPivot = true;
+    for (let j = centre - left; isPivot && j < centre; j++) {
+      const o = values[j];
+      if (o == null || isNaN(o) || o >= v) isPivot = false;
+    }
+    for (let j = centre + 1; isPivot && j <= centre + right; j++) {
+      const o = values[j];
+      if (o == null || isNaN(o) || o >= v) isPivot = false;
+    }
+    if (isPivot) out[centre + right] = { price: v, pivotIndex: centre };
+  }
+  return out;
+}
+
+/**
+ * Mirror of pivotHigh — centre bar must be strictly LESS than every bar
+ * in the left+right window. See pivotHigh's doc comment for the offset
+ * semantics and the parity caveat; both apply here unchanged.
+ *
+ * @param {number[]} values - e.g. candle lows, oldest first.
+ * @param {number} left
+ * @param {number} right
+ * @returns {Array<{price:number, pivotIndex:number}|null>}
+ */
+function pivotLow(values, left, right) {
+  if (left < 0 || right < 0) throw new Error("pivotLow: left/right must be >= 0");
+  const n = values.length;
+  const out = new Array(n).fill(null);
+  for (let centre = left; centre <= n - 1 - right; centre++) {
+    const v = values[centre];
+    if (v == null || isNaN(v)) continue;
+    let isPivot = true;
+    for (let j = centre - left; isPivot && j < centre; j++) {
+      const o = values[j];
+      if (o == null || isNaN(o) || o <= v) isPivot = false;
+    }
+    for (let j = centre + 1; isPivot && j <= centre + right; j++) {
+      const o = values[j];
+      if (o == null || isNaN(o) || o <= v) isPivot = false;
+    }
+    if (isPivot) out[centre + right] = { price: v, pivotIndex: centre };
+  }
+  return out;
+}
+
 module.exports = {
   calcEMA,
   trueRanges,
   wilderATR,
+  pivotHigh,
+  pivotLow,
 };
