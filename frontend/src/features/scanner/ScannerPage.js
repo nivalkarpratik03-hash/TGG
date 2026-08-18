@@ -387,14 +387,32 @@ export default function ScannerPage() {
     } catch { }
   }, []);
 
-  const fetchResults = useCallback(async (stratId) => {
+  // FIX (2026-08-18) — this used to fetch by strategyId ONLY, with no
+  // assetClass/instrumentType/resolution in the request at all. The
+  // backend had nothing to scope by, so switching the Asset Class /
+  // Instrument Type dropdown never changed what came back — you'd keep
+  // seeing whatever category was scanned first (e.g. picking "Commodity"
+  // still showed leftover EQ rows from an earlier scan). Now every fetch
+  // is scoped to the exact combo currently selected in the UI, matching
+  // the comboKey the backend wrote that scan's results under (see
+  // scannerRunner.js / scannerRouter.js). Switching filters to a combo
+  // that was already scanned shows that combo's cached results instantly;
+  // switching to a combo never scanned shows the empty state until the
+  // user hits Scan Now — no accidental carryover from a different combo.
+  const fetchResults = useCallback(async (stratId, tf, ac, it) => {
     if (!stratId) return;
     try {
       // per_page matches scannerRouter.js's raised cap (5000) — see the
       // fix note there. Requesting fewer than the full accumulated
       // multi-category result set would reintroduce the same truncation
       // bug from the frontend side.
-      const r = await fetch(`${BACKEND}/api/scanner/results/${stratId}?per_page=5000`).then(r => r.json());
+      const params = new URLSearchParams({
+        per_page: "5000",
+        resolution: String(tf),
+        assetClass: ac,
+        instrumentType: it,
+      });
+      const r = await fetch(`${BACKEND}/api/scanner/results/${stratId}?${params.toString()}`).then(r => r.json());
       setResults(r.results || []);
     } catch { }
   }, []);
@@ -450,9 +468,17 @@ export default function ScannerPage() {
     ? `type-${typeSubFilter.toLowerCase()}`
     : activeStrategy;
 
+  // FIX (2026-08-18) — previously only depended on [effectiveStrategyId,
+  // lastScan], so changing Asset Class / Instrument Type / Timeframe
+  // never triggered a refetch at all — the table just kept showing
+  // whatever the last fetch (for a possibly different combo) had loaded.
+  // Now timeframe/assetClass/instrumentType are in the dependency array,
+  // so selecting a different combo immediately re-fetches — and shows
+  // that combo's own cached results (or the empty state) instead of
+  // stale rows from whatever was previously selected.
   useEffect(() => {
-    if (effectiveStrategyId) fetchResults(effectiveStrategyId);
-  }, [effectiveStrategyId, lastScan, fetchResults]);
+    if (effectiveStrategyId) fetchResults(effectiveStrategyId, timeframe, assetClass, instrumentType);
+  }, [effectiveStrategyId, lastScan, timeframe, assetClass, instrumentType, fetchResults]);
 
   // ── Timeframe ─────────────────────────────────────────────────────────────
   function handleTfChange(val) {

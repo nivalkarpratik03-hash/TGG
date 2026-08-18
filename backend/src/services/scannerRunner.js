@@ -3,11 +3,35 @@
  * ─────────────────────────────────────────────────────────────────
  * Runs ALL registered strategies across all symbols.
  *
- * Results are stored per-strategy:
- *   _results = Map<strategyId, Map<symbol, ScanResult>>
+ * Results are stored per-strategy, PER SCAN-SCOPE ("combo"):
+ *   _results = Map<strategyId, Map<comboKey, Map<symbol, ScanResult>>>
+ *
+ * comboKey = `${resolution}|${assetClass}|${instrumentType}` (see
+ * buildComboKey below). Each distinct filter combination the Scanner UI
+ * can select (e.g. "15|commodity|fut" vs "15|equity|spot" vs the
+ * "15|all|all" full-scan bucket) gets its OWN result set. Scanning one
+ * combo never overwrites or merges into another combo's bucket — so
+ * switching the UI's Asset Class / Instrument Type / Timeframe dropdowns
+ * shows exactly that combo's cached results (or an empty state if that
+ * exact combo has never been scanned), never a mix of two different
+ * scopes. This is what /api/scanner/results/:strategyId's assetClass/
+ * instrumentType/resolution query params key off of — see scannerRouter.js.
+ *
+ * FIX (2026-08-18) — previously results were stored flat as
+ * Map<strategyId, Map<symbol, ScanResult>> with NO scope information at
+ * all. Every scan — regardless of which category/instrument-type/
+ * timeframe was selected — wrote into the exact same per-strategy map,
+ * keyed only by symbol. So scanning Commodity, then later scanning
+ * Equity, left BOTH sets of symbols sitting in the same map forever, and
+ * the results endpoint had no way to return "just Commodity" — it always
+ * returned everything ever scanned for that strategy. That's the "I
+ * selected Commodity but it still shows EQ rows" bug. Callers that don't
+ * pass a comboKey (getResultsByStrategy/getResult/getSummary with
+ * comboKey omitted) still get the old flatten-everything view, for
+ * backward compat with StrategiesPage.js, which has no scope filters.
  *
  * Manual-only scan control:
- *   scanner.triggerNow(resolution?)  — run one scan immediately
+ *   scanner.triggerNow(resolution?, scanSymbols?, assetClass?, instrumentType?)
  *   scanner.stop()                   — abort any running scan
  *   No auto-start. No periodic timer. You control when it runs.
  *
@@ -52,6 +76,20 @@ const RETRY_LIMIT = 5;
 // to change.
 const { isValidSymbol: isValidScanSymbol } = require("../utils/symbolValidation");
 
+// ─── Combo key ────────────────────────────────────────────────────────────────
+// Normalizes (resolution, assetClass, instrumentType) into one canonical
+// string used both to WRITE results (during a scan) and to READ them back
+// (from /api/scanner/results). Both scannerRunner.js and scannerRouter.js
+// build this the same way so a trigger with { assetClass: "commodity",
+// instrumentType: "fut" } and a results fetch with the same two query
+// params always land on the exact same bucket.
+function buildComboKey(resolution, assetClass, instrumentType) {
+  const res = parseInt(resolution) || DEFAULT_RESOLUTION;
+  const ac = String(assetClass || "all").trim().toLowerCase() || "all";
+  const it = String(instrumentType || "all").trim().toLowerCase() || "all";
+  return `${res}|${ac}|${it}`;
+}
+
 // ─── ScannerRunner ────────────────────────────────────────────────────────────
 class ScannerRunner extends EventEmitter {
   constructor() {
@@ -67,10 +105,31 @@ class ScannerRunner extends EventEmitter {
     this._lastScanDurationMs = null;
     this._progress = { total: 0, done: 0, found: 0 };
     this._resolution = DEFAULT_RESOLUTION;
+    // Per-combo scan bookkeeping — comboKey -> ISO timestamp of that
+    // combo's last completed scan. Lets callers (and, if ever needed, the
+    // UI) tell "never scanned" apart from "scanned, zero results".
+    this._lastScanAtByCombo = new Map();
+    this._lastComboKey = null;
 
     for (const s of strategies) {
+      // Inner value is now Map<comboKey, Map<symbol, ScanResult>> instead
+      // of a flat Map<symbol, ScanResult> — see file header FIX note.
       this._results.set(s.id, new Map());
     }
+  }
+
+  // ── Result bucket helpers ────────────────────────────────────────────────────
+  // Gets (creating if needed) the Map<symbol, ScanResult> for one
+  // strategy+combo. Always used when WRITING a result during a scan.
+  _bucket(strategyId, comboKey) {
+    const byCombo = this._results.get(strategyId);
+    if (!byCombo) return null;
+    let bucket = byCombo.get(comboKey);
+    if (!bucket) {
+      bucket = new Map();
+      byCombo.set(comboKey, bucket);
+    }
+    return bucket;
   }
 
   // ── Symbol list ──────────────────────────────────────────────────────────────
@@ -92,7 +151,13 @@ class ScannerRunner extends EventEmitter {
   // persistent _symbolList, and does not touch _symbolList or the persistent
   // _retryQueue at all — a scoped scan is a one-off, it never changes what
   // the next full scan (or another scoped scan) will cover.
-  async triggerNow(resolution, scanSymbols) {
+  //
+  // NEW (2026-08-18) — assetClass/instrumentType are now also used to build
+  // this scan's comboKey (see buildComboKey above), which determines WHICH
+  // per-strategy result bucket this scan's results get written into. This
+  // is what makes results per-filter-combo instead of one giant shared pile
+  // — see file header FIX note.
+  async triggerNow(resolution, scanSymbols, assetClass = "all", instrumentType = "all") {
     if (this._running) return { status: "already_running", progress: this._progress };
     if (resolution != null) this._resolution = parseInt(resolution) || DEFAULT_RESOLUTION;
     this._aborted = false;
@@ -106,12 +171,18 @@ class ScannerRunner extends EventEmitter {
       }
     }
 
-    await this._runScan(scopedSymbols);
+    const comboKey = buildComboKey(this._resolution, assetClass, instrumentType);
+    this._lastComboKey = comboKey;
+
+    await this._runScan(scopedSymbols, comboKey);
     return {
       status: "triggered",
       symbols: (scopedSymbols || this._symbolList).length,
       scoped: !!scopedSymbols,
       resolution: this._resolution,
+      assetClass,
+      instrumentType,
+      comboKey,
     };
   }
 
@@ -126,7 +197,11 @@ class ScannerRunner extends EventEmitter {
   }
 
   // ── Core scan loop ────────────────────────────────────────────────────────────
-  async _runScan(scopedSymbols = null) {
+  async _runScan(scopedSymbols = null, comboKey = null) {
+    // Legacy/internal callers that don't pass a comboKey (there are none
+    // left in this codebase, but stay defensive) fall back to the
+    // resolution-only "all|all" bucket rather than throwing.
+    const effectiveComboKey = comboKey || buildComboKey(this._resolution, "all", "all");
     if (this._running) return;
     const isScoped = !!scopedSymbols;
     const baseList = isScoped ? scopedSymbols : this._symbolList;
@@ -149,12 +224,13 @@ class ScannerRunner extends EventEmitter {
     if (!isScoped) this._retryQueue = [];
     this._progress = { total: toScan.length, done: 0, found: 0 };
 
-    console.log(`[Scanner #${scanId}] ${toScan.length} symbols × ${strategies.length} strategies @ res=${resolution}m${isScoped ? " (scoped)" : ""}`);
+    console.log(`[Scanner #${scanId}] ${toScan.length} symbols × ${strategies.length} strategies @ res=${resolution}m${isScoped ? " (scoped)" : ""} combo=${effectiveComboKey}`);
     this.emit("scan_start", {
       scanId,
       total: toScan.length,
       resolution,
       scoped: isScoped,
+      comboKey: effectiveComboKey,
       strategies: strategies.map(s => ({ id: s.id, name: s.name })),
     });
 
@@ -164,7 +240,7 @@ class ScannerRunner extends EventEmitter {
         break;
       }
       const batch = toScan.slice(i, i + CONCURRENCY);
-      await Promise.allSettled(batch.map((sym) => this._processSymbol(sym, false, resolution, retryTarget)));
+      await Promise.allSettled(batch.map((sym) => this._processSymbol(sym, false, resolution, retryTarget, effectiveComboKey)));
       this._progress.done = Math.min(i + CONCURRENCY, toScan.length);
       this.emit("scan_progress", { ...this._progress, scanId });
       if (i + CONCURRENCY < toScan.length) await delay(BATCH_DELAY_MS);
@@ -177,7 +253,7 @@ class ScannerRunner extends EventEmitter {
       console.log(`[Scanner #${scanId}] Retrying ${retries.length} symbols...`);
       for (const sym of retries) {
         if (this._aborted) break;
-        await this._processSymbol(sym, true, resolution, retryTarget);
+        await this._processSymbol(sym, true, resolution, retryTarget, effectiveComboKey);
         await delay(600);
       }
     }
@@ -185,13 +261,17 @@ class ScannerRunner extends EventEmitter {
     const durationMs = Date.now() - startMs;
     this._lastScanAt = new Date().toISOString();
     this._lastScanDurationMs = durationMs;
+    this._lastScanAtByCombo.set(effectiveComboKey, this._lastScanAt);
     this._running = false;
     this._aborted = false;
 
-    const summary = this.getSummaryAll();
+    // Scoped to THIS scan's combo only — not a merge across every combo
+    // ever scanned — so the emitted totals match what the UI that
+    // triggered this scan will actually see when it refetches.
+    const summary = this.getSummaryAll(effectiveComboKey);
     const totalFound = Object.values(summary).reduce((acc, s) => acc + s.full.length, 0);
 
-    console.log(`[Scanner #${scanId}] Done in ${(durationMs / 1000).toFixed(1)}s — ${totalFound} total signals across ${strategies.length} strategies`);
+    console.log(`[Scanner #${scanId}] Done in ${(durationMs / 1000).toFixed(1)}s — ${totalFound} total signals across ${strategies.length} strategies (combo=${effectiveComboKey})`);
     this.emit("scan_complete", {
       scanId,
       total: toScan.length,
@@ -199,12 +279,14 @@ class ScannerRunner extends EventEmitter {
       scannedAt: this._lastScanAt,
       resolution,
       scoped: isScoped,
+      comboKey: effectiveComboKey,
       summary,
     });
   }
 
   // ── Process one symbol — fetch candles ONCE, run all strategies ───────────────
-  async _processSymbol(symbol, isRetry = false, resolution = DEFAULT_RESOLUTION, retryTarget = null) {
+  async _processSymbol(symbol, isRetry = false, resolution = DEFAULT_RESOLUTION, retryTarget = null, comboKey = null) {
+    const effectiveComboKey = comboKey || buildComboKey(resolution, "all", "all");
     const retryQueue = retryTarget || this._retryQueue;
     try {
       // ── DB-first: read from Postgres, fall back to Fyers if empty ─────────
@@ -256,7 +338,7 @@ class ScannerRunner extends EventEmitter {
       for (const strategy of strategies) {
         try {
           const result = strategy.scan(symbol, candles, context);
-          this._results.get(strategy.id).set(symbol, result);
+          this._bucket(strategy.id, effectiveComboKey).set(symbol, result);
 
           if (result.found) {
             this._progress.found++;
@@ -267,7 +349,7 @@ class ScannerRunner extends EventEmitter {
           }
         } catch (stratErr) {
           console.error(`[Scanner] Strategy ${strategy.id} error on ${symbol}: ${stratErr.message}`);
-          this._results.get(strategy.id).set(symbol, {
+          this._bucket(strategy.id, effectiveComboKey).set(symbol, {
             symbol, found: false, patternStage: "none",
             error: stratErr.message, scannedAt: new Date().toISOString(),
           });
@@ -285,7 +367,7 @@ class ScannerRunner extends EventEmitter {
       } else {
         console.error(`[Scanner] ✗ ${symbol} permanently failed: ${err.message}`);
         for (const strategy of strategies) {
-          this._results.get(strategy.id).set(symbol, {
+          this._bucket(strategy.id, effectiveComboKey).set(symbol, {
             symbol, found: false, patternStage: "none",
             error: err.message, scannedAt: new Date().toISOString(),
           });
@@ -295,18 +377,58 @@ class ScannerRunner extends EventEmitter {
   }
 
   // ── Query helpers ─────────────────────────────────────────────────────────────
+  // All of these now take an OPTIONAL comboKey (see buildComboKey above):
+  //   - comboKey provided  → results for that EXACT scan scope only. Never
+  //     scanned yet → empty array (correct "no signals" state, not an
+  //     error) — this is what the Scanner UI (ScannerPage.js) always
+  //     passes now, one per selected Asset Class + Instrument Type +
+  //     Timeframe combo.
+  //   - comboKey omitted   → legacy flattened view merging every combo
+  //     ever scanned for that strategy, deduped by symbol (most recently
+  //     scanned wins). This is what StrategiesPage.js gets, unchanged from
+  //     before — it has no scope filters of its own.
 
-  getResultsByStrategy(strategyId) {
-    const map = this._results.get(strategyId);
-    return map ? [...map.values()] : [];
+  getResultsByStrategy(strategyId, comboKey = null) {
+    const byCombo = this._results.get(strategyId);
+    if (!byCombo) return null; // unknown strategyId — caller 404s
+
+    if (comboKey) {
+      const bucket = byCombo.get(comboKey);
+      return bucket ? [...bucket.values()] : [];
+    }
+
+    // Legacy merge across all combos, most-recently-scanned wins per symbol.
+    const merged = new Map();
+    for (const bucket of byCombo.values()) {
+      for (const [symbol, result] of bucket) {
+        const existing = merged.get(symbol);
+        if (!existing || new Date(result.scannedAt || 0) >= new Date(existing.scannedAt || 0)) {
+          merged.set(symbol, result);
+        }
+      }
+    }
+    return [...merged.values()];
   }
 
-  getResult(strategyId, symbol) {
-    return this._results.get(strategyId)?.get(symbol) || null;
+  getResult(strategyId, symbol, comboKey = null) {
+    const byCombo = this._results.get(strategyId);
+    if (!byCombo) return null;
+
+    if (comboKey) {
+      return byCombo.get(comboKey)?.get(symbol) || null;
+    }
+    // Legacy: most recent across all combos.
+    let best = null;
+    for (const bucket of byCombo.values()) {
+      const r = bucket.get(symbol);
+      if (r && (!best || new Date(r.scannedAt || 0) >= new Date(best.scannedAt || 0))) best = r;
+    }
+    return best;
   }
 
-  getSummary(strategyId) {
-    const all = this.getResultsByStrategy(strategyId);
+  getSummary(strategyId, comboKey = null) {
+    const all = this.getResultsByStrategy(strategyId, comboKey);
+    if (!all) return null;
     return {
       full: all.filter((r) => r.found),
       partial: all.filter((r) => r.patternStage === "s2"),
@@ -314,10 +436,20 @@ class ScannerRunner extends EventEmitter {
     };
   }
 
-  getSummaryAll() {
+  getSummaryAll(comboKey = null) {
     const out = {};
-    for (const s of strategies) { out[s.id] = this.getSummary(s.id); }
+    for (const s of strategies) { out[s.id] = this.getSummary(s.id, comboKey); }
     return out;
+  }
+
+  // Whether this exact combo has ever completed a scan — lets a caller
+  // distinguish "never scanned" from "scanned, zero matches" if needed.
+  hasScannedCombo(comboKey) {
+    return this._lastScanAtByCombo.has(comboKey);
+  }
+
+  lastScanAtForCombo(comboKey) {
+    return this._lastScanAtByCombo.get(comboKey) || null;
   }
 
   // group/variant are needed by the Scanner UI to pick the right stats/
@@ -356,4 +488,4 @@ function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 // ─── Singleton ────────────────────────────────────────────────────────────────
 const scanner = new ScannerRunner();
-module.exports = { scanner, ScannerRunner };
+module.exports = { scanner, ScannerRunner, buildComboKey };

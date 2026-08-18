@@ -8,7 +8,9 @@
  * GET  /api/scanner/strategies                 — all registered strategies
  * GET  /api/scanner/signals                    — signals across ALL strategies
  * GET  /api/scanner/signals/:strategyId        — signals for one strategy
- * GET  /api/scanner/results/:strategyId        — all results for one strategy (paginated)
+ * GET  /api/scanner/results/:strategyId        — results for one strategy, scoped to a
+ *                                                  filter combo (paginated) — see query
+ *                                                  params on the route below
  * GET  /api/scanner/result/:strategyId/:symbol — single symbol result
  * POST /api/scanner/trigger                    — run scan now (body: { resolution?, assetClass? })
  * POST /api/scanner/stop                       — abort running scan
@@ -21,7 +23,7 @@
 
 const express = require("express");
 const router = express.Router();
-const { scanner } = require("../services/scannerRunner");
+const { scanner, buildComboKey } = require("../services/scannerRunner");
 const symbolsRouter = require("./symbolsRouter");
 const instrumentTypeResolver = require("../services/instrumentTypeResolver");
 
@@ -73,26 +75,34 @@ router.get("/signals/:strategyId", (req, res) => {
   });
 });
 
-// GET /api/scanner/results/:strategyId  — paginated full result list
+// GET /api/scanner/results/:strategyId  — paginated result list, scoped to
+// one filter combo.
 //
-// FIX (2026-08-03) — this previously capped perPage at 200 and returned
-// scanner.getResultsByStrategy()'s array as-is. That array comes from a
-// Map<symbol, result> that is never cleared and is iterated in INSERTION
-// order (a JS Map does not reorder a key on re-`set()`). Symbols from
-// whichever category was scanned FIRST after server start therefore
-// permanently occupied the first ~200 slots, so page=1 (the only page the
-// UI ever requests) could never surface a later-scanned category (e.g.
-// Futures scanned after Equity Spot) — the rows existed in memory but were
-// sliced away before the response was built.
+// Query params:
+//   assetClass, instrumentType, resolution  — NEW (2026-08-18). When ALL
+//     THREE are provided, results are scoped to that exact combo's bucket
+//     only — see buildComboKey / the scannerRunner.js file header FIX note.
+//     When any is omitted (e.g. StrategiesPage.js's caller, which doesn't
+//     have these filters at all), falls back to the legacy flattened view
+//     merging every combo ever scanned for this strategy — unchanged
+//     behavior for callers that don't know about combos.
+//   page, per_page, stage, found — unchanged, applied after combo scoping.
 //
-// Fix: (a) sort the full result set by scannedAt DESC — most recently
-// scanned symbols first — before any filtering/pagination, so recency
-// (not insertion order) determines what page=1 contains; (b) raise the
-// perPage ceiling well above the accumulated multi-category symbol
-// universe (813 base symbols × spot/fut/opt, plus discovered option
-// strikes) so a caller that actually wants the whole set — like the
-// Scanner UI's stats bar and Results/Upcoming tables, which need every
-// symbol's current result to compute totals — isn't silently truncated.
+// FIX (2026-08-18) — this endpoint previously had NO scope filtering at
+// all: /results/:strategyId returned every symbol ever scanned for that
+// strategy, regardless of which Asset Class / Instrument Type / Timeframe
+// the Scanner UI had selected. Selecting "Commodity" therefore still
+// showed EQ rows scanned earlier, because the backend had no per-category
+// storage to filter against. Fixed by scoping the underlying
+// getResultsByStrategy() call to a comboKey built from these 3 new query
+// params — see scannerRunner.js.
+//
+// FIX (2026-08-03, still in effect) — perPage capped at 200 previously
+// truncated multi-category result sets that shared one bucket; that risk
+// is now moot per-combo (each combo's bucket is far smaller), but the
+// higher ceiling and scannedAt-DESC sort are kept as-is since callers
+// (Scanner UI's stats bar, Results/Upcoming tables) still want the full
+// set for that combo and recency-first ordering.
 router.get("/results/:strategyId", (req, res) => {
   const { strategyId } = req.params;
   const page = Math.max(1, parseInt(req.query.page || "1"));
@@ -100,8 +110,17 @@ router.get("/results/:strategyId", (req, res) => {
   const stage = req.query.stage || null;
   const found = req.query.found;
 
-  let all = scanner.getResultsByStrategy(strategyId);
-  if (!all) return res.status(404).json({ error: `Unknown strategy: ${strategyId}` });
+  // Combo scoping — only applied when the caller actually sent all three.
+  // Partial params (e.g. just `resolution`) are treated as "not scoped"
+  // rather than guessing at defaults for the missing ones, so a caller
+  // either opts fully into per-combo scoping or gets the old merged view.
+  const { assetClass, instrumentType, resolution } = req.query;
+  const comboKey = (assetClass != null && instrumentType != null && resolution != null)
+    ? buildComboKey(resolution, assetClass, instrumentType)
+    : null;
+
+  let all = scanner.getResultsByStrategy(strategyId, comboKey);
+  if (all === null) return res.status(404).json({ error: `Unknown strategy: ${strategyId}` });
 
   // Recency first — see fix note above. Falls back to 0 for any legacy
   // result missing scannedAt so it sorts last rather than throwing.
@@ -112,7 +131,15 @@ router.get("/results/:strategyId", (req, res) => {
 
   const total = all.length;
   const slice = all.slice((page - 1) * perPage, page * perPage);
-  res.json({ strategyId, total, page, perPage, results: slice });
+  res.json({
+    strategyId,
+    total,
+    page,
+    perPage,
+    results: slice,
+    comboKey,
+    scanned: comboKey ? scanner.hasScannedCombo(comboKey) : true,
+  });
 });
 
 // GET /api/scanner/result/:strategyId/:symbol
@@ -188,7 +215,12 @@ router.post("/trigger", async (req, res) => {
     // stays undefined → scanner.triggerNow's original full-scan behavior,
     // byte-identical to before this feature existed.
 
-    const out = await scanner.triggerNow(resolution, scopedSymbols);
+    // instrumentType defaults to "all" for the comboKey when the caller
+    // used the legacy assetClass-only path (instrumentTypeRaw == null) —
+    // matches the default ASSET_TO_INSTRUMENT_TYPES value the frontend
+    // would have shown for that assetClass anyway.
+    const instrumentTypeForCombo = instrumentTypeRaw != null ? String(instrumentTypeRaw).toLowerCase() : "all";
+    const out = await scanner.triggerNow(resolution, scopedSymbols, assetClass, instrumentTypeForCombo);
     res.json(out);
   } catch (err) {
     res.status(500).json({ error: err.message });
