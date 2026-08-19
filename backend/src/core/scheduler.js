@@ -111,6 +111,39 @@ async function wireDbJobs({ io, sweepCuratedStaleness, runValidatorRecovery }) {
         console.warn("[Prune] Failed to wire derivatives archive+prune:", e.message);
       }
 
+      // ── NEW: spot rolling retention (candles table — equities+indices) ──
+      // Companion to the derivatives prune above, same export→confirm→
+      // delete discipline, same startup+24h cadence, same "no trading-day
+      // gate" reasoning (reads/writes only Postgres + local disk, makes no
+      // broker calls, so day-type is irrelevant to correctness).
+      //
+      // ROLLING mode only (see backend/src/spot/pruneOldSpot.js) — a
+      // symbol is untouched until its earliest stored row passes the
+      // 6-month gate, then archives+deletes down to the newest ~3 months.
+      // The one-time --initial backlog catch-up was already run by hand
+      // via runSpotPrune.js on 2026-08-13 and is NOT repeated here — this
+      // wiring is rolling mode only, exactly as agreed, so it will not
+      // touch anything again until real data first crosses 6 months old
+      // (~end of September 2026, going by the Apr 1 2026 start date).
+      try {
+        const { runSpotPruneSweep } = require("../spot/pruneOldSpot");
+        const runSpotSweep = async (label) => {
+          try {
+            const r = await runSpotPruneSweep(); // initial:false, dryRun:false — rolling mode, live
+            if (r.scanned > 0 && (r.archived > 0 || r.failed.length > 0)) {
+              console.log(`[SpotPrune] ${label}: scanned ${r.scanned} symbol(s) — skipped-under-gate ${r.skippedUnderGate}, archived ${r.archived}, pruned ${r.pruned}${r.failed.length ? `, FAILED ${r.failed.length} (left in DB, retried next sweep: ${r.failed.map(f => `${f.symbol} [${f.error}]`).join("; ")})` : ""}`);
+            }
+          } catch (e) {
+            console.warn(`[SpotPrune] ${label} sweep error:`, e.message);
+          }
+        };
+        setImmediate(() => runSpotSweep("startup"));
+        setInterval(() => runSpotSweep("daily"), 24 * 60 * 60 * 1000);
+        console.log("[SpotPrune] Rolling spot retention wired — runs at startup, then every 24h (rolling mode only, 6-month gate, any day)");
+      } catch (e) {
+        console.warn("[SpotPrune] Failed to wire spot retention:", e.message);
+      }
+
 
       // ── Wire up recovery engine WebSocket emitter ──────────────────────
       if (state.recoveryEngine) {

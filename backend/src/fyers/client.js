@@ -1,11 +1,14 @@
 /**
  * Fyers API v3 — using fyers-api-v3 npm package
- * Token is read from fyers_access_token.txt (written by generate.js)
+ * Token is read from fyers_access_token.txt (written by generateToken() below,
+ * triggered from the /admin page in the frontend — see routes/chartRouter.js
+ * /api/auth/url, /api/auth/token, /api/auth/callback)
  */
 
 const fs = require("fs");
 const path = require("path");
 const { fyersModel } = require("fyers-api-v3");
+const { vlog } = require("../utils/verboseLog");
 
 const ROOT = path.resolve(__dirname, "../..");
 const TOKEN_FILE = path.join(ROOT, "fyers_access_token.txt");
@@ -60,14 +63,34 @@ function saveToken(token) {
   fs.writeFileSync(TOKEN_FILE, token.trim(), "utf8");
 }
 
+// ─── Redirect URI ──────────────────────────────────────────────────────────
+// UPDATED 2026-08-13: previously hardcoded to Fyers' generic redirect page
+// (https://trade.fyers.in/api-login/redirect-uri/index.html), which is what
+// forces the manual copy-paste-the-auth_code flow in generate.js.
+//
+// If PUBLIC_BACKEND_URL is set in .env, we redirect straight back into OUR
+// OWN backend (/api/auth/callback below), which exchanges the code for a
+// token automatically — no copy-paste needed. This value MUST exactly match
+// whatever is entered as "Redirect URL" in the Fyers API Dashboard for this
+// app (myapi.fyers.in/dashboard), or Fyers will reject the auth request.
+//
+// Falls back to the old generic page if PUBLIC_BACKEND_URL isn't set yet
+// (e.g. still on a local/unstable tunnel URL), so nothing breaks mid-migration.
+function getRedirectUri() {
+  const publicUrl = process.env.PUBLIC_BACKEND_URL;
+  return publicUrl
+    ? `${publicUrl.replace(/\/$/, "")}/api/auth/callback`
+    : "https://trade.fyers.in/api-login/redirect-uri/index.html";
+}
+
 function getFyersClient() {
   const token = loadToken();
-  if (!token) throw new Error("No access token. Run: node src/generate.js");
+  if (!token) throw new Error("No access token. Visit /admin in the frontend to connect to Fyers.");
   const appId = process.env.APP_ID;
   if (!appId) throw new Error("APP_ID missing in .env");
   const fyers = new fyersModel({ path: "", enableLogging: false });
   fyers.setAppId(appId);
-  fyers.setRedirectUrl("https://trade.fyers.in/api-login/redirect-uri/index.html");
+  fyers.setRedirectUrl(getRedirectUri());
   fyers.setAccessToken(token);
   return fyers;
 }
@@ -78,8 +101,7 @@ function getAuthURL() {
   const fyers = new fyersModel({ path: "", enableLogging: false });
   return fyers.generateAuthCode({
     client_id: appId,
-
-    redirect_uri: "https://trade.fyers.in/api-login/redirect-uri/index.html",
+    redirect_uri: getRedirectUri(),
     response_type: "code",
     state: "sample_state",
   });
@@ -388,7 +410,7 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
 
   const deduped = dedupSortCandles(allCandles);
 
-  console.log(`[Fyers] ${symbol} ${fyersResolution}: ${deduped.length} candles over ${lookbackDays}d (${chunks.length} chunk${chunks.length > 1 ? "s" : ""})`);
+  vlog(`[Fyers] ${symbol} ${fyersResolution}: ${deduped.length} candles over ${lookbackDays}d (${chunks.length} chunk${chunks.length > 1 ? "s" : ""})`);
   return deduped;
 }
 
@@ -540,6 +562,6 @@ async function validateSymbols(symbols) {
 }
 
 module.exports = {
-  loadToken, saveToken, getAuthURL, generateToken, validateToken, fetchCandles, fetchOptionChain,
+  loadToken, saveToken, getAuthURL, getRedirectUri, generateToken, validateToken, fetchCandles, fetchOptionChain,
   validateSymbols, setExcludedSymbols, isExcludedSymbol,
 };

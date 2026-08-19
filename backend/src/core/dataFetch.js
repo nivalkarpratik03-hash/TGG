@@ -20,6 +20,7 @@ const { fetchCandles } = require("../fyers/client");
 const { deriveTimeframe } = require("../services/candleBuilder");
 const { isTradingDay, isAnyMarketLive } = require("../fyers/tickStream");
 const state = require("./state");
+const { vlog } = require("../utils/verboseLog");
 
 function createDataFetch({ io, tickEngine }) {
   const { SYMBOL, RESOLUTION, CANDLES_TO_FETCH, CHART_DB_WINDOW_DAYS, REFRESH_MS, candleBuilders, socketSymbols, socketResolutions } = state;
@@ -91,7 +92,7 @@ function createDataFetch({ io, tickEngine }) {
       const tokenOk = await state.validateToken().catch(() => false);
       if (!tokenOk) return oneMinCandles;
 
-      console.log(`[Staleness] ${symbol}: DB latest is ${(lagMs / 60000).toFixed(1)}min behind — fetching delta from Fyers`);
+      vlog(`[Staleness] ${symbol}: DB latest is ${(lagMs / 60000).toFixed(1)}min behind — fetching delta from Fyers`);
 
       // Small bounded lookback (2 days) is always enough to cover the gap —
       // even a multi-hour outage never spans more than the current + previous
@@ -108,7 +109,7 @@ function createDataFetch({ io, tickEngine }) {
       if (state.dbEnabled && state.db) {
         try {
           const inserted = await state.db.upsertCandles(symbol, 1, newOnes);
-          console.log(`[Staleness] ${symbol}: backfilled ${inserted} missing 1m candle(s)`);
+          vlog(`[Staleness] ${symbol}: backfilled ${inserted} missing 1m candle(s)`);
           // FRONTEND-SYNC FIX: if a chart for this symbol was already open in a
           // browser tab BEFORE this backfill ran, the page's first render would
           // have shipped with the (then-stale) DB data — and since the live tick
@@ -214,7 +215,12 @@ function createDataFetch({ io, tickEngine }) {
     try {
       let oneMinCandles;
       if (resolution === 1440 || resolution === 10080) {
-        oneMinCandles = await state.db.loadCandles(symbol, 1, { limit: 100000 });
+        // FIX (2026-08-13): must be the NEWEST 100000 1m rows, not the
+        // oldest — without mostRecent:true, any symbol whose full 1m
+        // history exceeds 100000 rows silently lost its most recent
+        // months from Daily/Weekly (ASC-from-start was the default). See
+        // candleStore.js's loadCandles() for the full explanation.
+        oneMinCandles = await state.db.loadCandles(symbol, 1, { limit: 100000, mostRecent: true });
       } else {
         const windowMs = CHART_DB_WINDOW_DAYS * 24 * 60 * 60 * 1000;
         oneMinCandles = await state.db.loadCandles(symbol, 1, {

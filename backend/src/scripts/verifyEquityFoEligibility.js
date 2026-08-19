@@ -38,8 +38,8 @@
  * USAGE
  *   node src/scripts/verifyEquityFoEligibility.js [--out <path>]
  *
- *   Requires a valid Fyers access token already generated via
- *   generate.js, exactly like every other script in backend/src.
+ *   Requires a valid Fyers access token already connected via
+ *   /admin in the frontend, exactly like every other script in backend/src.
  *
  * OUTPUT
  *   Writes a REPORT file (default: symbols/equity-fo-verification-report.json)

@@ -1,0 +1,379 @@
+/* T5ScannerPanel.css
+ * Ported 1:1 from t5-scanner-mockup-v2.html — same palette, same layout,
+ * same blink keyframe. Scoped under .t5-wrap so it can sit inside
+ * ScannerPage.js without touching its theme.
+ */
+.t5-wrap {
+  --t5-bg: #0e0e14;
+  --t5-panel: #121219;
+  --t5-card: #1a1a24;
+  --t5-border: #2a2a38;
+  --t5-border-soft: #21212c;
+  --t5-ink: #e5e5ef;
+  --t5-mut: #8a8a9a;
+  --t5-mut2: #5a5a68;
+  --t5-accent: #6a4fd6;
+  --t5-accent-soft: #2a2540;
+  --t5-accent-text: #c9a8ff;
+  --t5-short: #f09595;
+  --t5-short-bg: #3a1c1c;
+  --t5-long: #97c459;
+  --t5-long-bg: #1c3a2c;
+  --t5-amber: #ef9f27;
+  --t5-amber-bg: #3a2c14;
+  --t5-gray: #8a8a9a;
+  --t5-gray-bg: #22222c;
+
+  background: var(--t5-panel);
+  border: 1px solid var(--t5-border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  color: var(--t5-ink);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  box-sizing: border-box;
+}
+
+.t5-wrap * {
+  box-sizing: border-box;
+}
+
+.t5-topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.t5-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.t5-meta {
+  margin-left: auto;
+  color: var(--t5-mut);
+  font-size: 11px;
+}
+
+.t5-stats {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.t5-stat {
+  background: var(--t5-card);
+  border-radius: 8px;
+  padding: 9px 11px;
+}
+
+.t5-lbl {
+  color: var(--t5-mut);
+  font-size: 10px;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+
+.t5-val {
+  font-size: 16px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.t5-val.purple {
+  color: var(--t5-accent-text);
+}
+
+.t5-val.green {
+  color: var(--t5-long);
+}
+
+.t5-val.red {
+  color: var(--t5-short);
+}
+
+.t5-val.amber {
+  color: var(--t5-amber);
+}
+
+.t5-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.t5-scan-btn {
+  margin-left: auto;
+  background: var(--t5-accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 18px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.t5-scan-btn:hover:not(:disabled) {
+  background: #7c5ce6;
+}
+
+.t5-scan-btn:disabled {
+  opacity: .6;
+  cursor: default;
+}
+
+.t5-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--t5-border);
+  margin-bottom: 12px;
+}
+
+.t5-tab {
+  background: none;
+  border: none;
+  color: var(--t5-mut);
+  font-size: 12px;
+  padding: 8px 16px;
+  cursor: pointer;
+  border-radius: 6px 6px 0 0;
+}
+
+.t5-tab.active {
+  background: var(--t5-accent-soft);
+  color: var(--t5-accent-text);
+  font-weight: 600;
+}
+
+.t5-count {
+  margin-left: 6px;
+  color: inherit;
+  opacity: .8;
+}
+
+.t5-panel {
+  display: none;
+}
+
+.t5-panel.active {
+  display: block;
+}
+
+.t5-subrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.t5-sub {
+  color: var(--t5-mut);
+  font-size: 11px;
+}
+
+.t5-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: fixed;
+}
+
+.t5-table thead th {
+  text-align: left;
+  padding: 7px 8px;
+  color: var(--t5-mut);
+  font-weight: 500;
+  border-bottom: 1px solid var(--t5-border);
+}
+
+.t5-table tbody td {
+  padding: 8px 8px;
+  border-bottom: 1px solid var(--t5-border-soft);
+  vertical-align: middle;
+}
+
+.t5-table tbody tr {
+  cursor: pointer;
+}
+
+.t5-table tbody tr:hover {
+  background: #17171f;
+}
+
+.t5-sym {
+  font-weight: 600;
+  color: var(--t5-ink);
+}
+
+.t5-time {
+  color: var(--t5-mut);
+}
+
+.t5-dash {
+  color: var(--t5-mut);
+}
+
+.t5-empty {
+  color: var(--t5-mut);
+  text-align: center;
+  padding: 20px 8px !important;
+  cursor: default;
+}
+
+.t5-side {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 5px;
+  display: inline-block;
+}
+
+.t5-side.h {
+  background: var(--t5-short-bg);
+  color: var(--t5-short);
+}
+
+.t5-side.l {
+  background: var(--t5-long-bg);
+  color: var(--t5-long);
+}
+
+.t5-pt {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 10px;
+  margin-right: 3px;
+  cursor: default;
+}
+
+.t5-pt.on.h {
+  background: var(--t5-short-bg);
+  color: var(--t5-short);
+}
+
+.t5-pt.on.l {
+  background: var(--t5-long-bg);
+  color: var(--t5-long);
+}
+
+.t5-pt.off {
+  border: 1px dashed #33333f;
+  color: var(--t5-mut2);
+}
+
+.t5-stagepill {
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--t5-card);
+  padding: 4px 9px;
+  border-radius: 6px;
+  display: inline-block;
+}
+
+.t5-tagcell .t5-tag {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--t5-ink);
+}
+
+.t5-status {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 5px;
+  display: inline-block;
+  margin-top: 3px;
+}
+
+.t5-status.live {
+  background: var(--t5-amber-bg);
+  color: var(--t5-amber);
+}
+
+.t5-status.confirmed {
+  background: var(--t5-long-bg);
+  color: var(--t5-long);
+}
+
+.t5-status.cancelled {
+  background: var(--t5-gray-bg);
+  color: var(--t5-gray);
+  text-decoration: line-through;
+}
+
+.t5-status.disarmed {
+  background: var(--t5-short-bg);
+  color: var(--t5-short);
+}
+
+.t5-status-note {
+  color: var(--t5-mut);
+  font-size: 10px;
+}
+
+/* ── the blink: flip-watch dot on any Upcoming row with an active caution ── */
+.t5-flip-row {
+  background: #241414;
+}
+
+.t5-flipwatch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--t5-short);
+}
+
+.t5-flipdot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--t5-short);
+  animation: t5-blink 1s ease-in-out infinite;
+}
+
+@keyframes t5-blink {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: .2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t5-flipdot {
+    animation: none;
+  }
+}
+
+.t5-legend {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--t5-border);
+  color: var(--t5-mut);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.t5-legend b {
+  color: var(--t5-ink);
+}
+
+@media (max-width: 640px) {
+  .t5-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

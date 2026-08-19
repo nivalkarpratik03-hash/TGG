@@ -81,10 +81,12 @@
  */
 
 const { fetchOptionChain, fetchCandles } = require("../fyers/client");
+const state = require("../core/state");
 const derivativesStore = require("../../../database/src/store/derivativesStore");
 const { lastTuesdayOfMonth, lastThursdayOfMonth, parseDerivativeSymbol } = require("../../../database/src/parsing/symbolParser");
 const symbolsRouter = require("../routes/symbolsRouter");
 const { loadCuratedUnderlyings } = require("./curatedUnderlyingsLoader");
+const { VERBOSE } = require("../utils/verboseLog");
 
 const RESOLUTION = "1"; // 1-minute candles, same convention as every other fetchCandles caller in this repo
 const OPTION_LOOKBACK_DAYS_DEFAULT = 5; // for an already-tracked symbol, just catch up recent gaps
@@ -99,17 +101,24 @@ const RETROACTIVE_BACKFILL_LOOKBACK_DAYS = 90; // for a BRAND NEW symbol, pull a
 // futures+options calls doesn't land on the broker in the same instant as
 // the next one's. SCALE WARNING (file header): not yet benchmarked at the
 // new ~200-underlying count.
-const INTER_UNDERLYING_DELAY_MS = 400;
+// UPDATED 2026-08-14: raised from 400ms — this checkpoint's dense
+// back-to-back REST calls (same Fyers account/token as the live tick
+// WebSocket) line up too closely with the tick socket repeatedly
+// closing/reconnecting during startup runs to be coincidence. Not confirmed
+// against Fyers' own rate-limit docs/logs, but this is the one lever we
+// control — easing the call rate is the safe first thing to try. Revert if
+// it turns out unrelated once observed over a few real runs.
+const INTER_UNDERLYING_DELAY_MS = 800;
 
 // INTER-STRIKE DELAY — root cause #2 (see file header). A single
 // dual-cycle underlying (NIFTY) can have 30-40+ real strikes; without a
 // pause and a log line between each one, that many fully sequential
 // broker calls produces several minutes of total silence — indistinguishable
-// from a hang on screen even though it's technically still working. 300ms
-// is deliberately smaller than INTER_UNDERLYING_DELAY_MS (this fires far
-// more often, inside a single underlying, so it needs to be cheap) but
-// still real spacing, not zero.
-const INTER_STRIKE_DELAY_MS = 300;
+// from a hang on screen even though it's technically still working.
+// UPDATED 2026-08-14: raised from 300ms alongside INTER_UNDERLYING_DELAY_MS
+// above — same reasoning, easing this checkpoint's total REST call rate
+// against the same Fyers account/token the live tick WebSocket uses.
+const INTER_STRIKE_DELAY_MS = 600;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -555,7 +564,9 @@ async function backfillStrikesForEntry(entry, strikes, label, log, delayFn, deps
         storedRows += r.stored;
         symbolsBackfilled++;
       }
-      log(`[GapFill] ${label}: ${entry.underlying} — strike (${i + 1}/${strikes.length}) ${s.symbol}: ${r.isNew ? "new, retroactive backfill" : "existing, gap catch-up"}, ${r.stored} candle row(s) stored`);
+      // Per-strike success line — noisy at full scale (can be hundreds per
+      // checkpoint), gated behind VERBOSE_LOGS. Failures below stay always-on.
+      if (VERBOSE) log(`[GapFill] ${label}: ${entry.underlying} — strike (${i + 1}/${strikes.length}) ${s.symbol}: ${r.isNew ? "new, retroactive backfill" : "existing, gap catch-up"}, ${r.stored} candle row(s) stored`);
     } catch (err) {
       strikesFailed++;
       log(`[GapFill] ${label}: ${entry.underlying} — strike (${i + 1}/${strikes.length}) ${s.symbol}: FAILED (${err.message}) — skipping, continuing to remaining strikes`);
@@ -572,8 +583,42 @@ async function backfillStrikesForEntry(entry, strikes, label, log, delayFn, deps
  *   runGapFillCheckpoint's filtering below).
  */
 async function runGapFillCheckpoint(label, deps = {}) {
-  const { all, atmBandWidth } = loadCuratedUnderlyings();
   const log = deps.log || ((msg) => console.log(msg));
+
+  // Added 2026-08-14 — GapFill previously had no token gate at all, unlike
+  // Staleness (core/dataFetch.js's sweepStalenessForSymbols, which bails via
+  // ensureFreshOneMinData's validateToken() check). Confirmed in production
+  // logs: with an expired/missing token, this ran through all ~214
+  // underlyings anyway, producing 600+ doomed "Could not authenticate the
+  // user" / "Invalid symbol provided" calls to Fyers per checkpoint — same
+  // failure, just repeated at full scale for nothing. Mirrors Staleness's
+  // exact gate and log style so both halves of the chain behave identically
+  // when the token is invalid, and returns the same zeroed shape the normal
+  // completion returns so gapFillScheduler.js's logging (r.scanned,
+  // r.optionsDiscovered, etc.) and any other caller don't need to change.
+  //
+  // Follows this file's existing deps-override convention (same as
+  // deps.fetchOptionChain/deps.fetchCandles below) so the integration test
+  // can inject a mock instead of hitting the real Fyers client — without
+  // this, the test would start failing since there's no live token in a
+  // test environment.
+  const validateTokenFn = deps.validateToken || state.validateToken;
+  const tokenOk = await validateTokenFn().catch(() => false);
+  if (!tokenOk) {
+    log(`[GapFill] ${label}: skipped — token invalid. Will run after re-auth.`);
+    return {
+      label,
+      scanned: 0,
+      optionsDiscovered: 0,
+      optionsBackfilled: 0,
+      futuresBackfilled: 0,
+      skipped: [],
+      failed: [],
+      discoveredSymbols: { futures: [], options: [] },
+    };
+  }
+
+  const { all, atmBandWidth } = loadCuratedUnderlyings();
   const delayFn = deps.sleep || sleep;
 
   // NSE/BSE close covers indices AND equities (both NSE-listed, same real

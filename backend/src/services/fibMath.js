@@ -37,6 +37,20 @@
  * frontend's `computeFibLevels` (FibDashboardPage.js) cross-repo pair —
  * see TGG-project-plan.md Section 5 / Item 16 — not wired up yet, backend-
  * internal consolidation only for now.
+ *
+ * FIX (restored 2026-08-18): this file had accidentally been overwritten
+ * with services/indicatorMath.js's content (calcEMA/trueRanges/wilderATR/
+ * pivotHigh/pivotLow), so fibPrice/calcTrapZone/buildFibLevels did not
+ * exist here anymore. Every caller of those three (motherwave.js's
+ * require("./fibMath"), scannerS1.S2.S3.js, and scannerRunner.js via
+ * motherwave.js's re-export) got `undefined` instead of a function, so
+ * scannerRunner.js's per-symbol `calcTrapZone(mwResult)` call threw
+ * "calcTrapZone is not a function" on every single scan — caught silently
+ * by scannerRunner.js's outer try/catch and logged to this._errors per
+ * symbol, so the scanner produced zero results for every symbol/strategy
+ * while the rest of the app (which doesn't touch fibMath.js) kept working
+ * fine. indicatorMath.js itself was untouched/correct — restored the real
+ * fib-math content here instead.
  */
 
 "use strict";

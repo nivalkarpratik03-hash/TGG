@@ -33,7 +33,7 @@
  * USAGE
  *   node src/scripts/diagnoseFourFlags.js
  *
- *   Requires a valid Fyers access token already generated via generate.js,
+ *   Requires a valid Fyers access token already connected via /admin,
  *   exactly like every other script in backend/src — this file makes no
  *   network calls of its own, it only calls fetchCandles/fetchOptionChain
  *   from fyers/client.js.

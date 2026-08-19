@@ -34,9 +34,53 @@
 //
 // Log format, per user's explicit spec: passes are NOT logged individually
 // (would be 200+ lines of noise) — only totals, plus which symbols failed.
+//
+// FIX 2026-08-17: SymbolCheck used to run unconditionally at boot, with no
+// token check first. If the Fyers token was expired, validateSymbols()
+// failed all 208 symbols in one shot, and setExcludedSymbols() permanently
+// added every one of them to fyers/client.js's in-memory exclusion Set —
+// which is only ever added to, never cleared, and nothing re-runs
+// SymbolCheck after a successful re-auth. So one expired token at boot
+// silently blacklisted every spot symbol (Staleness/GapFill/Recovery/
+// auto-refresh all started skipping them with "excluded (failed boot-time
+// symbol validation)") for the rest of that process's life — the only fix
+// was a full restart. waitForValidToken() below closes that gap: server.js
+// now calls it BEFORE runSymbolCheck(), so SymbolCheck simply doesn't run
+// (and can't mass-exclude anything) until the token is actually valid.
+// Meanwhile the HTTP server is already listening (routes mounted before
+// server.listen() in server.js), so chart/API requests keep being served
+// DB-first the whole time this is waiting — nothing else is blocked.
 
 const symbolsRouter = require("../routes/symbolsRouter");
 const { validateSymbols, setExcludedSymbols } = require("../fyers/client");
+const state = require("./state");
+
+// Polls state.validateToken() (already throttled/cached 60s in state.js,
+// and bust-able via bustTokenCache() — see chartRouter.js's /api/auth
+// callback, which calls bustTokenCache() right after a token is saved) so
+// this resolves the moment a fresh token is generated, without hammering
+// Fyers. Logs once immediately, then a low-frequency reminder, so a long
+// wait for manual re-auth doesn't spam the log.
+const POLL_INTERVAL_MS = 5000;
+const REMINDER_EVERY_N_POLLS = 12; // ~60s at the 5s interval above
+
+async function waitForValidToken() {
+  let attempt = 0;
+  for (; ;) {
+    const valid = await state.validateToken().catch(() => false);
+    if (valid) {
+      if (attempt > 0) console.log("[SymbolCheck] Fyers token now valid — proceeding.");
+      return;
+    }
+    if (attempt === 0) {
+      console.log("[SymbolCheck] Fyers token invalid/expired — waiting for a valid token before validating symbols (generate one at /api/auth/url). Chart/API requests still work from the DB in the meantime.");
+    } else if (attempt % REMINDER_EVERY_N_POLLS === 0) {
+      console.log("[SymbolCheck] Still waiting for a valid Fyers token...");
+    }
+    attempt++;
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  }
+}
 
 async function runSymbolCheck() {
   const all = symbolsRouter.getSymbols();
@@ -62,4 +106,4 @@ async function runSymbolCheck() {
   };
 }
 
-module.exports = { runSymbolCheck };
+module.exports = { runSymbolCheck, waitForValidToken };
