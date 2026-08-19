@@ -35,6 +35,13 @@ const strategies = [
   // do not add this line without Chunk 1 already in place.
   ...require("./typeREF"),
 
+  // ── TG T5 — direct Pine port (Script A v16.15 BETA) ─────────────────────
+  // Single self-contained file, same pattern as scannerS1.S2.S3.js /
+  // typeREF.js: the full 9EMA-trend + double-top(T5H)/double-bottom(T5L)
+  // point state machine (P1–P6) is ported and inlined in tgT5.js itself —
+  // no separate engine/session/trend service files.
+  require("./tgT5"),
+
   // ── Add new strategies below ──────────────────────────────────
   // require("./breakoutStrategy"),
   // require("./divergenceStrategy"),

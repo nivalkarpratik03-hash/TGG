@@ -24,6 +24,8 @@ import { TIMEFRAMES } from "../../utils/formatResolution";
 import {
   fmtTime, stageLabel, mwWave, isMWBull, waveSize, getZoneTray, buildChartUrl,
 } from "./mwScanHelpers";
+import { buildScannerRows } from "./t5ResultShape";
+import T5ScannerPanel from "./T5ScannerPanel";
 import "./ScannerPage.css";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -450,6 +452,12 @@ export default function ScannerPage() {
   );
   const isTypeGroup = activeStrategyMeta?.group === "type";
 
+  // TG T5 — own row shapes entirely (P1–P6 timeline, live/confirmed/
+  // cancelled status), nothing like s1s2s3's or type's patternStage
+  // vocabulary, so it gets its own branch + its own self-contained panel
+  // (T5ScannerPanel) instead of going through SignalsTable/TypeSignalsTable.
+  const isT5 = activeStrategy === "tg-t5";
+
   // Dropdown-eligible strategies only — excludes variant:"single" entries
   // (type-e/type-r/type-f), which are tab-only, reachable via the R/E/F
   // buttons next to Results/Upcoming instead. Previously the dropdown
@@ -600,6 +608,15 @@ export default function ScannerPage() {
       .sort((a, b) => new Date(b.scannedAt) - new Date(a.scannedAt));
   }, [results, isTypeGroup]);
 
+  // TG T5 — reshape raw scan() results (flat event log + engine state)
+  // into the Results/Upcoming row shapes T5ScannerPanel needs. No-op
+  // (empty arrays) whenever isT5 is false, so this is safe to always
+  // compute — it just won't be rendered.
+  const t5Rows = useMemo(
+    () => (isT5 ? buildScannerRows(results) : { results: [], upcoming: [] }),
+    [results, isT5]
+  );
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="scanner-page">
@@ -736,79 +753,94 @@ export default function ScannerPage() {
 
           {/* ── RESULTS / UPCOMING ──────────────────────────────────────────── */}
           <div className="scanner-section scanner-signals-section">
-            <div className="scanner-signals-tabs">
-              <button
-                className={`scanner-signals-tab ${signalsTab === "results" ? "active" : ""}`}
-                onClick={() => handleSignalsTabChange("results")}
-              >
-                Results
-              </button>
-              <button
-                className={`scanner-signals-tab ${signalsTab === "upcoming" ? "active" : ""}`}
-                onClick={() => handleSignalsTabChange("upcoming")}
-              >
-                Upcoming
-              </button>
-
-              {/* R/E/F sub-filter — only meaningful within "Type E,R,F",
-                  so only rendered when that strategy is active. Switches
-                  effectiveStrategyId (see above) between the combined
-                  type-ref view and each individual type's own full result
-                  set. */}
-              {isTypeGroup && (
-                <div className="scanner-signals-typefilter">
-                  {["all", "R", "E", "F"].map(t => (
-                    <button
-                      key={t}
-                      className={`scanner-signals-typefilter-btn ${typeSubFilter === t ? "active" : ""}`}
-                      onClick={() => setTypeSubFilter(t)}
-                      title={t === "all" ? "Combined — whichever of E/R/F most recently triggered" : `Type ${t} only`}
-                    >
-                      {t === "all" ? "All" : t}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {isTypeGroup ? (
-              signalsTab === "results" ? (
-                <TypeSignalsTable
-                  title="Results"
-                  sub="Entry → exit confirmed — all, scroll for more"
-                  rows={resultsTable}
-                  showExit={true}
-                  emptyLabel="No completed signals yet"
-                  timeframe={timeframe}
-                />
-              ) : (
-                <TypeSignalsTable
-                  title="Upcoming"
-                  sub="Entry fired, still active — all, scroll for more"
-                  rows={upcomingTable}
-                  showExit={false}
-                  emptyLabel="No active signals yet"
-                  timeframe={timeframe}
-                />
-              )
-            ) : signalsTab === "results" ? (
-              <SignalsTable
-                title="Results"
-                sub="S1 → S2 → S3 confirmed — all, scroll for more"
-                rows={resultsTable}
-                showS3={true}
-                emptyLabel="No completed signals yet"
-                timeframe={timeframe}
+            {isT5 ? (
+              // T5ScannerPanel is fully self-contained — its own Results/
+              // Upcoming tabs, stats row, and Scan Now button — so it
+              // replaces the tabs bar + SignalsTable/TypeSignalsTable
+              // branch below entirely rather than plugging into either.
+              <T5ScannerPanel
+                rows={t5Rows}
+                scannedCount={results.length}
+                resolution={tfLabel}
+                onRowClick={(symbol) => openChart(symbol, timeframe)}
               />
             ) : (
-              <SignalsTable
-                title="Upcoming"
-                sub="S1 → S2 confirmed, S3 pending — all, scroll for more"
-                rows={upcomingTable}
-                showS3={false}
-                emptyLabel="No forming signals yet"
-                timeframe={timeframe}
-              />
+              <>
+                <div className="scanner-signals-tabs">
+                  <button
+                    className={`scanner-signals-tab ${signalsTab === "results" ? "active" : ""}`}
+                    onClick={() => handleSignalsTabChange("results")}
+                  >
+                    Results
+                  </button>
+                  <button
+                    className={`scanner-signals-tab ${signalsTab === "upcoming" ? "active" : ""}`}
+                    onClick={() => handleSignalsTabChange("upcoming")}
+                  >
+                    Upcoming
+                  </button>
+
+                  {/* R/E/F sub-filter — only meaningful within "Type E,R,F",
+                      so only rendered when that strategy is active. Switches
+                      effectiveStrategyId (see above) between the combined
+                      type-ref view and each individual type's own full result
+                      set. */}
+                  {isTypeGroup && (
+                    <div className="scanner-signals-typefilter">
+                      {["all", "R", "E", "F"].map(t => (
+                        <button
+                          key={t}
+                          className={`scanner-signals-typefilter-btn ${typeSubFilter === t ? "active" : ""}`}
+                          onClick={() => setTypeSubFilter(t)}
+                          title={t === "all" ? "Combined — whichever of E/R/F most recently triggered" : `Type ${t} only`}
+                        >
+                          {t === "all" ? "All" : t}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {isTypeGroup ? (
+                  signalsTab === "results" ? (
+                    <TypeSignalsTable
+                      title="Results"
+                      sub="Entry → exit confirmed — all, scroll for more"
+                      rows={resultsTable}
+                      showExit={true}
+                      emptyLabel="No completed signals yet"
+                      timeframe={timeframe}
+                    />
+                  ) : (
+                    <TypeSignalsTable
+                      title="Upcoming"
+                      sub="Entry fired, still active — all, scroll for more"
+                      rows={upcomingTable}
+                      showExit={false}
+                      emptyLabel="No active signals yet"
+                      timeframe={timeframe}
+                    />
+                  )
+                ) : signalsTab === "results" ? (
+                  <SignalsTable
+                    title="Results"
+                    sub="S1 → S2 → S3 confirmed — all, scroll for more"
+                    rows={resultsTable}
+                    showS3={true}
+                    emptyLabel="No completed signals yet"
+                    timeframe={timeframe}
+                  />
+                ) : (
+                  <SignalsTable
+                    title="Upcoming"
+                    sub="S1 → S2 confirmed, S3 pending — all, scroll for more"
+                    rows={upcomingTable}
+                    showS3={false}
+                    emptyLabel="No forming signals yet"
+                    timeframe={timeframe}
+                  />
+                )}
+              </>
             )}
           </div>
 
