@@ -323,9 +323,39 @@
   color: var(--t5-short);
 }
 
+.t5-status.forming {
+  background: var(--t5-gray-bg);
+  color: var(--t5-mut);
+  border: 1px dashed var(--t5-border);
+}
+
 .t5-status-note {
   color: var(--t5-mut);
   font-size: 10px;
+}
+
+/* ── Flipped column badge — separate from the status pill, see
+   T5ScannerPanel.js header (Aug 2026 redesign) ───────────────────── */
+.t5-flippedbadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 5px;
+  background: var(--t5-short-bg);
+  color: var(--t5-short);
+  white-space: nowrap;
+}
+
+/* ── History tab — same table, slightly muted since it's aged-out data ── */
+.t5-table-history tbody tr {
+  opacity: .85;
+}
+
+.t5-table-history tbody tr:hover {
+  opacity: 1;
 }
 
 /* ── the blink: flip-watch dot on any Upcoming row with an active caution ── */
