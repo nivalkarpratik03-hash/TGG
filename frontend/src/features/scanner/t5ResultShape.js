@@ -186,6 +186,28 @@ function pointsOf(side, cycleEvents) {
   return { points, done };
 }
 
+// Resolves the candle time of the SPECIFIC point that matches a side's
+// CURRENT stage (P1's tag for stage 1, P2's tag for stage 2, P3's tag
+// for stage 3) — never "whatever the side's last-logged event happened
+// to be". Without this, a later info-only tag on the same side (NC,
+// CAUT, a gate-2 re-arm note, etc.) sitting after the stage's own point
+// tag in the event log would overwrite the row's displayed time with a
+// wrong, later timestamp even though the stage itself hasn't advanced.
+// A gate-2 re-arm re-emits the stage's own point tag (e.g. "T5H2") on
+// the correct re-anchored bar (tgT5.js emits it in the same block that
+// re-arms), so scanning for the LAST occurrence of that exact tag also
+// picks up a gate-2 re-anchor's new time for free — no separate case
+// needed for it here.
+function stagePointTime(side, cycleEvents, stage) {
+  const def = SIDE_DEF[side];
+  const stageTag = stage === 1 ? def.p1 : stage === 2 ? def.p2 : stage === 3 ? def.p3 : null;
+  if (!stageTag) return null;
+  for (let i = cycleEvents.length - 1; i >= 0; i--) {
+    if (cycleEvents[i].tag === stageTag) return cycleEvents[i].time || null;
+  }
+  return null;
+}
+
 // ── per-side outcome: results row / upcoming row / nothing ─────────────
 // This is the single place that decides what one side (T5H or T5L) is
 // currently showing, so shapeT5Row/shapeT5Upcoming can never disagree
@@ -241,6 +263,11 @@ function sideOutcome(side, sideEvents, stageSlice) {
   // is actually still sitting at stage 1-3 right now (defensive check;
   // this is the state-first guard the old file never had).
   if (stageSlice && stageSlice.stage >= 1 && stageSlice.stage <= 3) {
+    // Displayed time must be the current stage's own point (P1/P2/P3),
+    // not the side's last-logged event — see stagePointTime() above.
+    // `lastTime` (last event, whatever it was) stays the fallback only
+    // for the rare case the stage tag itself isn't in the log.
+    const stageTime = stagePointTime(side, cycle, stageSlice.stage) ?? lastTime;
     return {
       type: "upcoming",
       lastTime,
@@ -250,8 +277,8 @@ function sideOutcome(side, sideEvents, stageSlice) {
         stageText: stageLabel(stageSlice.stage),
         flip: !!stageSlice.caution,
         flipName: stageSlice.caution ? SIDE_DEF[side].cautionFlipLabel : null,
-        time: fmtTimeShort(lastTime),
-        timeMs: lastTime,
+        time: fmtTimeShort(stageTime),
+        timeMs: stageTime,
       },
     };
   }

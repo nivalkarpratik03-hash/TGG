@@ -514,7 +514,7 @@ class TgT5Engine {
     if (t5h3ncNow) emit('T5H3NC', null, { note: 'Provisional (Sr. 82) — not a signal.' });
     if (t5h6ncNow) emit('T5H6NC', null, { note: 'Provisional (Sr. 95) — not a signal.' });
     if (t5hDissNow) emit('T5H ✓ dissolved', null, { note: 'Caution resolved against the structure (Sr. 73).' });
-    if (t5hGate2Now) emit('T5H gate 2 → re-armed', null, { note: 'Sr. 100/108 — pivot above T5H2 re-anchored the structure.' });
+    if (t5hGate2Now) emit('T5H gate 2 → re-armed', null, { note: 'Sr. 100/108 — pivot above T5H2 re-anchored the structure.', time: barTime(this.t5hP2Bar) });
     if (t5hExpNow) emit('T5H ✕ expired', null, { note: 'Point 5/6 unresolved within the pending window (R33·14).' });
     if (t5hS2Flip || t5hLFlip || t5hS5Fire || t5h6ConfNow) emit('T5H ✓ done', null, { note: 'Structure resolved and disarmed (Sr. 67).' });
 
@@ -751,7 +751,7 @@ class TgT5Engine {
     if (t5l6ncNow) emit('T5L6NC', null, { note: 'Provisional (Sr. 95) — not a signal.' });
     if (t5l4Supp) emit('L T5L4 ✕ gate 3', null, { note: `R33·26 — room ${this.t5lRoomVal?.toFixed(1)} below the scaled minimum (${roomToP3.toFixed(1)}); alert suppressed, structure continues.` });
     if (t5lDissNow) emit('T5L ✓ dissolved', null, { note: 'Caution resolved against the structure (Sr. 73).' });
-    if (t5lGate2Now) emit('T5L gate 2 → re-armed', null, { note: 'Sr. 53/100/108 — pivot below T5L2 re-anchored the structure.' });
+    if (t5lGate2Now) emit('T5L gate 2 → re-armed', null, { note: 'Sr. 53/100/108 — pivot below T5L2 re-anchored the structure.', time: barTime(this.t5lP2Bar) });
     if (t5lExpNow) emit('T5L ✕ expired', null, { note: 'Point 5/6 unresolved within the pending window (R33·14).' });
     if (t5lL2Flip || t5lSFlip || t5lL5Fire || t5l6ConfNow) emit('T5L ✓ done', null, { note: 'Structure resolved and disarmed (Sr. 67).' });
 
