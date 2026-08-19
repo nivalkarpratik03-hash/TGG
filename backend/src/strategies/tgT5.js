@@ -102,6 +102,12 @@ class TgT5Engine {
     this.O = new Series(); this.H = new Series(); this.L = new Series(); this.C = new Series();
     this.isGreenS = new Series(); this.bodyTopS = new Series(); this.bodyBotS = new Series();
     this.bandHighS = new Series(); this.bandLowS = new Series();
+    // timeS mirrors O/H/L/C one-for-one (same push cadence, same absolute
+    // bar index) so any point whose bar is discovered *after* the fact
+    // (pivot points, which only confirm 1-2 bars later — see pivotHigh/
+    // pivotLow) can still be stamped with the time of the candle it
+    // actually happened on, not the candle that merely confirmed it.
+    this.timeS = new Series();
     this.barIndex = -1;
 
     // EMA(9) state
@@ -186,6 +192,7 @@ class TgT5Engine {
 
     this.O.push(open); this.H.push(high); this.L.push(low); this.C.push(close);
     this.isGreenS.push(isGreen); this.bodyTopS.push(bodyTop); this.bodyBotS.push(bodyBot);
+    this.timeS.push(time);
     this.barIndex++;
 
     // ── the 9EMA band ────────────────────────────────────────────────
@@ -194,6 +201,15 @@ class TgT5Engine {
     const bandLow = na(this._emaLowPrev) ? low : alpha * low + (1 - alpha) * this._emaLowPrev;
     this._emaHighPrev = bandHigh; this._emaLowPrev = bandLow;
     this.bandHighS.push(bandHigh); this.bandLowS.push(bandLow);
+
+    // Resolves an absolute bar index to the real candle time it happened
+    // on (via timeS). Falls back to the current bar's time if the index
+    // is missing/out of range, so a bad bar reference degrades to the old
+    // (still-correct-most-of-the-time) behaviour instead of throwing/NaN.
+    const barTime = (bar) => {
+      const t = this.timeS.at(bar);
+      return na(t) ? time : t;
+    };
 
     const events = [];
     const emit = (tag, side, opts = {}) => {
@@ -204,7 +220,13 @@ class TgT5Engine {
         note: opts.note ?? '',
         // Every point/flip must be traceable to the exact candle Pine drew
         // it on — never a derived/approximate timestamp, never scan time.
-        time,
+        // Pivot-based points (P1/P2/P3/P5 — see barTime callers below) only
+        // become *known* 1-2 bars after they happened, so those calls pass
+        // an explicit `opts.time` (the real point bar); everything else
+        // (P4 triggers, flips, confirms, NC/CAUT/done/expired) is evaluated
+        // directly on the current bar with no lag, so it keeps the ambient
+        // `time` via this default.
+        time: opts.time ?? time,
         barIndex: this.barIndex,
       });
     };
@@ -479,10 +501,10 @@ class TgT5Engine {
     // row ("T5H1…T5H6 — drawn as they form") and the UI timeline needs a
     // real candle time per point, so we surface them here as non-actionable
     // events (not in ACTIONABLE_TAGS — pure context, same as NC/CAUT/done).
-    if (t5hArmedNow && !t5hRean) emit('T5H1', 'short', { price: this.t5hP1, note: 'Point 1 anchor (Sr. 112).' });
-    if (t5hArmedNow) emit('T5H2', 'short', { price: this.t5hP2Hi, note: 'Point 2 armed (Sr. 99).' });
-    if (t5hP3Now) emit('T5H3', 'short', { price: this.t5hP3, note: 'Point 3 formed.' });
-    if (t5hP5Now) emit('T5H5', 'short', { price: this.t5hP5Low, note: 'Point 5 poke of the far edge.' });
+    if (t5hArmedNow && !t5hRean) emit('T5H1', 'short', { price: this.t5hP1, note: 'Point 1 anchor (Sr. 112).', time: barTime(this.t5hP1Bar) });
+    if (t5hArmedNow) emit('T5H2', 'short', { price: this.t5hP2Hi, note: 'Point 2 armed (Sr. 99).', time: barTime(this.t5hP2Bar) });
+    if (t5hP3Now) emit('T5H3', 'short', { price: this.t5hP3, note: 'Point 3 formed.', time: barTime(this.t5hP3Bar) });
+    if (t5hP5Now) emit('T5H5', 'short', { price: this.t5hP5Low, note: 'Point 5 poke of the far edge.', time: barTime(this.t5hP5Bar) });
     if (t5h4Fire) emit('S T5H4', 'short', { provisional: true, price: this.t5hP4, note: 'First red close below 9EMA High (R33·12). Provisional until point 5.' });
     if (t5h6ConfNow) emit('S T5H6', 'short', { price: t5hRef, note: 'Point 6 confirmed by the poke (Sr. 95/97).' });
     if (t5hS5Fire) emit('S T5H5 FLIP', 'short', { note: 'Point-5 break continuation (Sr. 59). Disarmed; manual below.' });
@@ -715,10 +737,10 @@ class TgT5Engine {
     }
 
     // ── emit T5L events, in cheat-sheet order ─────────────────────────
-    if (t5lArmedNow && !t5lRean) emit('T5L1', 'long', { price: this.t5lP1, note: 'Point 1 anchor (Sr. 112).' });
-    if (t5lArmedNow) emit('T5L2', 'long', { price: this.t5lP2Lo, note: 'Point 2 armed (Sr. 99).' });
-    if (t5lP3Now) emit('T5L3', 'long', { price: this.t5lP3, note: 'Point 3 formed.' });
-    if (t5lP5Now) emit('T5L5', 'long', { price: this.t5lP5High, note: 'Point 5 poke of the far edge.' });
+    if (t5lArmedNow && !t5lRean) emit('T5L1', 'long', { price: this.t5lP1, note: 'Point 1 anchor (Sr. 112).', time: barTime(this.t5lP1Bar) });
+    if (t5lArmedNow) emit('T5L2', 'long', { price: this.t5lP2Lo, note: 'Point 2 armed (Sr. 99).', time: barTime(this.t5lP2Bar) });
+    if (t5lP3Now) emit('T5L3', 'long', { price: this.t5lP3, note: 'Point 3 formed.', time: barTime(this.t5lP3Bar) });
+    if (t5lP5Now) emit('T5L5', 'long', { price: this.t5lP5High, note: 'Point 5 poke of the far edge.', time: barTime(this.t5lP5Bar) });
     if (t5l4Fire) emit('L T5L4', 'long', { provisional: true, price: this.t5lP4, note: 'First green close above 9EMA Low. Provisional until point 5.' });
     if (t5l6ConfNow) emit('L T5L6', 'long', { price: t5lRef, note: 'Point 6 confirmed by the poke (Sr. 95/97).' });
     if (t5lL5Fire) emit('L T5L5 FLIP', 'long', { note: 'Point-5 break continuation (Sr. 59). Disarmed; manual above.' });
@@ -936,11 +958,22 @@ function scan(symbol, candles, context = {}) {
 
     // Upcoming — only the sides that never reached P4 this cycle (no
     // Results row) AND are currently sitting at stage 1-3.
+    //
+    // The row's `time` is the candle the side's *last-formed* point
+    // actually happened on (p3Bar at stage 3, p2Bar at stage 2, p1Bar at
+    // stage 1) — never `lastCandle.time` (the most recently scanned
+    // candle), which is wrong the moment a point formed even one bar
+    // before the scan's current candle and made every symbol's row show
+    // the same, most-recent scan time instead of its own point time.
     if (finalState) {
+      const stageBarKey = { 1: 'p1Bar', 2: 'p2Bar', 3: 'p3Bar' };
       for (const struct of ['T5H', 'T5L']) {
         if (finalRow[struct]) continue; // already a Results row — not "upcoming"
         const sideSlice = struct === 'T5H' ? finalState.t5h : finalState.t5l;
         if (sideSlice.stage >= 1 && sideSlice.stage <= 3) {
+          const barKey = stageBarKey[sideSlice.stage];
+          const bar = barKey ? sideSlice[barKey] : null;
+          const pointTime = (bar != null && candles[bar]) ? candles[bar].time : null;
           result.upcoming.push({
             side: struct,
             stage: sideSlice.stage,
@@ -949,7 +982,10 @@ function scan(symbol, candles, context = {}) {
             flipName: sideSlice.caution
               ? `${struct === 'T5H' ? 'S/L CAUT T5H3 FLIP' : 'S/L CAUT T5L3 FLIP'} watch`
               : null,
-            time: result.lastCandle ? result.lastCandle.time : null,
+            // Falls back to the last scanned candle only if the stage's
+            // own point bar is somehow unavailable (defensive; should not
+            // happen in practice once stage >= 1).
+            time: pointTime ?? (result.lastCandle ? result.lastCandle.time : null),
           });
         }
       }

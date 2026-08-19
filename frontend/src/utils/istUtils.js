@@ -93,3 +93,27 @@ export function formatDateTimeIST(ts) {
     hour12: false, timeZone: "Asia/Kolkata",
   });
 }
+
+/**
+ * Format a timestamp (ms or ISO string) as a COMPACT IST date+time string,
+ * e.g. "19 Aug, 15:15". Use this anywhere a bare time-of-day would be
+ * ambiguous across days AND the full `formatDateTimeIST` string (with
+ * 4-digit year + seconds) is too wide for the space available — e.g. a
+ * narrow table column. Carries the same "which day" information as
+ * formatDateTimeIST, just abbreviated, and is a DIFFERENT, distinctly-named
+ * function so it never collides with (or silently replaces) the existing
+ * IST helpers above.
+ * @param {number|string} ts - Unix timestamp in ms, or an ISO date string
+ * @returns {string} e.g. "19 Aug, 15:15" or "—" if falsy
+ */
+export function formatShortDateTimeIST(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  const datePart = d.toLocaleDateString("en-GB", {
+    day: "2-digit", month: "short", timeZone: "Asia/Kolkata",
+  });
+  const timePart = d.toLocaleTimeString("en-IN", {
+    hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Kolkata",
+  });
+  return `${datePart}, ${timePart}`;
+}

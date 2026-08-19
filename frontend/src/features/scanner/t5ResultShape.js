@@ -26,7 +26,7 @@
 // tgT5.js itself is NOT modified by this rewrite.
 // ─────────────────────────────────────────────────────────────────
 
-import { formatDateTimeIST } from "../../utils/istUtils";
+import { formatDateTimeIST, formatShortDateTimeIST } from "../../utils/istUtils";
 
 // ── per-side tag vocabulary (verbatim strings emitted by tgT5.js) ──────
 // Everything here is read off tgT5.js's `emit(...)` calls — nothing here
@@ -76,10 +76,28 @@ const SIDE_DEF = {
 
 const STAGE_NAMES_0_3 = ["idle", "candidate (P1)", "armed (P1-2)", "dip set (P3)"];
 
+// Full IST date+time (e.g. "19/08/2026, 15:15:00") — used for the P1-P6
+// hover tooltip in pointsOf() below, where there's room for the whole
+// string. Previously this stripped everything but HH:MM:SS via
+// `.split(" ").pop()`, which silently threw away the date and made any
+// point look like it happened "today" even when the row was from an
+// earlier session — fixed by just returning formatDateTimeIST's output
+// as-is instead of truncating it.
 function fmtTime(ms) {
   if (!ms) return null;
-  try { return formatDateTimeIST(ms).split(" ").pop(); } // just HH:MM:SS
-  catch { return new Date(ms).toISOString().slice(11, 19); }
+  try { return formatDateTimeIST(ms); }
+  catch { return new Date(ms).toISOString().slice(0, 19).replace("T", " "); }
+}
+
+// Compact IST date+time (e.g. "19 Aug, 15:15") — used for the Results/
+// Upcoming "Time" table column, which is too narrow for the full
+// seconds-precision formatDateTimeIST string. Still carries the calendar
+// date (the actual bug being fixed here — see istUtils.js), just
+// abbreviated to fit the column.
+function fmtTimeShort(ms) {
+  if (!ms) return null;
+  try { return formatShortDateTimeIST(ms); }
+  catch { return new Date(ms).toISOString().slice(0, 16).replace("T", " "); }
 }
 
 function stageLabel(stage) {
@@ -196,7 +214,7 @@ function sideOutcome(side, sideEvents, stageSlice) {
         tag: cls.tag,
         status: cls.status,
         statusNote: cls.statusNote,
-        time: fmtTime(cls.closeEvent.time),
+        time: fmtTimeShort(cls.closeEvent.time),
         timeMs: cls.closeEvent.time || 0,
       },
     };
@@ -212,7 +230,7 @@ function sideOutcome(side, sideEvents, stageSlice) {
         tag: cls.tag,
         status: "live",
         statusNote: done < 5 ? "watching P5" : "watching P6",
-        time: fmtTime(lastTime),
+        time: fmtTimeShort(lastTime),
         timeMs: lastTime,
       },
     };
@@ -232,7 +250,7 @@ function sideOutcome(side, sideEvents, stageSlice) {
         stageText: stageLabel(stageSlice.stage),
         flip: !!stageSlice.caution,
         flipName: stageSlice.caution ? SIDE_DEF[side].cautionFlipLabel : null,
-        time: fmtTime(lastTime),
+        time: fmtTimeShort(lastTime),
         timeMs: lastTime,
       },
     };
@@ -296,4 +314,4 @@ function buildScannerRows(scanResults) {
 }
 
 // Exported for ScannerPage.js / T5ScannerPanel.js
-export { shapeT5Row, shapeT5Upcoming, buildScannerRows, stageLabel, fmtTime };
+export { shapeT5Row, shapeT5Upcoming, buildScannerRows, stageLabel, fmtTime, fmtTimeShort };

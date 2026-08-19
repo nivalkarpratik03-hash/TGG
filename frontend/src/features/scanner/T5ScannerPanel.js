@@ -148,7 +148,7 @@ export default function T5ScannerPanel({
           <table className="t5-table">
             <colgroup>
               <col style={{ width: 30 }} /><col style={{ width: 120 }} /><col style={{ width: 60 }} />
-              <col style={{ width: 200 }} /><col style={{ width: 150 }} /><col style={{ width: 70 }} />
+              <col style={{ width: 200 }} /><col style={{ width: 150 }} /><col style={{ width: 96 }} />
             </colgroup>
             <thead>
               <tr><th>Sr</th><th>Symbol</th><th>Side</th><th>P1&ndash;P6</th><th>Tag / status</th><th>Time</th></tr>
@@ -183,7 +183,7 @@ export default function T5ScannerPanel({
           <table className="t5-table">
             <colgroup>
               <col style={{ width: 30 }} /><col style={{ width: 120 }} /><col style={{ width: 60 }} />
-              <col style={{ width: 190 }} /><col style={{ width: 150 }} /><col style={{ width: 70 }} />
+              <col style={{ width: 190 }} /><col style={{ width: 150 }} /><col style={{ width: 96 }} />
             </colgroup>
             <thead>
               <tr><th>Sr</th><th>Symbol</th><th>Side</th><th>Stage</th><th>Flip watch</th><th>Time</th></tr>
