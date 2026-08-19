@@ -501,7 +501,15 @@ class TgT5Engine {
     // row ("T5H1…T5H6 — drawn as they form") and the UI timeline needs a
     // real candle time per point, so we surface them here as non-actionable
     // events (not in ACTIONABLE_TAGS — pure context, same as NC/CAUT/done).
-    if (t5hArmedNow && !t5hRean) emit('T5H1', 'short', { price: this.t5hP1, note: 'Point 1 anchor (Sr. 112).', time: barTime(this.t5hP1Bar) });
+    // T5H1 re-emits on first arming AND on a gate-2 hand-off (t5hGate2Now),
+    // since a gate-2 re-arm can move the real origin bar backward in time
+    // (this.t5hP1/t5hP1Bar re-assigned around the "Sr. 100" trail-up block).
+    // A plain point-2 ratchet (t5hRean true, t5hGate2Now false) does NOT
+    // move P1, so it must NOT re-emit — mirrors Pine's redraw guard, which
+    // only redraws T5H1 when t5hP1Bar actually changes (v16.01 changelog:
+    // "origin no longer redrawn on point-2 re-anchors when point 1 did not
+    // move").
+    if ((t5hArmedNow && !t5hRean) || t5hGate2Now) emit('T5H1', 'short', { price: this.t5hP1, note: 'Point 1 anchor (Sr. 112).', time: barTime(this.t5hP1Bar) });
     if (t5hArmedNow) emit('T5H2', 'short', { price: this.t5hP2Hi, note: 'Point 2 armed (Sr. 99).', time: barTime(this.t5hP2Bar) });
     if (t5hP3Now) emit('T5H3', 'short', { price: this.t5hP3, note: 'Point 3 formed.', time: barTime(this.t5hP3Bar) });
     if (t5hP5Now) emit('T5H5', 'short', { price: this.t5hP5Low, note: 'Point 5 poke of the far edge.', time: barTime(this.t5hP5Bar) });
@@ -737,7 +745,15 @@ class TgT5Engine {
     }
 
     // ── emit T5L events, in cheat-sheet order ─────────────────────────
-    if (t5lArmedNow && !t5lRean) emit('T5L1', 'long', { price: this.t5lP1, note: 'Point 1 anchor (Sr. 112).', time: barTime(this.t5lP1Bar) });
+    // T5L1 re-emits on first arming AND on a gate-2 hand-off (t5lGate2Now),
+    // since a gate-2 re-arm can move the real origin bar backward in time
+    // (this.t5lP1/t5lP1Bar re-assigned in either of the two "Sr. 100/53"
+    // trail-down blocks above). A plain point-2 ratchet (t5lRean true,
+    // t5lGate2Now false) does NOT move P1, so it must NOT re-emit — mirrors
+    // Pine's redraw guard, which only redraws T5L1 when t5lP1Bar actually
+    // changes (v16.01 changelog: "origin no longer redrawn on point-2
+    // re-anchors when point 1 did not move").
+    if ((t5lArmedNow && !t5lRean) || t5lGate2Now) emit('T5L1', 'long', { price: this.t5lP1, note: 'Point 1 anchor (Sr. 112).', time: barTime(this.t5lP1Bar) });
     if (t5lArmedNow) emit('T5L2', 'long', { price: this.t5lP2Lo, note: 'Point 2 armed (Sr. 99).', time: barTime(this.t5lP2Bar) });
     if (t5lP3Now) emit('T5L3', 'long', { price: this.t5lP3, note: 'Point 3 formed.', time: barTime(this.t5lP3Bar) });
     if (t5lP5Now) emit('T5L5', 'long', { price: this.t5lP5High, note: 'Point 5 poke of the far edge.', time: barTime(this.t5lP5Bar) });
