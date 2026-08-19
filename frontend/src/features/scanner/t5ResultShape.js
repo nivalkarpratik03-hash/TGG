@@ -122,7 +122,19 @@ function stageLabel(stage) {
 // Every tag tgT5.js emits for a side contains that side's prefix
 // ("T5H"/"T5L") somewhere in the string — mirrors tgT5.js's own internal
 // structureOf() helper.
+//
+// HARDENED (2026-08-19) — `tag` is only ever a string when the event
+// actually came from tgT5.js's scan(). If a caller ever hands this
+// function an event from a DIFFERENT strategy (e.g. typeREF.js's events,
+// which carry `.type` instead of `.tag`) or any object where `.tag` is
+// missing, `tag` is `undefined` here, and `undefined.indexOf(...)` used
+// to throw and crash the whole Scanner page. Guarding with
+// `typeof tag === "string"` makes this a normal "not a T5 tag" case
+// (returns null) instead of an uncaught TypeError — belt-and-braces on
+// top of the ScannerPage.js fix that stops foreign rows from reaching
+// here in the first place.
 function sideOfTag(tag) {
+  if (typeof tag !== "string") return null;
   if (tag.indexOf("T5H") !== -1) return "T5H";
   if (tag.indexOf("T5L") !== -1) return "T5L";
   return null;
@@ -343,7 +355,12 @@ function sideOutcome(side, sideEvents, stageSlice) {
 // valid signal.
 function pickSymbolOutcome(scanResult) {
   const { events, state, error } = scanResult || {};
-  if (error || !events) return null;
+  // HARDENED (2026-08-19) — `!events` alone let a non-array `events` (or
+  // an array of a different strategy's event objects) through to the
+  // .filter() calls below. Array.isArray() is the real guarantee this
+  // function needs; sideOfTag()'s own typeof guard is the second line of
+  // defence for the individual events inside a valid array.
+  if (error || !Array.isArray(events) || events.length === 0) return null;
 
   const t5hEvents = events.filter((e) => sideOfTag(e.tag) === "T5H");
   const t5lEvents = events.filter((e) => sideOfTag(e.tag) === "T5L");
@@ -389,7 +406,7 @@ function buildScannerRows(scanResults) {
   const upcoming = [];
   const history = [];
   for (const r of scanResults || []) {
-    if (!r || r.error || !r.events) continue;
+    if (!r || r.error || !Array.isArray(r.events) || r.events.length === 0) continue;
     const outcome = pickSymbolOutcome(r);
     if (!outcome) continue;
     if (outcome.type === "results") results.push({ symbol: r.symbol, ...outcome.row });

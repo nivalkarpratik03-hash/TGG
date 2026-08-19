@@ -180,37 +180,39 @@ export default function T5ScannerPanel({
         <div className="t5-panel active">
           <div className="t5-subrow">
             <span className="t5-sub">
-              What's live right now &mdash; P3 forming, P4 fired, or closed today &middot; latest 10 &middot; hover a point for its candle time
+              What's live right now &mdash; P3 forming, P4 fired, or closed today &middot; hover a point for its candle time
             </span>
           </div>
-          <table className="t5-table">
-            <colgroup>
-              <col style={{ width: 30 }} /><col style={{ width: 110 }} /><col style={{ width: 60 }} />
-              <col style={{ width: 180 }} /><col style={{ width: 140 }} /><col style={{ width: 110 }} /><col style={{ width: 90 }} />
-            </colgroup>
-            <thead>
-              <tr><th>Sr</th><th>Symbol</th><th>Side</th><th>P1&ndash;P6</th><th>Tag / status</th><th>Flipped</th><th>Time</th></tr>
-            </thead>
-            <tbody>
-              {results.slice(0, 10).map((r, i) => (
-                <tr key={r.symbol + i} onClick={() => onRowClick(r.symbol)}>
-                  <td>{i + 1}</td>
-                  <td className="t5-sym">{r.symbol}</td>
-                  <td><SideBadge side={r.side} /></td>
-                  <td><PointsRow side={r.side} points={r.points} done={r.done} /></td>
-                  <td className="t5-tagcell">
-                    {r.tag ? <div className="t5-tag">{r.tag}</div> : null}
-                    <StatusBadge status={r.status} statusNote={r.statusNote} />
-                  </td>
-                  <td><FlippedBadge flipped={r.flipped} flippedTag={r.flippedTag} /></td>
-                  <td className="t5-time">{r.time}</td>
-                </tr>
-              ))}
-              {results.length === 0 && (
-                <tr><td colSpan={7} className="t5-empty">Nothing live right now &mdash; check Upcoming.</td></tr>
-              )}
-            </tbody>
-          </table>
+          <div className="t5-table-wrap">
+            <table className="t5-table">
+              <colgroup>
+                <col style={{ width: 30 }} /><col style={{ width: 110 }} /><col style={{ width: 60 }} />
+                <col style={{ width: 180 }} /><col style={{ width: 140 }} /><col style={{ width: 110 }} /><col style={{ width: 90 }} />
+              </colgroup>
+              <thead>
+                <tr><th>Sr</th><th>Symbol</th><th>Side</th><th>P1&ndash;P6</th><th>Tag / status</th><th>Flipped</th><th>Time</th></tr>
+              </thead>
+              <tbody>
+                {results.map((r, i) => (
+                  <tr key={r.symbol + i} onClick={() => onRowClick(r.symbol)}>
+                    <td>{i + 1}</td>
+                    <td className="t5-sym">{r.symbol}</td>
+                    <td><SideBadge side={r.side} /></td>
+                    <td><PointsRow side={r.side} points={r.points} done={r.done} /></td>
+                    <td className="t5-tagcell">
+                      {r.tag ? <div className="t5-tag">{r.tag}</div> : null}
+                      <StatusBadge status={r.status} statusNote={r.statusNote} />
+                    </td>
+                    <td><FlippedBadge flipped={r.flipped} flippedTag={r.flippedTag} /></td>
+                    <td className="t5-time">{r.time}</td>
+                  </tr>
+                ))}
+                {results.length === 0 && (
+                  <tr><td colSpan={7} className="t5-empty">Nothing live right now &mdash; check Upcoming.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -219,30 +221,32 @@ export default function T5ScannerPanel({
           <div className="t5-subrow">
             <span className="t5-sub">Forming &mdash; stage 1 to 2, P3 not formed yet</span>
           </div>
-          <table className="t5-table">
-            <colgroup>
-              <col style={{ width: 30 }} /><col style={{ width: 120 }} /><col style={{ width: 60 }} />
-              <col style={{ width: 190 }} /><col style={{ width: 150 }} /><col style={{ width: 96 }} />
-            </colgroup>
-            <thead>
-              <tr><th>Sr</th><th>Symbol</th><th>Side</th><th>Stage</th><th>Flip watch</th><th>Time</th></tr>
-            </thead>
-            <tbody>
-              {upcoming.slice(0, 10).map((r, i) => (
-                <tr key={r.symbol + i} className={r.flip ? "t5-flip-row" : ""} onClick={() => onRowClick(r.symbol)}>
-                  <td>{i + 1}</td>
-                  <td className="t5-sym">{r.symbol}</td>
-                  <td><SideBadge side={r.side} /></td>
-                  <td><StagePill stageText={r.stageText} stage={r.stage} /></td>
-                  <td><FlipWatch flip={r.flip} flipName={r.flipName} /></td>
-                  <td className="t5-time">{r.time}</td>
-                </tr>
-              ))}
-              {upcoming.length === 0 && (
-                <tr><td colSpan={6} className="t5-empty">Nothing forming right now.</td></tr>
-              )}
-            </tbody>
-          </table>
+          <div className="t5-table-wrap">
+            <table className="t5-table">
+              <colgroup>
+                <col style={{ width: 30 }} /><col style={{ width: 120 }} /><col style={{ width: 60 }} />
+                <col style={{ width: 190 }} /><col style={{ width: 150 }} /><col style={{ width: 96 }} />
+              </colgroup>
+              <thead>
+                <tr><th>Sr</th><th>Symbol</th><th>Side</th><th>Stage</th><th>Flip watch</th><th>Time</th></tr>
+              </thead>
+              <tbody>
+                {upcoming.map((r, i) => (
+                  <tr key={r.symbol + i} className={r.flip ? "t5-flip-row" : ""} onClick={() => onRowClick(r.symbol)}>
+                    <td>{i + 1}</td>
+                    <td className="t5-sym">{r.symbol}</td>
+                    <td><SideBadge side={r.side} /></td>
+                    <td><StagePill stageText={r.stageText} stage={r.stage} /></td>
+                    <td><FlipWatch flip={r.flip} flipName={r.flipName} /></td>
+                    <td className="t5-time">{r.time}</td>
+                  </tr>
+                ))}
+                {upcoming.length === 0 && (
+                  <tr><td colSpan={6} className="t5-empty">Nothing forming right now.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -250,37 +254,39 @@ export default function T5ScannerPanel({
         <div className="t5-panel active">
           <div className="t5-subrow">
             <span className="t5-sub">
-              Confirmed / cancelled / flipped closes from earlier days &mdash; kept, not deleted, just out of the live feed &middot; latest 10
+              Confirmed / cancelled / flipped closes from earlier days &mdash; kept, not deleted, just out of the live feed
             </span>
           </div>
-          <table className="t5-table t5-table-history">
-            <colgroup>
-              <col style={{ width: 30 }} /><col style={{ width: 110 }} /><col style={{ width: 60 }} />
-              <col style={{ width: 180 }} /><col style={{ width: 140 }} /><col style={{ width: 110 }} /><col style={{ width: 90 }} />
-            </colgroup>
-            <thead>
-              <tr><th>Sr</th><th>Symbol</th><th>Side</th><th>P1&ndash;P6</th><th>Tag / status</th><th>Flipped</th><th>Time</th></tr>
-            </thead>
-            <tbody>
-              {history.slice(0, 10).map((r, i) => (
-                <tr key={r.symbol + i} onClick={() => onRowClick(r.symbol)}>
-                  <td>{i + 1}</td>
-                  <td className="t5-sym">{r.symbol}</td>
-                  <td><SideBadge side={r.side} /></td>
-                  <td><PointsRow side={r.side} points={r.points} done={r.done} /></td>
-                  <td className="t5-tagcell">
-                    {r.tag ? <div className="t5-tag">{r.tag}</div> : null}
-                    <StatusBadge status={r.status} statusNote={r.statusNote} />
-                  </td>
-                  <td><FlippedBadge flipped={r.flipped} flippedTag={r.flippedTag} /></td>
-                  <td className="t5-time">{r.time}</td>
-                </tr>
-              ))}
-              {history.length === 0 && (
-                <tr><td colSpan={7} className="t5-empty">No closed cycles from earlier days yet.</td></tr>
-              )}
-            </tbody>
-          </table>
+          <div className="t5-table-wrap">
+            <table className="t5-table t5-table-history">
+              <colgroup>
+                <col style={{ width: 30 }} /><col style={{ width: 110 }} /><col style={{ width: 60 }} />
+                <col style={{ width: 180 }} /><col style={{ width: 140 }} /><col style={{ width: 110 }} /><col style={{ width: 90 }} />
+              </colgroup>
+              <thead>
+                <tr><th>Sr</th><th>Symbol</th><th>Side</th><th>P1&ndash;P6</th><th>Tag / status</th><th>Flipped</th><th>Time</th></tr>
+              </thead>
+              <tbody>
+                {history.map((r, i) => (
+                  <tr key={r.symbol + i} onClick={() => onRowClick(r.symbol)}>
+                    <td>{i + 1}</td>
+                    <td className="t5-sym">{r.symbol}</td>
+                    <td><SideBadge side={r.side} /></td>
+                    <td><PointsRow side={r.side} points={r.points} done={r.done} /></td>
+                    <td className="t5-tagcell">
+                      {r.tag ? <div className="t5-tag">{r.tag}</div> : null}
+                      <StatusBadge status={r.status} statusNote={r.statusNote} />
+                    </td>
+                    <td><FlippedBadge flipped={r.flipped} flippedTag={r.flippedTag} /></td>
+                    <td className="t5-time">{r.time}</td>
+                  </tr>
+                ))}
+                {history.length === 0 && (
+                  <tr><td colSpan={7} className="t5-empty">No closed cycles from earlier days yet.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

@@ -476,6 +476,21 @@ export default function ScannerPage() {
     ? `type-${typeSubFilter.toLowerCase()}`
     : activeStrategy;
 
+  // FIX (2026-08-19) — switching strategies (e.g. "Type E,R,F" -> "TG T5")
+  // left the OLD strategy's `results` in state until the new fetch
+  // resolved. Different strategy families use different row shapes —
+  // Type's events carry `.type`, TG T5's carry `.tag` — so for that one
+  // async gap, `isT5` was already true while `results` still held Type's
+  // rows, and t5ResultShape.js's buildScannerRows() ran on them looking
+  // for `.tag`, which doesn't exist on a Type event -> crashed the whole
+  // Scanner page ("Cannot read properties of undefined (reading
+  // 'indexOf')"). Wiping `results` synchronously on strategy switch closes
+  // that gap: the T5 panel now renders its own empty state for one tick
+  // instead of another strategy's incompatible data.
+  useEffect(() => {
+    setResults([]);
+  }, [effectiveStrategyId]);
+
   // FIX (2026-08-18) — previously only depended on [effectiveStrategyId,
   // lastScan], so changing Asset Class / Instrument Type / Timeframe
   // never triggered a refetch at all — the table just kept showing

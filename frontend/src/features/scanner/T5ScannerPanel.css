@@ -184,6 +184,18 @@
   font-size: 11px;
 }
 
+/* Shows ALL rows (no 10-row truncation) but keeps the panel a fixed,
+   ~10-row viewport — anything beyond that scrolls inside the wrapper
+   instead of pushing the rest of the page down, exactly matching
+   ScannerPage.css's .scanner-signals-table-wrap used by every other
+   strategy's Results/Upcoming tables. Header stays pinned via
+   position:sticky while scrolling. */
+.t5-table-wrap {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 412px;
+}
+
 .t5-table {
   width: 100%;
   border-collapse: collapse;
@@ -192,10 +204,14 @@
 }
 
 .t5-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   text-align: left;
   padding: 7px 8px;
   color: var(--t5-mut);
   font-weight: 500;
+  background: var(--t5-panel);
   border-bottom: 1px solid var(--t5-border);
 }
 
