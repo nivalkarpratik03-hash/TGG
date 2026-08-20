@@ -1,20 +1,42 @@
 'use strict';
 
 /**
- * TG T5 — Node.js port of "TG T5 — Script A v16.15 BETA" (Pine v6 indicator)
+ * TG T5 — Node.js port of "TG T5 — Script A v16.30 BETA" (Pine v6 indicator)
  * ════════════════════════════════════════════════════════════════════════
- * Implements Annexure A · Edition A5 (R33·10-57 + freeze queue Sr. 58-110)
+ * Implements Annexure A · Edition A5 (R33·10-57 + freeze queue Sr. 58-126)
  * exactly as the Pine indicator computes it: the MH/ML morning frame, the
  * 9EMA band, trend hysteresis, pivot detection (fast + slow roads), and
  * the full T5H (double-top/short) and T5L (double-bottom/long) point
- * state machines (points 1-6, caution/dissolution, gate-2 re-anchor,
- * gate-3 room filter, trap-flip invalidation, expiry).
+ * state machines (points 1-6, caution box (Sr. 111/124), gate-2 re-anchor
+ * (Sr. 100/108/114/122), gate-3 room filter, trap-flip invalidation
+ * (Sr. 92/96/124b), expiry).
+ *
+ * v16.30 port notes (Sr. 111-126, superseding the prior v16.15 port):
+ *  - Sr. 113: no more session/day reset for the T5H/T5L structures —
+ *    armed structures now survive the session boundary. Only MH/ML and
+ *    symScale still reset daily.
+ *  - Sr. 111/124: "dissolution" is retired. Caution is now a two-sided
+ *    box (CautLow/CautHigh) resolved purely by CLOSE; a close beyond
+ *    either side is a genuine actionable flip (S/L T5H3/T5L3 FLIP), never
+ *    a quiet close-based hand-off.
+ *  - Sr. 112/116/118/121: the retained origin (lastPLBelow/lastPHTouch)
+ *    now ratchets (only moves toward the structure, never away) and gates
+ *    the point-2-first arming road; hand-off seeds require both recency
+ *    and cross-machine idleness, and fall back to the retained origin on
+ *    failure instead of dropping silently.
+ *  - Sr. 114/122/126: the point-4 acceptance window is now capped AND
+ *    floored (t5h/t5lP4Cap / P4Near) relative to point 2, with a stricter
+ *    >=2-bar spacing from point 3.
+ *  - Sr. 117: same-bar dip-vs-ratchet arbitration (earlier bar wins).
+ *  - Sr. 119: a "dummy" point-5 NC that advances the cycle to hunt point 6
+ *    without firing a signal when the real band-poke test misses narrowly.
+ *  - Sr. 124b: the trap flip gains a second, looser close-based trigger.
  *
  * This is a *signal engine*, not a drawing script — all chart-only Pine
  * code (labels, boxes, the state panel, the DEBUG origin-touch overlay)
  * is intentionally left out. Every `alertcondition(...)` in the source
  * has a 1:1 event emitted here, plus the cheat-sheet's WAIT/INFO tags
- * (NC, CAUT, done, dissolved, expired, gate-2 re-arm, gate-3 suppression)
+ * (NC, CAUT, done, expired, gate-2 re-arm, gate-3 suppression)
  * so downstream code has the same context a chart-watching trader would.
  *
  * Usage
@@ -82,8 +104,8 @@ function pivotLow(lowSeries, leftbars, rightbars) {
 
 /** The 10 tags a trader/consumer should actually ACT on (cheat-sheet rule 1). */
 const ACTIONABLE_TAGS = new Set([
-  'S T5H4', 'S T5H6', 'S T5H5 FLIP', 'S T5H2 FLIP', 'S T5L FLIP (trap)',
-  'L T5L4', 'L T5L6', 'L T5L5 FLIP', 'L T5L2 FLIP', 'L T5H FLIP (trap)',
+  'S T5H4', 'S T5H6', 'S T5H5 FLIP', 'S T5H2 FLIP', 'S T5L FLIP (trap)', 'S T5H3 FLIP',
+  'L T5L4', 'L T5L6', 'L T5L5 FLIP', 'L T5L2 FLIP', 'L T5H FLIP (trap)', 'L T5L3 FLIP',
 ]);
 
 // ── the engine ───────────────────────────────────────────────────────
@@ -303,7 +325,8 @@ class TgT5Engine {
     //  T5H — the double top
     // ══════════════════════════════════════════════════════════════
     let t5hArmedNow = false, t5hRean = false, t5hGate2Now = false;
-    let t5hP3Now = false, t5hP3ReanNow = false, t5h3ncNow = false, t5hCautNow = false, t5hDissNow = false;
+    let t5hP3Now = false, t5hP3ReanNow = false, t5h3ncNow = false, t5hCautNow = false;
+    let t5hC3Flip = false, t5h5ncNow = false;
     let t5h4Fire = false, t5hP5Now = false, t5hS5Fire = false;
     let t5h6ncNow = false, t5h6ConfNow = false, t5h6ncFailNow = false;
     let t5hLFlip = false, t5hLFlipName = '', t5hS2Flip = false, t5hExpNow = false;
@@ -314,11 +337,10 @@ class TgT5Engine {
     const f_lastLowH = () => (!na(this.t5hP5Low) ? this.t5hP5Low : this.t5hP3);
 
     {
-      if (newDay) {
-        this.t5hStage = 0; this.t5hCaut = false; this.t5h3nc = false; this.t5h6nc = false;
-        this.t5hP3 = undefined; this.t5hP5Low = undefined; this.t5hP5Bar = undefined;
-        this.t5hP6 = undefined; this.t5hP6Bar = undefined;
-      }
+      // Sr. 113 — OVERNIGHT CARRY: no more session reset. Armed structures
+      // survive the session boundary; flips/gates test from the first
+      // candles of the new day. (Only MH/ML and symScale still reset daily
+      // — see the block above.)
 
       if (this.t5hStage === 1 && (sidewaysNow || huntT5L)) this.t5hStage = 0;
 
@@ -330,11 +352,18 @@ class TgT5Engine {
         this.t5hP1 = pl; this.t5hP1Bar = this.barIndex - 2;
       }
       // hand-off seed (Sr. 105/108 — must sit strictly below the band at its own bar)
-      if (this.t5hStage === 0 && !na(this.seedT5H1) && huntT5H) {
+      // Sr. 121 — ONE-STRUCTURE LAW: a seed arms only when T5L is idle too.
+      if (this.t5hStage === 0 && this.t5lStage === 0 && !na(this.seedT5H1) && huntT5H) {
         const bandLowAtSeed = this.bandLowS.at(this.seedT5H1Bar);
-        if (this.seedT5H1 < bandLowAtSeed) {
+        // Sr. 118 — a seed must be NEWER than the currently retained origin.
+        if (this.seedT5H1 < bandLowAtSeed && (na(this.lastPLBelowBar) || this.seedT5H1Bar > this.lastPLBelowBar)) {
           this.t5hStage = 1; this.t5hP1 = this.seedT5H1; this.t5hP1Bar = this.seedT5H1Bar;
           this.t5hSeedBar = this.seedT5H1Bar;
+          this.lastPLBelow = this.seedT5H1; this.lastPLBelowBar = this.seedT5H1Bar; // Sr. 116 — refresh only when the seed WINS
+        } else if (!na(this.lastPLBelow)) {
+          // Sr. 112 — a failing seed falls back to the RETAINED origin instead of dropping silently.
+          this.t5hStage = 1; this.t5hP1 = this.lastPLBelow; this.t5hP1Bar = this.lastPLBelowBar;
+          this.t5hSeedBar = this.lastPLBelowBar;
         }
         this.seedT5H1 = undefined; // consumed either way
       }
@@ -345,9 +374,17 @@ class TgT5Engine {
       const p2hPx = p2hFast ? fastHiPx : ph;
       const p2hBar = p2hFast ? (high >= nz(this.H.get(1), -Infinity) ? this.barIndex : this.barIndex - 1) : this.barIndex - 2;
       const p2hCand = p2hFast || p2hSlow;
+      // Sr. 117 — same-bar arbitration: does a VALID dip candidate exist
+      // whose candle PRECEDES this bar's peak candidate?
+      const hDipCand = this.t5hStage === 2 && ((fastLoNow && fastLoPx < this.t5hP2Hi && fastLoPx < bandHigh) ||
+        (!na(pl) && pl < this.t5hP2Hi && pl < this.bandHighS.get(2)));
+      const hDipBar = fastLoNow ? (low <= nz(this.L.get(1), Infinity) ? this.barIndex : this.barIndex - 1) : this.barIndex - 2;
+      const hDipFirst = hDipCand && hDipBar >= this.t5hP2Bar + 2 && hDipBar < p2hBar;
+      // Sr. 112 — the RETAINED ORIGIN serves the point-2-first road: the
+      // last below-band pivot low, however far back (the real wave anchor).
       if (this.t5hStage === 0 && p2hCand && huntT5H && this.t5lStage === 0 &&
-        !na(this.lastPL) && this.lastPLStrict && this.lastPL < p2hPx && this.lastPLBar < p2hBar) {
-        this.t5hStage = 1; this.t5hP1 = this.lastPL; this.t5hP1Bar = this.lastPLBar;
+        !na(this.lastPLBelow) && this.lastPLBelow < p2hPx && this.lastPLBelowBar < p2hBar) {
+        this.t5hStage = 1; this.t5hP1 = this.lastPLBelow; this.t5hP1Bar = this.lastPLBelowBar;
       }
       if (this.t5hStage === 1 && p2hCand && this.t5hP1 < p2hPx && this.t5hP1Bar < p2hBar - 1) {
         this.t5hStage = 2;
@@ -357,7 +394,9 @@ class TgT5Engine {
         this.t5hP3 = undefined; this.t5hP4 = undefined; this.t5hP5Low = undefined; this.t5hP5Bar = undefined;
         this.t5h3nc = false; this.t5hCaut = false; this.t5h6nc = false; this.t5h4Sent = false;
         this.t5hPend = 0; t5hArmedNow = true;
-      } else if (this.t5hStage === 2 && p2hCand && p2hPx > this.t5hP2Hi && this.t5hP1 < p2hPx) {
+        // stage-2 ratchet (Sr. 64) — UNLESS the dip came first (Sr. 117):
+        // then point 3 takes this bar and the peak faces the Sr. 114 ceiling.
+      } else if (this.t5hStage === 2 && p2hCand && p2hPx > this.t5hP2Hi && this.t5hP1 < p2hPx && !hDipFirst) {
         this.t5hP2Hi = p2hPx;
         this.t5hP2Lo = p2hFast ? Math.max(this.bodyTopS.get(1), bodyTop) : Math.max(this.O.get(2), this.C.get(2));
         this.t5hP2Bar = p2hBar; t5hArmedNow = true; t5hRean = true;
@@ -368,7 +407,7 @@ class TgT5Engine {
         this.t5h3nc = true; this.t5h3ncLow = low; t5h3ncNow = true;
       }
       if (this.t5hStage === 2 && this.t5h3nc && !this.t5hCaut && !isGreen && close < this.t5h3ncLow) {
-        this.t5hCaut = true; this.t5hCautLow = low; t5hCautNow = true;
+        this.t5hCaut = true; this.t5hCautLow = low; this.t5hCautHigh = high; t5hCautNow = true; // Sr. 124 — the caution BOX
       }
 
       // point 3 — pivot low < p2.high AND < bandHigh
@@ -385,32 +424,47 @@ class TgT5Engine {
         this.t5hP3 = p3Px; this.t5hP3Bar = p3Bar; t5hP3Now = true; t5hP3ReanNow = true;
       }
 
-      // caution at stage 3 (Sr. 62/73)
+      // Sr. 114/122 — the point-4 window: CEILING = band + one UW above
+      // T5H2; NEAR wall = T5H2 body minus one band-width (Sr. 122). Also
+      // gates the break-adoption path below, computed here (inline, same
+      // as Pine) since it's needed before the caution check.
+      const t5hP4Cap = this.t5hP2Hi + (this.t5hP2Hi - this.t5hP2Lo);
+      const t5hP4Near = this.t5hP2Lo - (this.t5hP2Hi - this.t5hP2Lo);
+
+      // caution at stage 3 (Sr. 62/73), break-adoption gated by Sr. 122's near wall
       if (this.t5hStage === 3 && !this.t5hCaut && !isGreen && close < this.t5hP3 && close < bandLow) {
-        if (this.t5hApexPoke && close < open) {
+        if (this.t5hApexPoke && close < open && this.t5hApexHi >= t5hP4Near) {
           this.t5hP4 = this.t5hApexHi; this.t5hP4Bar = this.t5hApexBar;
           t5h4Fire = true; this.t5h4Sent = true; this.t5hStage = 5; this.t5hPend = 0;
         } else {
-          this.t5hCaut = true; this.t5hCautLow = low; t5hCautNow = true;
+          this.t5hCaut = true; this.t5hCautLow = low; this.t5hCautHigh = high; t5hCautNow = true; // Sr. 124 — the caution BOX
         }
       }
-      // dissolution (Sr. 73)
-      if ((this.t5hStage === 2 || this.t5hStage === 3) && this.t5hCaut && !t5hCautNow && !isGreen && close < this.t5hCautLow) {
-        t5hDissNow = true;
+      // Sr. 111 — PRICE IS THE LAW: caution never clears on a bounce, only
+      // point 4 lifts it. Sr. 124 — the caution BOX resolves by CLOSES,
+      // two-sided. Close BELOW the box -> S T5H3 FLIP (same-side disarm):
+      if ((this.t5hStage === 2 || this.t5hStage === 3) && this.t5hCaut && !t5hCautNow && close < this.t5hCautLow) {
+        t5hC3Flip = true;
         this.seedT5L1 = !na(this.lastPH) ? this.lastPH : this.t5hP2Hi;
         this.seedT5L1Bar = !na(this.lastPHBar) ? this.lastPHBar : this.t5hP2Bar;
         this.t5hStage = 0; this.t5hCaut = false; this.t5h3nc = false;
       }
-      // bounce off the caution -> caution clears
-      if (this.t5hStage === 3 && this.t5hCaut && isGreen && close > this.t5hP3) this.t5hCaut = false;
+      // Close ABOVE the box -> L T5H3 FLIP (opposite-side disarm — reuses
+      // the existing trap-flip mechanism, Sr. 124):
+      if ((this.t5hStage === 2 || this.t5hStage === 3) && this.t5hCaut && !t5hCautNow && close > this.t5hCautHigh) {
+        t5hLFlip = true; t5hLFlipName = 'L T5H3 FLIP';
+        this.seedT5H1 = f_lastLowH();
+        this.seedT5H1Bar = (this.t5hStage === 3 && !na(this.t5hP3Bar)) ? this.t5hP3Bar : this.barIndex;
+        this.t5hStage = 0; this.t5hCaut = false; this.t5h3nc = false;
+      }
 
       // apex tracking at stage 3
       if (this.t5hStage === 3 && high > nz(this.t5hApexHi, high - 1)) {
         this.t5hApexHi = high; this.t5hApexBar = this.barIndex; this.t5hApexPoke = high >= bandHigh - bandNear;
       }
 
-      // Sr. 100 — point-4 cap: a pivot ABOVE T5H2 trails T5H2 up
-      if ((this.t5hStage === 3 || this.t5hStage === 4) && p2hCand && p2hPx > this.t5hP2Hi) {
+      // Sr. 100/114 — point-4 CEILING: a pivot above T5H2's new cap trails T5H2 up
+      if ((this.t5hStage === 3 || this.t5hStage === 4) && p2hCand && p2hPx > t5hP4Cap) {
         t5hGate2Now = true;
         const guOk = !na(this.lastPLBelow) && this.lastPLBelow < p2hPx;
         this.t5hP1 = guOk ? this.lastPLBelow : this.t5hP3;
@@ -423,18 +477,22 @@ class TgT5Engine {
         this.t5hStage = 2; t5hArmedNow = true; t5hRean = true;
       }
 
-      // point 4 — poke of the band top, above p3, capped by T5H2
+      // point 4 — poke of the band top, above p3, within the Sr. 114/122 window
       const h1 = this.H.get(1), c1 = this.C.get(1), o1 = this.O.get(1), bh1 = this.bandHighS.get(1);
       const p4Fast = !na(c1) && c1 > o1 && h1 >= bh1 - bandNear && !isGreen && close < c1 && close < bandHigh &&
-        Math.max(high, h1) <= this.t5hP2Hi;
-      const p4Slow = !na(ph) && this.H.get(2) >= this.bandHighS.get(2) - bandNear && ph > this.t5hP3 && ph <= this.t5hP2Hi;
-      if (this.t5hStage === 3 && p4Fast && Math.max(high, h1) > this.t5hP3 &&
-        (high >= h1 ? this.barIndex : this.barIndex - 1) > this.t5hP3Bar) {
+        Math.max(high, h1) <= t5hP4Cap;
+      const p4Slow = !na(ph) && this.H.get(2) >= this.bandHighS.get(2) - bandNear && ph > this.t5hP3 && ph <= t5hP4Cap;
+      // Sr. 126 — point 4 must sit >= 2 bars after point 3 (tightened from the v16.15 Sr.110 guard)
+      if (this.t5hStage === 3 && p4Fast && Math.max(high, h1) > this.t5hP3 && Math.max(high, h1) >= t5hP4Near &&
+        (high >= h1 ? this.barIndex : this.barIndex - 1) >= this.t5hP3Bar + 2) {
         this.t5hP4 = Math.max(high, h1);
         this.t5hP4Bar = high >= h1 ? this.barIndex : this.barIndex - 1;
+        this.t5hCaut = false; // Sr. 111 — point 4 lifts the caution
         t5h4Fire = true; this.t5h4Sent = true; this.t5hStage = 5; this.t5hPend = 0;
-      } else if (this.t5hStage === 3 && p4Slow && this.barIndex - 2 > this.t5hP3Bar) {
-        this.t5hP4 = ph; this.t5hP4Bar = this.barIndex - 2; this.t5hStage = 4;
+      } else if (this.t5hStage === 3 && p4Slow && ph >= t5hP4Near && this.barIndex - 2 >= this.t5hP3Bar + 2) {
+        this.t5hP4 = ph; this.t5hP4Bar = this.barIndex - 2;
+        this.t5hCaut = false; // Sr. 111 — point 4 lifts the caution
+        this.t5hStage = 4;
       }
       if (this.t5hStage === 4) {
         const red0 = !isGreen && close < bandHigh;
@@ -446,6 +504,13 @@ class TgT5Engine {
       if (this.t5hStage === 5) {
         if (!isGreen && low <= bandLow + bandNear && low < this.t5hP3) {
           this.t5hStage = 6; this.t5hP5Low = low; this.t5hP5LW = LW; this.t5hP5Bar = this.barIndex; this.t5hPend = 0; t5hP5Now = true;
+        } else if ((fastLoNow && Math.abs(fastLoPx - this.t5hP3) <= bandNear) || (!na(pl) && Math.abs(pl - this.t5hP3) <= bandNear)) {
+          // Sr. 119 — DUMMY point-5 NC: pivot near p3, band poke missed.
+          // Nothing fires; the cycle moves on to hunt point 6.
+          this.t5hStage = 6;
+          this.t5hP5Low = fastLoNow ? fastLoPx : pl;
+          this.t5hP5LW = fastLoNow ? (low <= nz(this.L.get(1), low) ? LW : this.bodyBotS.get(1) - this.L.get(1)) : this.bodyBotS.get(2) - this.L.get(2);
+          this.t5hP5Bar = this.barIndex; this.t5hPend = 0; t5h5ncNow = true;
         } else {
           this.t5hPend += 1;
           if (this.t5hPend > this.t5PendingBars) { t5hExpNow = true; this.t5hStage = 0; }
@@ -470,8 +535,13 @@ class TgT5Engine {
         }
       }
 
-      // the ONE trap flip (Sr. 92/96)
-      if (this.t5hStage >= 3 && this.t5hStage <= 6 && !na(t5hCeil) && high > t5hCeil) {
+      // the ONE trap flip (Sr. 92/96). Sr. 124b — a CLOSE above the
+      // point-2 band top is a DEFINITE flip even without touching the
+      // fib-buffered ceiling (widened OR condition, same relative order —
+      // still runs after point 4/5/6, per the Pine source's own flagged
+      // gate-2-ordering caveat).
+      if (this.t5hStage >= 3 && this.t5hStage <= 6 &&
+        ((!na(t5hCeil) && high > t5hCeil) || (!na(this.t5hP2Hi) && close > this.t5hP2Hi))) {
         t5hLFlip = true;
         t5hLFlipName = (this.t5h6nc || t5h6ConfNow) ? 'L T5H6 FLIP'
           : this.t5hStage === 6 ? 'L T5H5 FLIP'
@@ -518,19 +588,21 @@ class TgT5Engine {
     if (t5hS5Fire) emit('S T5H5 FLIP', 'short', { note: 'Point-5 break continuation (Sr. 59). Disarmed; manual below.' });
     if (t5hS2Flip) emit('S T5H2 FLIP', 'short', { note: 'Point-1 break — trend reverse (Sr. 60/65/66). Hands off to T5L1.' });
     if (t5hLFlip) emit('L T5H FLIP (trap)', 'long', { note: `${t5hLFlipName} — trap ceiling, intrabar-committed (Sr. 92/96).` });
-    if (t5hCautNow) emit('S/L CAUT T5H3 FLIP', null, { note: 'Checkpoint — structure alive (Sr. 73).' });
+    if (t5hCautNow) emit('S/L CAUT T5H3 FLIP', null, { note: 'Checkpoint — structure alive, PERSISTS until point 4 (Sr. 73/111/124).' });
     if (t5h3ncNow) emit('T5H3NC', null, { note: 'Provisional (Sr. 82) — not a signal.' });
     if (t5h6ncNow) emit('T5H6NC', null, { note: 'Provisional (Sr. 95) — not a signal.' });
-    if (t5hDissNow) emit('T5H ✓ dissolved', null, { note: 'Caution resolved against the structure (Sr. 73).' });
-    if (t5hGate2Now) emit('T5H gate 2 → re-armed', null, { note: 'Sr. 100/108 — pivot above T5H2 re-anchored the structure.', time: barTime(this.t5hP2Bar) });
+    if (t5h5ncNow) emit('T5H5NC', null, { note: 'Sr. 119 — DUMMY: pivot near point 3, band poke missed. No action; cycle advances to hunt point 6.' });
+    if (t5hC3Flip) emit('S T5H3 FLIP', 'short', { note: 'Sr. 111/124 — caution box low breached on close. DISARM; hand-off to T5L1.' });
+    if (t5hGate2Now) emit('T5H gate 2 → re-armed', null, { note: 'Sr. 100/108/114 — pivot beyond the point-4 cap re-anchored the structure.', time: barTime(this.t5hP2Bar) });
     if (t5hExpNow) emit('T5H ✕ expired', null, { note: 'Point 5/6 unresolved within the pending window (R33·14).' });
-    if (t5hS2Flip || t5hLFlip || t5hS5Fire || t5h6ConfNow) emit('T5H ✓ done', null, { note: 'Structure resolved and disarmed (Sr. 67).' });
+    if (t5hS2Flip || t5hLFlip || t5hS5Fire || t5h6ConfNow || t5hC3Flip) emit('T5H ✓ done', null, { note: 'Structure resolved and disarmed (Sr. 67).' });
 
     // ══════════════════════════════════════════════════════════════
     //  T5L — the mirror (double bottom / long), with gates 2/3
     // ══════════════════════════════════════════════════════════════
     let t5lArmedNow = false, t5lRean = false, t5lP3Now = false, t5lP3ReanNow = false;
-    let t5l3ncNow = false, t5lCautNow = false, t5lDissNow = false, t5l4Fire = false, t5l4Supp = false;
+    let t5l3ncNow = false, t5lCautNow = false, t5l4Fire = false, t5l4Supp = false;
+    let t5lC3Flip = false, t5l5ncNow = false;
     let t5lGate2Now = false, t5lP5Now = false, t5lL5Fire = false;
     let t5l6ncNow = false, t5l6ConfNow = false, t5l6ncFailNow = false;
     let t5lSFlip = false, t5lSFlipName = '', t5lL2Flip = false, t5lExpNow = false;
@@ -541,12 +613,7 @@ class TgT5Engine {
     const f_lastHighL = () => (!na(this.t5lP5High) ? this.t5lP5High : this.t5lP3);
 
     {
-      if (newDay) {
-        this.t5lStage = 0; this.t5lCaut = false; this.t5l3nc = false; this.t5l6nc = false;
-        this.t5lP3 = undefined; this.t5lP5High = undefined; this.t5lP5Bar = undefined;
-        this.t5lP6 = undefined; this.t5lP6Bar = undefined;
-        this.seedT5L1 = undefined; this.seedT5H1 = undefined;
-      }
+      // Sr. 113 — overnight carry (mirror): no session reset.
 
       if (this.t5lStage === 1 && (sidewaysNow || huntT5H)) this.t5lStage = 0;
 
@@ -557,11 +624,16 @@ class TgT5Engine {
       } else if (this.t5lStage === 1 && reachNew && ph > this.t5lP1) {
         this.t5lP1 = ph; this.t5lP1Bar = this.barIndex - 2;
       }
-      // hand-off seeds
-      if (this.t5lStage === 0 && !na(this.seedT5L1) && huntT5L) {
+      // hand-off seeds. Sr. 121 — ONE-STRUCTURE LAW: a seed arms only when T5H is idle too.
+      if (this.t5lStage === 0 && this.t5hStage === 0 && !na(this.seedT5L1) && huntT5L) {
         const bandHighAtSeed = this.bandHighS.at(this.seedT5L1Bar);
-        if (this.seedT5L1 >= bandHighAtSeed) {
+        // Sr. 118 mirror — seed recency
+        if (this.seedT5L1 >= bandHighAtSeed && (na(this.lastPHTouchBar) || this.seedT5L1Bar > this.lastPHTouchBar)) {
           this.t5lStage = 1; this.t5lP1 = this.seedT5L1; this.t5lP1Bar = this.seedT5L1Bar;
+          this.lastPHTouch = this.seedT5L1; this.lastPHTouchBar = this.seedT5L1Bar; // refresh only when the seed WINS
+        } else if (!na(this.lastPHTouch)) {
+          // Sr. 112 mirror — failing seed -> retained origin
+          this.t5lStage = 1; this.t5lP1 = this.lastPHTouch; this.t5lP1Bar = this.lastPHTouchBar;
         }
         this.seedT5L1 = undefined;
       }
@@ -572,9 +644,15 @@ class TgT5Engine {
       const p2lPx = p2lFast ? fastLoPx : pl;
       const p2lBar = p2lFast ? (low <= nz(this.L.get(1), Infinity) ? this.barIndex : this.barIndex - 1) : this.barIndex - 2;
       const p2lCand = p2lFast || p2lSlow;
+      // Sr. 117 mirror — same-bar arbitration
+      const lDipCand = this.t5lStage === 2 && ((fastHiNow && fastHiPx > this.t5lP2Lo && fastHiPx > bandLow) ||
+        (!na(ph) && ph > this.t5lP2Lo && ph > this.bandLowS.get(2)));
+      const lDipBar = fastHiNow ? (high >= nz(this.H.get(1), -Infinity) ? this.barIndex : this.barIndex - 1) : this.barIndex - 2;
+      const lDipFirst = lDipCand && lDipBar >= this.t5lP2Bar + 2 && lDipBar < p2lBar;
+      // Sr. 112 mirror — retained origin: the last 9EMA-High-touching pivot
       if (this.t5lStage === 0 && p2lCand && huntT5L && this.t5hStage === 0 &&
-        !na(this.lastPH) && this.lastPHReach && this.lastPH > p2lPx && this.lastPHBar < p2lBar) {
-        this.t5lStage = 1; this.t5lP1 = this.lastPH; this.t5lP1Bar = this.lastPHBar;
+        !na(this.lastPHTouch) && this.lastPHTouch > p2lPx && this.lastPHTouchBar < p2lBar) {
+        this.t5lStage = 1; this.t5lP1 = this.lastPHTouch; this.t5lP1Bar = this.lastPHTouchBar;
       }
       if (this.t5lStage === 1 && p2lCand && this.t5lP1 > p2lPx && this.t5lP1Bar < p2lBar - 1) {
         this.t5lStage = 2;
@@ -584,7 +662,7 @@ class TgT5Engine {
         this.t5lP3 = undefined; this.t5lP4 = undefined; this.t5lP5High = undefined; this.t5lP5Bar = undefined;
         this.t5l3nc = false; this.t5lCaut = false; this.t5l6nc = false; this.t5l4Sent = false;
         this.t5lRoomOK = true; this.t5lPend = 0; t5lArmedNow = true;
-      } else if (this.t5lStage === 2 && p2lCand && p2lPx < this.t5lP2Lo && this.t5lP1 > p2lPx) {
+      } else if (this.t5lStage === 2 && p2lCand && p2lPx < this.t5lP2Lo && this.t5lP1 > p2lPx && !lDipFirst) {
         this.t5lP2Lo = p2lPx;
         this.t5lP2Hi = p2lFast ? Math.min(this.bodyBotS.get(1), bodyBot) : Math.min(this.O.get(2), this.C.get(2));
         this.t5lP2Bar = p2lBar; t5lArmedNow = true; t5lRean = true;
@@ -595,7 +673,7 @@ class TgT5Engine {
         this.t5l3nc = true; this.t5l3ncHigh = high; t5l3ncNow = true;
       }
       if (this.t5lStage === 2 && this.t5l3nc && !this.t5lCaut && isGreen && close > this.t5l3ncHigh) {
-        this.t5lCaut = true; this.t5lCautHigh = high; t5lCautNow = true;
+        this.t5lCaut = true; this.t5lCautHigh = high; this.t5lCautLow = low; t5lCautNow = true; // Sr. 124 — the caution BOX
       }
 
       // point 3 — pivot high > p2.low AND > bandLow
@@ -612,32 +690,48 @@ class TgT5Engine {
         this.t5lP3 = q3Px; this.t5lP3Bar = q3Bar; t5lP3Now = true; t5lP3ReanNow = true;
       }
 
-      // caution at stage 3 (mirror)
+      // Sr. 100/114 mirror — point-4 FLOOR = band + one LW below T5L2;
+      // Sr. 122 mirror — NEAR wall. Computed here (inline, like the Pine
+      // source) since it's needed before the caution check below.
+      const t5lP4Cap = this.t5lP2Lo - (this.t5lP2Hi - this.t5lP2Lo);
+      const t5lP4Near = this.t5lP2Hi + (this.t5lP2Hi - this.t5lP2Lo);
+
+      // caution at stage 3 (mirror), break-adoption gated by Sr. 122's near wall
       if (this.t5lStage === 3 && !this.t5lCaut && isGreen && close > this.t5lP3 && close > bandHigh) {
-        if (this.t5lApexPoke && close > open) {
+        if (this.t5lApexPoke && close > open && this.t5lApexLo <= t5lP4Near) {
           this.t5lP4 = this.t5lApexLo; this.t5lP4Bar = this.t5lApexBar;
           this.t5lRoomVal = this.t5lP3 - this.t5lApexLo;
           this.t5lRoomOK = this.t5lRoomVal >= roomToP3;
           if (this.t5lRoomOK) { t5l4Fire = true; this.t5l4Sent = true; } else { t5l4Supp = true; }
           this.t5lStage = 5; this.t5lPend = 0;
         } else {
-          this.t5lCaut = true; this.t5lCautHigh = high; t5lCautNow = true;
+          this.t5lCaut = true; this.t5lCautHigh = high; this.t5lCautLow = low; t5lCautNow = true; // Sr. 124 — the caution BOX
         }
       }
-      if ((this.t5lStage === 2 || this.t5lStage === 3) && this.t5lCaut && !t5lCautNow && isGreen && close > this.t5lCautHigh) {
-        t5lDissNow = true;
+      // Sr. 111 mirror — caution never clears on a pullback, only point 4
+      // lifts it. Sr. 124 mirror — close ABOVE the box -> L T5L3 FLIP
+      // (same-side disarm, since T5L is the long/up structure):
+      if ((this.t5lStage === 2 || this.t5lStage === 3) && this.t5lCaut && !t5lCautNow && close > this.t5lCautHigh) {
+        t5lC3Flip = true;
         this.seedT5H1 = !na(this.lastPL) ? this.lastPL : this.t5lP2Lo;
         this.seedT5H1Bar = !na(this.lastPLBar) ? this.lastPLBar : this.t5lP2Bar;
         this.t5lStage = 0; this.t5lCaut = false; this.t5l3nc = false;
       }
-      if (this.t5lStage === 3 && this.t5lCaut && !isGreen && close < this.t5lP3) this.t5lCaut = false;
+      // Close BELOW the box -> S T5L3 FLIP (opposite-side disarm — reuses
+      // the existing trap-flip mechanism, Sr. 124 — the failure road):
+      if ((this.t5lStage === 2 || this.t5lStage === 3) && this.t5lCaut && !t5lCautNow && close < this.t5lCautLow) {
+        t5lSFlip = true; t5lSFlipName = 'S T5L3 FLIP';
+        this.seedT5L1 = f_lastHighL();
+        this.seedT5L1Bar = (this.t5lStage === 3 && !na(this.t5lP3Bar)) ? this.t5lP3Bar : this.barIndex;
+        this.t5lStage = 0; this.t5lCaut = false; this.t5l3nc = false;
+      }
 
       if (this.t5lStage === 3 && low < nz(this.t5lApexLo, low + 1)) {
         this.t5lApexLo = low; this.t5lApexBar = this.barIndex; this.t5lApexPoke = low <= bandLow + bandNear;
       }
 
-      // Sr. 100 mirror — a pivot BELOW T5L2 trails T5L2 down
-      if ((this.t5lStage === 3 || this.t5lStage === 4) && p2lCand && p2lPx < this.t5lP2Lo) {
+      // Sr. 100/114 mirror — a pivot below T5L2's new floor trails T5L2 down
+      if ((this.t5lStage === 3 || this.t5lStage === 4) && p2lCand && p2lPx < t5lP4Cap) {
         t5lGate2Now = true;
         const g2okA = !na(this.lastPHTouch) && this.lastPHTouch > p2lPx;
         this.t5lP1 = g2okA ? this.lastPHTouch : this.t5lP3;
@@ -650,15 +744,15 @@ class TgT5Engine {
         this.t5lRoomOK = true; this.t5lStage = 2; t5lArmedNow = true; t5lRean = true;
       }
 
-      // point 4 — poke of the band bottom, below p3, gates 2/3
+      // point 4 — poke of the band bottom, below p3, within the Sr. 114/122 window, gates 2/3
       const l1 = this.L.get(1), c1b = this.C.get(1), o1b = this.O.get(1), bl1 = this.bandLowS.get(1);
       const q4Fast = !na(c1b) && c1b < o1b && l1 <= bl1 + bandNear && isGreen && close > c1b && close > bandLow;
       const q4Slow = !na(pl) && this.L.get(2) <= this.bandLowS.get(2) + bandNear && pl < this.t5lP3;
       const q4Px = q4Fast ? Math.min(low, l1) : pl;
       const q4Bar = q4Fast ? (low <= l1 ? this.barIndex : this.barIndex - 1) : this.barIndex - 2;
-      // Sr. 110 — point 4 must be a later trough than point 3
-      if (this.t5lStage === 3 && (q4Fast || q4Slow) && q4Bar > this.t5lP3Bar) {
-        if (q4Px < this.t5lP2Lo) {
+      // Sr. 126 — point 4 must sit >= 2 bars after point 3
+      if (this.t5lStage === 3 && (q4Fast || q4Slow) && q4Bar >= this.t5lP3Bar + 2 && q4Px <= t5lP4Near) {
+        if (q4Px < t5lP4Cap) {
           // GATE 2 continuation — hand-off and re-arm (Sr. 53)
           t5lGate2Now = true;
           const g2okB = !na(this.lastPHTouch) && this.lastPHTouch > q4Px;
@@ -672,6 +766,7 @@ class TgT5Engine {
           this.t5lRoomOK = true; this.t5lStage = 2; t5lArmedNow = true; t5lRean = true;
         } else {
           this.t5lP4 = q4Px; this.t5lP4Bar = q4Bar;
+          this.t5lCaut = false; // Sr. 111 — point 4 lifts the caution
           this.t5lRoomVal = this.t5lP3 - q4Px;
           this.t5lRoomOK = this.t5lRoomVal >= roomToP3;
           if (q4Fast) {
@@ -695,6 +790,12 @@ class TgT5Engine {
       if (this.t5lStage === 5) {
         if (isGreen && high >= bandHigh - bandNear && high > this.t5lP3) {
           this.t5lStage = 6; this.t5lP5High = high; this.t5lP5UW = UW; this.t5lP5Bar = this.barIndex; this.t5lPend = 0; t5lP5Now = true;
+        } else if ((fastHiNow && Math.abs(fastHiPx - this.t5lP3) <= bandNear) || (!na(ph) && Math.abs(ph - this.t5lP3) <= bandNear)) {
+          // Sr. 119 mirror — dummy point-5 NC
+          this.t5lStage = 6;
+          this.t5lP5High = fastHiNow ? fastHiPx : ph;
+          this.t5lP5UW = fastHiNow ? (high >= nz(this.H.get(1), -Infinity) ? UW : this.H.get(1) - this.bodyTopS.get(1)) : this.H.get(2) - this.bodyTopS.get(2);
+          this.t5lP5Bar = this.barIndex; this.t5lPend = 0; t5l5ncNow = true;
         } else {
           this.t5lPend += 1;
           if (this.t5lPend > this.t5PendingBars) { t5lExpNow = true; this.t5lStage = 0; }
@@ -719,8 +820,10 @@ class TgT5Engine {
         }
       }
 
-      // the ONE trap flip (S side)
-      if (this.t5lStage >= 3 && this.t5lStage <= 6 && !na(t5lFloor) && low < t5lFloor) {
+      // the ONE trap flip (S side). Sr. 124b mirror — a CLOSE below the
+      // point-2 band bottom is a DEFINITE flip (widened OR condition).
+      if (this.t5lStage >= 3 && this.t5lStage <= 6 &&
+        ((!na(t5lFloor) && low < t5lFloor) || (!na(this.t5lP2Lo) && close < this.t5lP2Lo))) {
         t5lSFlip = true;
         t5lSFlipName = (this.t5l6nc || t5l6ConfNow) ? 'S T5L6 FLIP'
           : this.t5lStage === 6 ? 'S T5L5 FLIP'
@@ -762,14 +865,15 @@ class TgT5Engine {
     if (t5lL5Fire) emit('L T5L5 FLIP', 'long', { note: 'Point-5 break continuation (Sr. 59). Disarmed; manual above.' });
     if (t5lL2Flip) emit('L T5L2 FLIP', 'long', { note: 'Point-1 break — trend reverse (Sr. 60/65/66). Hands off to T5H1.' });
     if (t5lSFlip) emit('S T5L FLIP (trap)', 'short', { note: `${t5lSFlipName} — trap floor, intrabar-committed (Sr. 92/96).` });
-    if (t5lCautNow) emit('S/L CAUT T5L3 FLIP', null, { note: 'Checkpoint — structure alive (Sr. 73 mirror).' });
+    if (t5lCautNow) emit('S/L CAUT T5L3 FLIP', null, { note: 'Checkpoint — structure alive, PERSISTS until point 4 (Sr. 73/111/124 mirror).' });
     if (t5l3ncNow) emit('T5L3NC', null, { note: 'Provisional (Sr. 82) — not a signal.' });
     if (t5l6ncNow) emit('T5L6NC', null, { note: 'Provisional (Sr. 95) — not a signal.' });
+    if (t5l5ncNow) emit('T5L5NC', null, { note: 'Sr. 119 — DUMMY: pivot near point 3, band poke missed. No action; cycle advances to hunt point 6.' });
     if (t5l4Supp) emit('L T5L4 ✕ gate 3', null, { note: `R33·26 — room ${this.t5lRoomVal?.toFixed(1)} below the scaled minimum (${roomToP3.toFixed(1)}); alert suppressed, structure continues.` });
-    if (t5lDissNow) emit('T5L ✓ dissolved', null, { note: 'Caution resolved against the structure (Sr. 73).' });
-    if (t5lGate2Now) emit('T5L gate 2 → re-armed', null, { note: 'Sr. 53/100/108 — pivot below T5L2 re-anchored the structure.', time: barTime(this.t5lP2Bar) });
+    if (t5lC3Flip) emit('L T5L3 FLIP', 'long', { note: 'Sr. 111/124 — caution box high breached on close. DISARM; hand-off to T5H1.' });
+    if (t5lGate2Now) emit('T5L gate 2 → re-armed', null, { note: 'Sr. 53/100/108/114 — pivot beyond the point-4 cap re-anchored the structure.', time: barTime(this.t5lP2Bar) });
     if (t5lExpNow) emit('T5L ✕ expired', null, { note: 'Point 5/6 unresolved within the pending window (R33·14).' });
-    if (t5lL2Flip || t5lSFlip || t5lL5Fire || t5l6ConfNow) emit('T5L ✓ done', null, { note: 'Structure resolved and disarmed (Sr. 67).' });
+    if (t5lL2Flip || t5lSFlip || t5lL5Fire || t5l6ConfNow || t5lC3Flip) emit('T5L ✓ done', null, { note: 'Structure resolved and disarmed (Sr. 67).' });
 
     return { events, state: this.getState() };
   }
@@ -1008,7 +1112,7 @@ function scan(symbol, candles, context = {}) {
     }
 
     // "found" / patternStage mirror the cheat-sheet's own rule 1 — act
-    // ONLY on the actionable tags, everything else (NC/CAUT/done/dissolved/
+    // ONLY on the actionable tags, everything else (NC/CAUT/done/
     // expired/gate-2/cancelled) is context. Walk backwards for the most
     // recent actionable tag across the whole replay, same way S1/S2/S3
     // reports "found" once its final stage has actually fired.
@@ -1032,7 +1136,7 @@ function scan(symbol, candles, context = {}) {
 module.exports = {
   id: 'tg-t5',
   name: 'TG T5 (Double Top / Bottom)',
-  description: 'Direct Pine port of TG T5 — Script A v16.15 BETA: 9EMA trend hysteresis + double-top(T5H)/double-bottom(T5L) point structure (P1–P6), trap-flip invalidation, gate-2/gate-3.',
+  description: 'Direct Pine port of TG T5 — Script A v16.30 BETA: 9EMA trend hysteresis + double-top(T5H)/double-bottom(T5L) point structure (P1–P6), close-based caution box (Sr. 111/124), overnight carry (Sr. 113), trap-flip invalidation, gate-2/gate-3.',
   scan,
   // Also exported for direct/standalone use and testing.
   TgT5Engine, ACTIONABLE_TAGS, Series, pivotHigh, pivotLow,

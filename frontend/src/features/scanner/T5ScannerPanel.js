@@ -36,8 +36,137 @@
 //     status note — reads row.flipped / row.flippedTag directly.
 // ─────────────────────────────────────────────────────────────────
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import "./T5ScannerPanel.css";
+
+// ─────────────────────────────────────────────────────────────────
+// ColumnFilter — Excel-style checkbox filter for a table column.
+// `options` is [{ value, count }]. `selected` is either null (no
+// filter applied, everything visible — the Excel "all boxes checked"
+// state) or a Set of the values currently allowed through.
+// Opening the dropdown seeds a local "pending" copy so unchecking
+// boxes doesn't touch the table until Apply is pressed (Cancel just
+// throws the pending copy away) — same two-step flow Excel uses.
+// ─────────────────────────────────────────────────────────────────
+function ColumnFilter({ options, selected, onApply }) {
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState(null);
+  const [query, setQuery] = useState("");
+  const ref = useRef(null);
+
+  const isActive = selected !== null && selected.size > 0;
+
+  useEffect(() => {
+    if (!open) return;
+    function handleOutsideClick(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleOutsideClick, true);
+    return () => document.removeEventListener("mousedown", handleOutsideClick, true);
+  }, [open]);
+
+  function openDropdown() {
+    // Seed pending from the currently-applied filter, or "everything
+    // checked" if no filter is applied yet.
+    setPending(selected !== null ? new Set(selected) : new Set(options.map((o) => o.value)));
+    setQuery("");
+    setOpen((p) => !p);
+  }
+
+  const visibleOptions = query
+    ? options.filter((o) => o.value.toLowerCase().includes(query.toLowerCase()))
+    : options;
+
+  const allChecked = pending && options.every((o) => pending.has(o.value));
+
+  function toggleAll() {
+    setPending(allChecked ? new Set() : new Set(options.map((o) => o.value)));
+  }
+  function toggleOne(value) {
+    setPending((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return next;
+    });
+  }
+  function apply() {
+    // Everything checked == no filter needed; store null so downstream
+    // logic can skip the .has() check entirely.
+    onApply(pending.size === options.length ? null : new Set(pending));
+    setOpen(false);
+  }
+  function clearFilter() {
+    onApply(null);
+    setOpen(false);
+  }
+
+  return (
+    <span className="t5-colfilter" ref={ref}>
+      <button
+        type="button"
+        className={`t5-colfilter-btn ${isActive ? "active" : ""}`}
+        onClick={(e) => { e.stopPropagation(); openDropdown(); }}
+        title="Filter"
+      >
+        <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
+          <path d="M1 2h14l-5.5 6.2v4.3L6.5 14V8.2z" />
+        </svg>
+      </button>
+      {open && (
+        <div className="t5-colfilter-menu" onClick={(e) => e.stopPropagation()}>
+          <input
+            type="text"
+            className="t5-colfilter-search"
+            placeholder="Search..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            autoFocus
+          />
+          <label className="t5-colfilter-row t5-colfilter-selectall">
+            <input type="checkbox" checked={!!allChecked} onChange={toggleAll} />
+            <span>(Select all)</span>
+          </label>
+          <div className="t5-colfilter-list">
+            {visibleOptions.map((o) => (
+              <label key={o.value} className="t5-colfilter-row">
+                <input
+                  type="checkbox"
+                  checked={pending ? pending.has(o.value) : true}
+                  onChange={() => toggleOne(o.value)}
+                />
+                <span className="t5-colfilter-val">{o.value}</span>
+                <span className="t5-colfilter-count">{o.count}</span>
+              </label>
+            ))}
+            {visibleOptions.length === 0 && (
+              <div className="t5-colfilter-empty">No matches</div>
+            )}
+          </div>
+          <div className="t5-colfilter-actions">
+            <button type="button" className="t5-colfilter-clear" onClick={clearFilter}>Clear</button>
+            <button type="button" className="t5-colfilter-apply" onClick={apply}>Apply</button>
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
+// Builds the [{ value, count }] option list for a tag/status column:
+// grouped by tag when the row has one (e.g. "S T5H4" — covers live AND
+// its later cancelled/confirmed close, same as the screenshot groups
+// them), falling back to the status ("forming") when there's no tag yet.
+function tagStatusOptions(rowsList) {
+  const counts = new Map();
+  for (const r of rowsList) {
+    const key = r.tag || r.status;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([value, count]) => ({ value, count }))
+    .sort((a, b) => a.value.localeCompare(b.value));
+}
 
 function SideBadge({ side }) {
   const isH = side === "T5H";
@@ -113,6 +242,13 @@ export default function T5ScannerPanel({
 }) {
   const [tab, setTab] = useState("results");
 
+  // Excel-style Tag/status column filters — null means "no filter,
+  // show everything"; a Set means only rows whose tag (or status, for
+  // taglessrows like "forming") is in the set are shown. Kept separate
+  // per tab since Results and History have independent tag pools.
+  const [resultsTagFilter, setResultsTagFilter] = useState(null);
+  const [historyTagFilter, setHistoryTagFilter] = useState(null);
+
   const stats = useMemo(() => {
     const results = rows.results || [];
     const upcoming = rows.upcoming || [];
@@ -129,6 +265,19 @@ export default function T5ScannerPanel({
   const results = rows.results || [];
   const upcoming = rows.upcoming || [];
   const history = rows.history || [];
+
+  const resultsTagOptions = useMemo(() => tagStatusOptions(results), [results]);
+  const historyTagOptions = useMemo(() => tagStatusOptions(history), [history]);
+
+  const filteredResults = useMemo(() => {
+    if (!resultsTagFilter) return results;
+    return results.filter((r) => resultsTagFilter.has(r.tag || r.status));
+  }, [results, resultsTagFilter]);
+
+  const filteredHistory = useMemo(() => {
+    if (!historyTagFilter) return history;
+    return history.filter((r) => historyTagFilter.has(r.tag || r.status));
+  }, [history, historyTagFilter]);
 
   return (
     <div className="t5-wrap">
@@ -181,6 +330,12 @@ export default function T5ScannerPanel({
           <div className="t5-subrow">
             <span className="t5-sub">
               What's live right now &mdash; P3 forming, P4 fired, or closed today &middot; hover a point for its candle time
+              {resultsTagFilter && (
+                <>
+                  {" "}&middot; filtered to {Array.from(resultsTagFilter).join(", ")}{" "}
+                  <button type="button" className="t5-filter-reset" onClick={() => setResultsTagFilter(null)}>clear filter</button>
+                </>
+              )}
             </span>
           </div>
           <div className="t5-table-wrap">
@@ -190,10 +345,14 @@ export default function T5ScannerPanel({
                 <col style={{ width: 180 }} /><col style={{ width: 140 }} /><col style={{ width: 110 }} /><col style={{ width: 90 }} />
               </colgroup>
               <thead>
-                <tr><th>Sr</th><th>Symbol</th><th>Side</th><th>P1&ndash;P6</th><th>Tag / status</th><th>Flipped</th><th>Time</th></tr>
+                <tr>
+                  <th>Sr</th><th>Symbol</th><th>Side</th><th>P1&ndash;P6</th>
+                  <th>Tag / status <ColumnFilter options={resultsTagOptions} selected={resultsTagFilter} onApply={setResultsTagFilter} /></th>
+                  <th>Flipped</th><th>Time</th>
+                </tr>
               </thead>
               <tbody>
-                {results.map((r, i) => (
+                {filteredResults.map((r, i) => (
                   <tr key={r.symbol + i} onClick={() => onRowClick(r.symbol)}>
                     <td>{i + 1}</td>
                     <td className="t5-sym">{r.symbol}</td>
@@ -207,6 +366,9 @@ export default function T5ScannerPanel({
                     <td className="t5-time">{r.time}</td>
                   </tr>
                 ))}
+                {filteredResults.length === 0 && results.length > 0 && (
+                  <tr><td colSpan={7} className="t5-empty">No rows match this filter.</td></tr>
+                )}
                 {results.length === 0 && (
                   <tr><td colSpan={7} className="t5-empty">Nothing live right now &mdash; check Upcoming.</td></tr>
                 )}
@@ -255,6 +417,12 @@ export default function T5ScannerPanel({
           <div className="t5-subrow">
             <span className="t5-sub">
               Confirmed / cancelled / flipped closes from earlier days &mdash; kept, not deleted, just out of the live feed
+              {historyTagFilter && (
+                <>
+                  {" "}&middot; filtered to {Array.from(historyTagFilter).join(", ")}{" "}
+                  <button type="button" className="t5-filter-reset" onClick={() => setHistoryTagFilter(null)}>clear filter</button>
+                </>
+              )}
             </span>
           </div>
           <div className="t5-table-wrap">
@@ -264,10 +432,14 @@ export default function T5ScannerPanel({
                 <col style={{ width: 180 }} /><col style={{ width: 140 }} /><col style={{ width: 110 }} /><col style={{ width: 90 }} />
               </colgroup>
               <thead>
-                <tr><th>Sr</th><th>Symbol</th><th>Side</th><th>P1&ndash;P6</th><th>Tag / status</th><th>Flipped</th><th>Time</th></tr>
+                <tr>
+                  <th>Sr</th><th>Symbol</th><th>Side</th><th>P1&ndash;P6</th>
+                  <th>Tag / status <ColumnFilter options={historyTagOptions} selected={historyTagFilter} onApply={setHistoryTagFilter} /></th>
+                  <th>Flipped</th><th>Time</th>
+                </tr>
               </thead>
               <tbody>
-                {history.map((r, i) => (
+                {filteredHistory.map((r, i) => (
                   <tr key={r.symbol + i} onClick={() => onRowClick(r.symbol)}>
                     <td>{i + 1}</td>
                     <td className="t5-sym">{r.symbol}</td>
@@ -281,6 +453,9 @@ export default function T5ScannerPanel({
                     <td className="t5-time">{r.time}</td>
                   </tr>
                 ))}
+                {filteredHistory.length === 0 && history.length > 0 && (
+                  <tr><td colSpan={7} className="t5-empty">No rows match this filter.</td></tr>
+                )}
                 {history.length === 0 && (
                   <tr><td colSpan={7} className="t5-empty">No closed cycles from earlier days yet.</td></tr>
                 )}

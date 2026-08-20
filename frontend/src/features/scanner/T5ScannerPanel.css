@@ -432,3 +432,141 @@
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* ── Excel-style column filter (Tag / status) ─────────────────────── */
+.t5-colfilter {
+  position: relative;
+  display: inline-block;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.t5-colfilter-btn {
+  background: transparent;
+  border: none;
+  color: var(--t5-mut);
+  cursor: pointer;
+  padding: 2px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 3px;
+  line-height: 0;
+}
+
+.t5-colfilter-btn:hover {
+  background: var(--t5-card);
+  color: var(--t5-ink);
+}
+
+.t5-colfilter-btn.active {
+  color: var(--t5-accent-text);
+}
+
+.t5-colfilter-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  margin-top: 4px;
+  width: 220px;
+  background: var(--t5-panel);
+  border: 1px solid var(--t5-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  padding: 8px;
+  font-weight: 400;
+  text-transform: none;
+}
+
+.t5-colfilter-search {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--t5-card);
+  border: 1px solid var(--t5-border);
+  border-radius: 5px;
+  color: var(--t5-ink);
+  font-size: 12px;
+  padding: 5px 7px;
+  margin-bottom: 6px;
+}
+
+.t5-colfilter-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+  font-size: 12px;
+  color: var(--t5-ink);
+  cursor: pointer;
+}
+
+.t5-colfilter-row input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--t5-accent);
+}
+
+.t5-colfilter-selectall {
+  border-bottom: 1px solid var(--t5-border-soft);
+  padding-bottom: 6px;
+  margin-bottom: 4px;
+  font-style: italic;
+}
+
+.t5-colfilter-list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.t5-colfilter-val {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.t5-colfilter-count {
+  color: var(--t5-mut2);
+  font-size: 11px;
+}
+
+.t5-colfilter-empty {
+  color: var(--t5-mut);
+  font-size: 12px;
+  padding: 6px 2px;
+}
+
+.t5-colfilter-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--t5-border-soft);
+}
+
+.t5-colfilter-actions button {
+  font-size: 11px;
+  border-radius: 5px;
+  padding: 4px 10px;
+  cursor: pointer;
+  border: 1px solid var(--t5-border);
+  background: var(--t5-card);
+  color: var(--t5-ink);
+}
+
+.t5-colfilter-apply {
+  background: var(--t5-accent) !important;
+  border-color: var(--t5-accent) !important;
+  color: #fff !important;
+}
+
+.t5-filter-reset {
+  background: transparent;
+  border: none;
+  color: var(--t5-accent-text);
+  cursor: pointer;
+  font-size: 11px;
+  text-decoration: underline;
+  padding: 0;
+}
