@@ -1,28 +1,37 @@
 /* T5ScannerPanel.css
- * Ported 1:1 from t5-scanner-mockup-v2.html — same palette, same layout,
- * same blink keyframe. Scoped under .t5-wrap so it can sit inside
- * ScannerPage.js without touching its theme.
+ * Ported from t5-scanner-mockup-v2.html — same layout, same blink
+ * keyframe — but the --t5-* palette below is now MAPPED onto the app's
+ * real theme tokens (--bg/--bg2/--text/--accent/... from
+ * styles/index.css, which flip automatically off document.documentElement's
+ * [data-theme="dark"|"light"] attribute — see App.js's ThemeContext).
+ *
+ * Previously every --t5-* var was a hardcoded hex value, so this panel
+ * was permanently dark regardless of the app-wide theme toggle. Since
+ * CSS custom properties inherit down the DOM tree, aliasing --t5-* to
+ * var(--bg2) etc. here makes them re-resolve live whenever data-theme
+ * changes, with zero changes needed anywhere else in this file — every
+ * rule below still just reads var(--t5-*).
  */
 .t5-wrap {
-  --t5-bg: #0e0e14;
-  --t5-panel: #121219;
-  --t5-card: #1a1a24;
-  --t5-border: #2a2a38;
-  --t5-border-soft: #21212c;
-  --t5-ink: #e5e5ef;
-  --t5-mut: #8a8a9a;
-  --t5-mut2: #5a5a68;
-  --t5-accent: #6a4fd6;
-  --t5-accent-soft: #2a2540;
-  --t5-accent-text: #c9a8ff;
-  --t5-short: #f09595;
-  --t5-short-bg: #3a1c1c;
-  --t5-long: #97c459;
-  --t5-long-bg: #1c3a2c;
-  --t5-amber: #ef9f27;
-  --t5-amber-bg: #3a2c14;
-  --t5-gray: #8a8a9a;
-  --t5-gray-bg: #22222c;
+  --t5-bg: var(--bg);
+  --t5-panel: var(--bg2);
+  --t5-card: var(--bg3);
+  --t5-border: var(--border);
+  --t5-border-soft: var(--border);
+  --t5-ink: var(--text);
+  --t5-mut: var(--text2);
+  --t5-mut2: var(--text3);
+  --t5-accent: var(--accent);
+  --t5-accent-soft: var(--accent-dim);
+  --t5-accent-text: var(--accent);
+  --t5-short: var(--red);
+  --t5-short-bg: var(--red-dim);
+  --t5-long: var(--green);
+  --t5-long-bg: var(--green-dim);
+  --t5-amber: var(--yellow);
+  --t5-amber-bg: var(--yellow-dim);
+  --t5-gray: var(--text2);
+  --t5-gray-bg: var(--bg3);
 
   background: var(--t5-panel);
   border: 1px solid var(--t5-border);
@@ -118,7 +127,7 @@
 }
 
 .t5-scan-btn:hover:not(:disabled) {
-  background: #7c5ce6;
+  filter: brightness(1.1);
 }
 
 .t5-scan-btn:disabled {
@@ -201,7 +210,7 @@
 }
 
 .t5-table tbody tr:hover {
-  background: #17171f;
+  background: var(--t5-card);
 }
 
 .t5-sym {
@@ -265,7 +274,7 @@
 }
 
 .t5-pt.off {
-  border: 1px dashed #33333f;
+  border: 1px dashed var(--t5-border);
   color: var(--t5-mut2);
 }
 
@@ -314,14 +323,44 @@
   color: var(--t5-short);
 }
 
+.t5-status.forming {
+  background: var(--t5-gray-bg);
+  color: var(--t5-mut);
+  border: 1px dashed var(--t5-border);
+}
+
 .t5-status-note {
   color: var(--t5-mut);
   font-size: 10px;
 }
 
+/* ── Flipped column badge — separate from the status pill, see
+   T5ScannerPanel.js header (Aug 2026 redesign) ───────────────────── */
+.t5-flippedbadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 5px;
+  background: var(--t5-short-bg);
+  color: var(--t5-short);
+  white-space: nowrap;
+}
+
+/* ── History tab — same table, slightly muted since it's aged-out data ── */
+.t5-table-history tbody tr {
+  opacity: .85;
+}
+
+.t5-table-history tbody tr:hover {
+  opacity: 1;
+}
+
 /* ── the blink: flip-watch dot on any Upcoming row with an active caution ── */
 .t5-flip-row {
-  background: #241414;
+  background: var(--t5-short-bg);
 }
 
 .t5-flipwatch {
