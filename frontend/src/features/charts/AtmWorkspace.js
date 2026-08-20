@@ -24,6 +24,7 @@ import CandleChart from "./CandleChart";
 import { useSocket } from "../../hooks/useSocket";
 import { BACKEND } from "../../config";
 import { getOptionRoot, getStrikeStep, nearestStrikeWithHysteresis } from "../../utils/optionsChain";
+import { TIMEFRAMES } from "../../utils/formatResolution";
 import "./AtmWorkspace.css";
 
 // Same debounce window as the single-panel Auto ATM feature in
@@ -59,21 +60,25 @@ function decideAutoAtmStrike({ liveSpot, currentStrike, step, pendingRef, pendin
 
 // ─── AtmColumn — one independent mini chart with its own live data feed ──────
 const AtmColumn = React.memo(function AtmColumn({
-  colKey, kind, label, symbol, strike, focused, onFocus, onClose, resolution, onLastClose,
-  autoAtm, onToggleAutoAtm,
+  colKey, kind, label, symbol, strike, focused, onFocus, onClose, resolution, onResolutionChange,
+  onLastClose, autoAtm, onToggleAutoAtm,
+  selectedTool, setSelectedTool, drawColor,
 }) {
   const { chartData, loading, refresh } = useSocket();
+  // Tracks the last "symbol::resolution" pair actually requested from this
+  // column's OWN socket — re-fetches whenever EITHER changes, so each
+  // column's timeframe is fully independent of the other two (own useSocket
+  // instance above = own request/response stream; nothing here is shared).
   const lastRequestedRef = useRef(null);
 
   useEffect(() => {
-    if (!symbol || lastRequestedRef.current === symbol) return;
-    lastRequestedRef.current = symbol;
+    if (!symbol || resolution == null) return;
+    const key = `${symbol}::${resolution}`;
+    if (lastRequestedRef.current === key) return;
+    lastRequestedRef.current = key;
     refresh(symbol, resolution);
-    // Re-fetch whenever THIS column's own symbol changes (initial mount or a
-    // Ctrl+Shift+↑/↓ strike switch). resolution is fixed for the workspace's
-    // lifetime (set once when it opens), so it's intentionally not a dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol]);
+  }, [symbol, resolution]);
 
   const candles = chartData?.candles || [];
   const lastClose = candles.length ? candles[candles.length - 1].close : null;
@@ -99,6 +104,20 @@ const AtmColumn = React.memo(function AtmColumn({
           <span className="atm-col-symbol" title={symbol}>{symbol}</span>
         </div>
         <div className="atm-col-header-right">
+          {onResolutionChange && (
+            <select
+              className="atm-col-res-select"
+              value={resolution ?? ""}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              onChange={(e) => onResolutionChange(Number(e.target.value))}
+              title="This chart's own timeframe — independent of the other columns"
+            >
+              {TIMEFRAMES.map((tf) => (
+                <option key={tf.value} value={tf.value}>{tf.label}</option>
+              ))}
+            </select>
+          )}
           {onToggleAutoAtm && (
             <button
               className={`atm-col-auto-atm-btn${autoAtm ? " atm-col-auto-atm-btn-on" : ""}`}
@@ -134,6 +153,9 @@ const AtmColumn = React.memo(function AtmColumn({
             symbol={symbol}
             panelKey={`atm_${colKey}`}
             isActivePanel={focused}
+            selectedTool={selectedTool}
+            setSelectedTool={setSelectedTool}
+            drawColor={drawColor}
           />
         )}
       </div>
@@ -142,8 +164,26 @@ const AtmColumn = React.memo(function AtmColumn({
 });
 
 // ─── AtmWorkspace ──────────────────────────────────────────────────────────
-export default function AtmWorkspace({ baseSymbol, resolution, focus, onClose }) {
+export default function AtmWorkspace({
+  baseSymbol, resolution, focus, onClose,
+  // Drawing-tool state — shared with ChartsPage's ONE global TradingToolbar
+  // (same pattern as the normal panel grid: selectedTool/drawColor live in
+  // ChartsPage, every chart just renders whichever one is currently picked,
+  // gated by its own isActivePanel/focused flag). Passing these through is
+  // what makes trendline/horizontal/fib/text/draw work on these three
+  // charts exactly like they do on normal panels.
+  selectedTool, setSelectedTool, drawColor,
+}) {
   const [spot, setSpot] = useState(null);
+  // Each column's OWN timeframe — independent of the workspace's initial
+  // `resolution` (used only as the starting value for all three) and of
+  // each other. Changing one via the column's timeframe dropdown never
+  // touches the other two, since each AtmColumn owns its own useSocket()
+  // feed and refetches only itself (see AtmColumn's [symbol, resolution]
+  // effect above).
+  const [ceResolution, setCeResolution] = useState(resolution);
+  const [midResolution, setMidResolution] = useState(resolution);
+  const [peResolution, setPeResolution] = useState(resolution);
   const [ceStrikes, setCeStrikes] = useState([]); // [{strike_price, symbol}] ascending
   const [peStrikes, setPeStrikes] = useState([]);
   const [ceSymbol, setCeSymbol] = useState(null);
@@ -387,7 +427,7 @@ export default function AtmWorkspace({ baseSymbol, resolution, focus, onClose })
         <span className="atm-workspace-title">ATM Workspace — {baseSymbol}</span>
         {spot != null && <span className="atm-workspace-spot">Spot: {spot}</span>}
         <span className="atm-workspace-hint">
-          Click a chart to focus it · Ctrl+Shift+↑/↓ changes its strike · Esc closes
+          Click a chart to focus it · Ctrl+Shift+↑/↓ changes its strike · each chart's timeframe dropdown is independent · Esc closes
         </span>
         <button className="atm-workspace-closeall" onClick={onClose}>Close workspace</button>
       </div>
@@ -397,8 +437,10 @@ export default function AtmWorkspace({ baseSymbol, resolution, focus, onClose })
             <AtmColumn
               colKey="ce" kind="ce" label="CE" symbol={ceSymbol} strike={ceStrikeVal}
               focused={focused === "ce"} onFocus={() => setFocused("ce")}
-              onClose={() => closeCol("ce")} resolution={resolution}
+              onClose={() => closeCol("ce")} resolution={ceResolution}
+              onResolutionChange={setCeResolution}
               autoAtm={autoAtmCe} onToggleAutoAtm={() => setAutoAtmCe((v) => !v)}
+              selectedTool={selectedTool} setSelectedTool={setSelectedTool} drawColor={drawColor}
             />
           ) : (
             <div className="atm-col atm-col-empty">{loadErr ? `Error: ${loadErr}` : "Loading CE strikes…"}</div>
@@ -408,8 +450,10 @@ export default function AtmWorkspace({ baseSymbol, resolution, focus, onClose })
           <AtmColumn
             colKey="mid" kind="mid" label="Underlying" symbol={baseSymbol} strike={null}
             focused={focused === "mid"} onFocus={() => setFocused("mid")}
-            onClose={() => closeCol("mid")} resolution={resolution}
+            onClose={() => closeCol("mid")} resolution={midResolution}
+            onResolutionChange={setMidResolution}
             onLastClose={onMidLastClose}
+            selectedTool={selectedTool} setSelectedTool={setSelectedTool} drawColor={drawColor}
           />
         )}
         {open.pe && (
@@ -417,8 +461,10 @@ export default function AtmWorkspace({ baseSymbol, resolution, focus, onClose })
             <AtmColumn
               colKey="pe" kind="pe" label="PE" symbol={peSymbol} strike={peStrikeVal}
               focused={focused === "pe"} onFocus={() => setFocused("pe")}
-              onClose={() => closeCol("pe")} resolution={resolution}
+              onClose={() => closeCol("pe")} resolution={peResolution}
+              onResolutionChange={setPeResolution}
               autoAtm={autoAtmPe} onToggleAutoAtm={() => setAutoAtmPe((v) => !v)}
+              selectedTool={selectedTool} setSelectedTool={setSelectedTool} drawColor={drawColor}
             />
           ) : (
             <div className="atm-col atm-col-empty">{loadErr ? `Error: ${loadErr}` : "Loading PE strikes…"}</div>

@@ -1398,6 +1398,9 @@ export default function ChartsPage() {
             baseSymbol={atmWorkspace.baseSymbol}
             resolution={atmWorkspace.resolution}
             focus={atmWorkspace.focus}
+            selectedTool={selectedTool}
+            setSelectedTool={setSelectedTool}
+            drawColor={drawColor}
             onClose={() => setAtmWorkspace(null)}
           />
         ) : renderLayout()}

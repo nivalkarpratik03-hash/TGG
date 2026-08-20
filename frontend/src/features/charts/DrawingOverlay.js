@@ -4,6 +4,8 @@
 // Features:
 //   - Ctrl+Z: undo last drawing
 //   - Delete key on hovered drawing: delete that drawing
+//   - Horizontal line: click to select, drag to move (mouse only — no
+//     keyboard nudge; see "hline-move" in the window mouse handlers)
 //   - Hover works in BOTH cursor mode and drawing mode
 //   - Fib: time+price anchored, stretches with zoom/scroll like Fyers
 //   - Fib drag: fully window-level so it works regardless of SVG pointerEvents state
@@ -99,8 +101,6 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
     ...localDrawingsRef.current.filter((d) => !d.linked),
     ...sharedDrawings,
   ];
-
-  const NUDGE_STEP = 0.05;
 
   // commitLocalDrawings — saves and re-renders local drawings
   const commitLocalDrawings = useCallback((next) => {
@@ -398,21 +398,10 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
         return;
       }
 
-      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-        const hid = selectedHLineIdRef.current;
-        if (hid == null) return;
-        const sel = localDrawingsRef.current.find((d) => d.id === hid);
-        if (!sel || sel.type !== "horizontal") return;
-        e.preventDefault();
-        const dir = e.key === "ArrowUp" ? 1 : -1;
-        const snapped = Math.round(sel.price / NUDGE_STEP) * NUDGE_STEP;
-        const newPrice = snapped + NUDGE_STEP * dir;
-        const next = localDrawingsRef.current.map((d) =>
-          d.id === hid ? { ...d, price: Math.round(newPrice * 1e6) / 1e6 } : d
-        );
-        commitLocalDrawings(next);
-        publishLinked(next);
-      }
+      // NOTE: horizontal lines are no longer nudged with ArrowUp/ArrowDown —
+      // they're moved by dragging with the mouse instead (see the
+      // "hline-move" editDrag handling below). Arrow keys are left free for
+      // any other future use.
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -486,8 +475,21 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
       if (clickedDrawing?.type === "horizontal") {
         e.stopPropagation();
         e.preventDefault();
-        const alreadySelected = selectedHLineIdRef.current === hitId;
-        setSelectedHL(alreadySelected ? null : hitId);
+        // Start a potential drag — resolved on mouseup into either a plain
+        // click (toggle selection, price unchanged) or a real drag (move
+        // the line to the released price, see onWindowMouseMove/Up below).
+        const pt = coordToDataRef.current?.(x, y) ?? { price: null };
+        editDragRef.current = {
+          active: true,
+          id: clickedDrawing.id,
+          mode: "hline-move",
+          startCoord: { price: pt.price, x, y },
+          origPrice: clickedDrawing.price,
+          moved: false,
+          wasSelected: selectedHLineIdRef.current === hitId,
+          isShared: !!clickedDrawing.linked || sharedDrawings.some((d) => d.id === clickedDrawing.id),
+        };
+        setLocalDrawings((d) => [...d]);
         return;
       }
 
@@ -549,6 +551,21 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
         const ed = editDragRef.current;
         const cur = coordToDataRef.current?.(x, y);
         if (!cur || cur.price == null) return;
+
+        if (ed.mode === "hline-move") {
+          if (!ed.moved && (Math.abs(x - ed.startCoord.x) > 3 || Math.abs(y - ed.startCoord.y) > 3)) {
+            ed.moved = true;
+          }
+          const idx = localDrawingsRef.current.findIndex((d) => d.id === ed.id);
+          if (idx < 0) return;
+          const dPrice = cur.price - ed.startCoord.price;
+          const newPrice = ed.origPrice + dPrice;
+          const updated = [...localDrawingsRef.current];
+          updated[idx] = { ...updated[idx], price: newPrice };
+          localDrawingsRef.current = updated;
+          setLocalDrawings([...updated]);
+          return;
+        }
 
         // Edit local drawings (including linked ones)
         const idx = localDrawingsRef.current.findIndex((d) => d.id === ed.id);
@@ -620,6 +637,8 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
           if (hd?.type === "fibRetracement") {
             const detail = fibHitDetailRef.current?.(hd, x, y);
             svgEl.style.cursor = (detail === "p1" || detail === "p2") ? "ew-resize" : "move";
+          } else if (hd?.type === "horizontal") {
+            svgEl.style.cursor = "ns-resize";
           } else {
             svgEl.style.cursor = "pointer";
           }
@@ -631,6 +650,33 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
 
     function onWindowMouseUp(e) {
       if (editDragRef.current.active) {
+        const ed = editDragRef.current;
+
+        if (ed.mode === "hline-move") {
+          if (!ed.moved) {
+            // Plain click, no drag — snap back to the original price
+            // (guards against sub-pixel drift) and just toggle selection.
+            const idx = localDrawingsRef.current.findIndex((d) => d.id === ed.id);
+            if (idx >= 0 && localDrawingsRef.current[idx].price !== ed.origPrice) {
+              const reverted = [...localDrawingsRef.current];
+              reverted[idx] = { ...reverted[idx], price: ed.origPrice };
+              localDrawingsRef.current = reverted;
+            }
+            setSelectedHL(ed.wasSelected ? null : ed.id);
+          } else {
+            // Real drag — commit the new price and keep the line selected.
+            saveDrawings(localDrawingsRef.current, panelKey);
+            publishLinked(localDrawingsRef.current);
+            setSelectedHL(ed.id);
+          }
+          editDragRef.current = {
+            active: false, id: null, mode: null,
+            startCoord: null, origP1: null, origP2: null, isShared: false,
+          };
+          setLocalDrawings((d) => [...d]);
+          return;
+        }
+
         editDragRef.current = {
           active: false, id: null, mode: null,
           startCoord: null, origP1: null, origP2: null, isShared: false,
@@ -831,7 +877,9 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
           position: "absolute", inset: 0, width: "100%", height: "100%",
           pointerEvents: needsPointerEvents ? "all" : "none",
           cursor: isEditDragging
-            ? (editDragRef.current.mode === "move" ? "move" : "ew-resize")
+            ? (editDragRef.current.mode === "move" ? "move"
+              : editDragRef.current.mode === "hline-move" ? "ns-resize"
+                : "ew-resize")
             : isDrawing ? drawCursor
               : hoveredId ? "pointer"
                 : "default",
