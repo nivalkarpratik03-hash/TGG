@@ -1,0 +1,22 @@
+{
+  "_readme": "Cross-cutting values used across asset classes -- not specific to index, commodity, or stocks, so kept separate rather than arbitrarily attached to one of those 3 files. indexSpotSymbols is the same 3 index spot entries (NIFTY 50 / NIFTY BANK / SENSEX) server.js's runCuratedSymbolCatchUp() needs for its Recovery+Staleness sweep -- kept here rather than duplicated inside symbols/index.json's F&O-shaped entries, since the F&O entries already carry spotSymbol per-index and this is just the flat name+symbol pairs the sweep actually reads.",
+  "atmBandWidth": 4,
+  "openItems": [
+    "SILVERM single-active-cycle status: inferred from the MCX option-chain screenshot showing one expiry-per-month rolling list (Jul/Aug/Sep/...), same shape as GOLDM's confirmed single cycle, but not independently stated by the desk the way GOLDM's cycle was implied. Treat as high-confidence, not fully independently confirmed.",
+    "Exact options-vs-futures expiry day offset for all 4 commodities: NOT needed for correctness (expiry dates are always fetched live via fetchOptionChain, never computed from an offset) -- recorded here only so nobody re-opens this as a blocker later."
+  ],
+  "indexSpotSymbols": [
+    {
+      "name": "NIFTY 50",
+      "symbol": "NSE:NIFTY50-INDEX"
+    },
+    {
+      "name": "NIFTY BANK",
+      "symbol": "NSE:NIFTYBANK-INDEX"
+    },
+    {
+      "name": "SENSEX",
+      "symbol": "BSE:SENSEX-INDEX"
+    }
+  ]
+}

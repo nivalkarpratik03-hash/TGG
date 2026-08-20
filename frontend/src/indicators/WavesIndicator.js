@@ -503,4 +503,4 @@ export function removeWavesIndicator(fullTeardown = false, chart) {
     if (inst.ctx && inst.canvas) inst.ctx.clearRect(0, 0, inst.canvas.clientWidth, inst.canvas.clientHeight);
   }
   if (inst.onWaveData) inst.onWaveData([], []);
-}
+} 

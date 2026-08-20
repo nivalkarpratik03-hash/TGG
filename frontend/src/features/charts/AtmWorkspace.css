@@ -137,6 +137,27 @@
   flex-shrink: 0;
 }
 
+/* Per-column timeframe dropdown — each CE/Underlying/PE chart picks its
+   own resolution independently of the other two (see AtmWorkspace.js's
+   ceResolution/midResolution/peResolution state). */
+.atm-col-res-select {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text2);
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: 5px;
+  padding: 3px 4px;
+  cursor: pointer;
+}
+.atm-col-res-select:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
 .atm-col-ltp {
   font-size: 12px;
   font-weight: 700;

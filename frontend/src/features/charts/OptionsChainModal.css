@@ -156,6 +156,26 @@
   letter-spacing: 0.01em;
 }
 
+/* Live vs approximate expiry source badge */
+.oc-expiry-source-badge {
+  margin-left: auto;
+  align-self: center;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+}
+.oc-expiry-source-fyers {
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.1);
+}
+.oc-expiry-source-local {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+}
+
 /* Column headers */
 .oc-col-headers {
   display: grid;

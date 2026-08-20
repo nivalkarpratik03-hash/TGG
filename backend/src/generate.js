@@ -8,7 +8,7 @@ const { fyersModel } = require("fyers-api-v3");
 
 const client_id = process.env.APP_ID;
 const secret_key = process.env.ST_KEY;
-const redirect_uri = "https://trade.fyers.in/api-login/redirect-uri/index.html";
+const redirect_uri = "http://127.0.0.1/";
 const response_type = "code";
 const state = "sample_state";
 const grant_type = "authorization_code";

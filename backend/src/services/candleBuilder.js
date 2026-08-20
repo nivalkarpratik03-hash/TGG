@@ -109,9 +109,15 @@ class CandleBuilder {
    * @param {Function} opts.onFinalize - called when a 1m candle closes with
    *                                     (finalizedCandle, formingCandles)
    */
-  constructor({ onTick, onFinalize, symbol } = {}) {
+  constructor({ onTick, onFinalize, onGapDetected, symbol } = {}) {
     this.onTick = onTick || (() => { });
     this.onFinalize = onFinalize || (() => { });
+    // onGapDetected(symbol, fromTimeMs, toTimeMs) — fired when one or more
+    // 1m minutes had no ticks. Caller (server.js) is responsible for
+    // backfilling the real candles from Fyers REST and splicing them into
+    // this builder's history via patchGapCandles(). Optional — if not
+    // provided, gap minutes stay as flagged placeholders (see below).
+    this.onGapDetected = onGapDetected || null;
     this._symbol = symbol || null;
 
     // Completed 1m candle history (oldest first)
@@ -208,28 +214,67 @@ class CandleBuilder {
       const closed = this._validateCandle({ ...this._forming1m }, prevCandle);
       this._oneMinHistory.push(closed);
 
-      // Fill any gap minutes where no ticks arrived.
-      // Each gap candle is a doji at the previous close (open=high=low=close=prev close).
+      // ── Gap handling (REWORKED) ────────────────────────────────────────────
+      // ROOT-CAUSE NOTE: the old logic filled any silent WebSocket gap with
+      // flat doji candles pinned at the stale last-known price. When real
+      // ticks resumed minutes later — often at a meaningfully different
+      // price after a reconnect/rate-limit pause — the very next candle had
+      // to jump from that stale frozen price to the real price in one bar,
+      // producing a single oversized "cliff" candle with a flat dashed
+      // plateau just before it. That is exactly the shape that does not
+      // exist on the broker's own chart (TradingView), because Fyers never
+      // actually printed a flat price during the gap — our builder invented
+      // it locally and it was never corrected.
+      //
+      // Fix: gap minutes are pushed as PLACEHOLDER candles tagged
+      // `synthetic: true` (so nothing downstream mistakes them for real
+      // broker data) and the gap range is reported via onGapDetected so the
+      // caller can backfill the REAL 1m candles from Fyers REST and splice
+      // them in via patchGapCandles(). This keeps tick processing itself
+      // synchronous/non-blocking — the backfill happens async, shortly after.
       const ONE_MIN_MS = 60 * 1000;
-      let gapMinute = this._forming1m.time + ONE_MIN_MS;
-      while (gapMinute < minute) {
+      const gapStart = this._forming1m.time + ONE_MIN_MS;
+      if (gapStart < minute) {
+        let gapMinute = gapStart;
         const prevClose = this._oneMinHistory[this._oneMinHistory.length - 1].close;
-        const gapCandle = {
-          time: gapMinute,
-          open: prevClose,
-          high: prevClose,
-          low: prevClose,
-          close: prevClose,
-          volume: 0,
-        };
-        this._oneMinHistory.push(gapCandle);
-        gapMinute += ONE_MIN_MS;
+        while (gapMinute < minute) {
+          this._oneMinHistory.push({
+            time: gapMinute,
+            open: prevClose,
+            high: prevClose,
+            low: prevClose,
+            close: prevClose,
+            volume: 0,
+            synthetic: true, // flagged placeholder — NOT a real broker print
+          });
+          gapMinute += ONE_MIN_MS;
+        }
+        const gapEnd = gapMinute; // one past the last placeholder minute
+        const gapMinutes = (gapEnd - gapStart) / ONE_MIN_MS;
+        console.warn(
+          `[CandleBuilder:${this._symbol || "?"}] Tick gap detected: ${gapMinutes}min ` +
+          `(${new Date(gapStart).toISOString()} → ${new Date(gapEnd).toISOString()}) — ` +
+          `placeholder candles inserted, requesting REST backfill`
+        );
+        if (this.onGapDetected) {
+          try { this.onGapDetected(this._symbol, gapStart, gapEnd); }
+          catch (err) { console.error(`[CandleBuilder:${this._symbol || "?"}] onGapDetected handler error:`, err.message); }
+        }
       }
 
-      // Emit finalized candle + new forming state
-      // Anchor the new candle's open to the last closed candle's close
-      const lastClosed = this._oneMinHistory[this._oneMinHistory.length - 1];
-      this._forming1m = this._newCandle(minute, lastClosed ? lastClosed.close : price);
+      // Emit finalized candle + new forming state.
+      //
+      // ROOT-CAUSE NOTE: this used to seed the new forming candle's open
+      // from `lastClosed.close` — which, right after a gap, is the
+      // synthetic placeholder's stale price, not the real market. That
+      // meant the very FIRST real tick after a gap was silently swallowed
+      // into open=high=low=close=stale-price, and only the *next* tick
+      // nudged the candle toward the real price — compounding the cliff
+      // shape described above. The forming candle must open at the actual
+      // incoming tick's price; it has nothing to do with the previous
+      // candle's close once we stop enforcing a no-gap rule (see
+      // _validateCandle).
+      this._forming1m = this._newCandle(minute, price);
       const forming = this._buildFormingAll();
       this.onFinalize(closed, forming);
     } else if (minute < this._forming1m.time) {
@@ -270,6 +315,34 @@ class CandleBuilder {
     return [...this._oneMinHistory];
   }
 
+  /**
+   * Splice REAL broker candles in over synthetic placeholder candles for a
+   * gap window [fromTimeMs, toTimeMs). Called by server.js after fetching
+   * the missing minutes from Fyers REST in response to onGapDetected.
+   *
+   * Only replaces candles that are still flagged `synthetic: true` — if a
+   * later real tick already overwrote/extended past that window (race with
+   * a fast-resuming stream), this safely no-ops for those minutes instead
+   * of clobbering real data with a slightly stale REST fetch.
+   *
+   * @param {Array<{time,open,high,low,close,volume}>} realCandles
+   * @returns {number} count of placeholder candles actually replaced
+   */
+  patchGapCandles(realCandles) {
+    if (!realCandles || realCandles.length === 0) return 0;
+    const byTime = new Map(realCandles.map((c) => [c.time, c]));
+    let patched = 0;
+    this._oneMinHistory = this._oneMinHistory.map((c) => {
+      if (c.synthetic && byTime.has(c.time)) {
+        patched++;
+        const real = byTime.get(c.time);
+        return { time: c.time, open: real.open, high: real.high, low: real.low, close: real.close, volume: real.volume ?? 0 };
+      }
+      return c;
+    });
+    return patched;
+  }
+
   // ── Private helpers ───────────────────────────────────────────
 
   /**
@@ -277,17 +350,21 @@ class CandleBuilder {
    * Rules:
    *   1. high = max(open, high, low, close)
    *   2. low  = min(open, high, low, close)
-   *   3. open must be > 0; if not, fall back to close
-   *   4. If a previous candle exists, open must equal prev close
-   *      (ensures no gap between candles on liquid instruments)
+   *   3. open must be > 0; if not, fall back to prev close, then own close
+   *
+   * ROOT-CAUSE NOTE: this used to unconditionally overwrite `candle.open`
+   * with the previous candle's close ("no-gap rule"). That's wrong for live
+   * 1m candles — the open IS whatever the first real tick of that minute
+   * traded at, and forcing it to equal the prior close silently erases real
+   * micro gaps and makes our OHLC diverge from the broker's own 1m candle
+   * for that exact minute (one of the two mismatches seen against
+   * TradingView). We now only use prevCandle.close as a FALLBACK when this
+   * minute's open is missing/invalid — never to overwrite a real traded open.
    */
   _validateCandle(candle, prevCandle) {
-    // Fix open if zero/invalid
-    if (!candle.open || candle.open <= 0) candle.open = candle.close;
-
-    // Anchor open to previous close if available (no-gap rule)
-    if (prevCandle && prevCandle.close > 0) {
-      candle.open = prevCandle.close;
+    // Fix open only if zero/invalid — fall back to prev close, then own close
+    if (!candle.open || candle.open <= 0) {
+      candle.open = (prevCandle && prevCandle.close > 0) ? prevCandle.close : candle.close;
     }
 
     // Recalculate high/low to be consistent with open+close
