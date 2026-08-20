@@ -22,6 +22,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import CandleChart from "./CandleChart";
 import { useSocket } from "../../hooks/useSocket";
+import { useTheme } from "../../App";
 import { BACKEND } from "../../config";
 import { getOptionRoot, getStrikeStep, nearestStrikeWithHysteresis } from "../../utils/optionsChain";
 import { TIMEFRAMES } from "../../utils/formatResolution";
@@ -173,7 +174,14 @@ export default function AtmWorkspace({
   // what makes trendline/horizontal/fib/text/draw work on these three
   // charts exactly like they do on normal panels.
   selectedTool, setSelectedTool, drawColor,
+  // Same actions-ref pattern ChartsPage already uses for panelActionsRef
+  // (normal panels register applyTypedTimeframe/getAtmBaseSymbol/etc. on a
+  // shared ref while active). This workspace registers ONLY
+  // applyTypedTimeframe here, scoped to whichever of its 3 columns is
+  // currently focused — see the effect near the bottom of this component.
+  actionsRef,
 }) {
+  const { theme, toggleTheme } = useTheme();
   const [spot, setSpot] = useState(null);
   // Each column's OWN timeframe — independent of the workspace's initial
   // `resolution` (used only as the starting value for all three) and of
@@ -405,6 +413,51 @@ export default function AtmWorkspace({
     return () => window.removeEventListener("keydown", onKey);
   }, [focused, ceStrikes, peStrikes, ceSymbol, peSymbol]);
 
+  // ── Type-a-number → switch the FOCUSED column's timeframe (Fyers-style) ──
+  // Same validation ChartPanel's applyTypedTimeframe uses in ChartsPage.js
+  // (only ever applies a value from TIMEFRAMES, same warning message) —
+  // just re-targeted to whichever of ceResolution/midResolution/peResolution
+  // belongs to the focused column, instead of a single panel's resolution.
+  // The digit-buffer/timer itself stays owned by ChartsPage.js; this only
+  // supplies "what to do with already-parsed digits", registered below.
+  const [tfWarning, setTfWarning] = useState(null);
+  useEffect(() => {
+    if (!tfWarning) return;
+    const t = setTimeout(() => setTfWarning(null), 3500);
+    return () => clearTimeout(t);
+  }, [tfWarning]);
+
+  const applyTypedTimeframe = useCallback((digits) => {
+    if (focused !== "ce" && focused !== "mid" && focused !== "pe") {
+      setTfWarning("Click a column (CE / Underlying / PE) to focus it first.");
+      return;
+    }
+    const n = parseInt(digits, 10);
+    const supported = TIMEFRAMES.some((tf) => tf.value === n);
+    if (!Number.isFinite(n) || !supported) {
+      setTfWarning(`"${digits}" isn't a supported timeframe (1, 3, 5, 15, 60, 1440, 10080).`);
+      return;
+    }
+    if (focused === "ce") setCeResolution(n);
+    else if (focused === "mid") setMidResolution(n);
+    else setPeResolution(n);
+  }, [focused]);
+
+  // Register on the shared actionsRef while mounted, exactly like ChartPanel
+  // registers applyTypedTimeframe on panelActionsRef — ChartsPage's global
+  // digit-buffer handler checks this ref first and falls back to
+  // panelActionsRef only when it's empty. Cleared on unmount (workspace
+  // closed) so that fallback correctly resumes targeting normal panels.
+  useEffect(() => {
+    if (!actionsRef) return;
+    actionsRef.current = { ...actionsRef.current, applyTypedTimeframe };
+    return () => {
+      if (actionsRef.current) {
+        actionsRef.current = { ...actionsRef.current, applyTypedTimeframe: null };
+      }
+    };
+  }, [actionsRef, applyTypedTimeframe]);
+
   const closeCol = useCallback((col) => {
     setOpen((prev) => {
       const next = { ...prev, [col]: false };
@@ -423,12 +476,20 @@ export default function AtmWorkspace({
 
   return (
     <div className="atm-workspace">
+      {tfWarning && <div className="error-bar shortcut-warning-bar">⚠ {tfWarning}</div>}
       <div className="atm-workspace-toolbar">
         <span className="atm-workspace-title">ATM Workspace — {baseSymbol}</span>
         {spot != null && <span className="atm-workspace-spot">Spot: {spot}</span>}
         <span className="atm-workspace-hint">
-          Click a chart to focus it · Ctrl+Shift+↑/↓ changes its strike · each chart's timeframe dropdown is independent · Esc closes
+          Click a chart to focus it · Ctrl+Shift+↑/↓ changes its strike · type a number to change the focused chart's timeframe · each chart's timeframe dropdown is independent · Esc closes
         </span>
+        <button
+          className="atm-workspace-theme-btn"
+          onClick={toggleTheme}
+          title={theme === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode"}
+        >
+          {theme === "dark" ? "☀" : "🌙"}
+        </button>
         <button className="atm-workspace-closeall" onClick={onClose}>Close workspace</button>
       </div>
       <div className={`atm-workspace-grid atm-workspace-grid-${openCount || 1}`}>

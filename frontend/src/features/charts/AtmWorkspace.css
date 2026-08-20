@@ -7,6 +7,8 @@
   min-width: 0;
   height: 100%;
   background: var(--bg);
+  position: relative;
+  /* anchors the reused .error-bar/.shortcut-warning-bar */
 }
 
 .atm-workspace-toolbar {
@@ -55,7 +57,28 @@
   padding: 5px 10px;
   cursor: pointer;
 }
+
 .atm-workspace-closeall:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* Theme toggle — same visual language/size as .atm-workspace-closeall,
+   icon-only (mirrors StatusBar.js's ☀/🌙 toggle button so it behaves
+   identically inside the workspace, not a different theme mechanism). */
+.atm-workspace-theme-btn {
+  flex-shrink: 0;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  color: var(--text2);
+  font-size: 13px;
+  line-height: 1;
+  border-radius: 6px;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+
+.atm-workspace-theme-btn:hover {
   color: var(--text);
   border-color: var(--accent);
 }
@@ -67,9 +90,18 @@
   gap: 1px;
   background: var(--border);
 }
-.atm-workspace-grid-1 { grid-template-columns: 1fr; }
-.atm-workspace-grid-2 { grid-template-columns: 1fr 1fr; }
-.atm-workspace-grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+
+.atm-workspace-grid-1 {
+  grid-template-columns: 1fr;
+}
+
+.atm-workspace-grid-2 {
+  grid-template-columns: 1fr 1fr;
+}
+
+.atm-workspace-grid-3 {
+  grid-template-columns: 1fr 1fr 1fr;
+}
 
 .atm-col {
   display: flex;
@@ -80,6 +112,7 @@
   border: 2px solid transparent;
   cursor: pointer;
 }
+
 .atm-col-focused {
   border-color: var(--accent);
 }
@@ -118,9 +151,21 @@
   border-radius: 5px;
   white-space: nowrap;
 }
-.atm-col-badge-ce { background: var(--green-dim); color: var(--green); }
-.atm-col-badge-pe { background: var(--red-dim); color: var(--red); }
-.atm-col-badge-mid { background: var(--accent-dim); color: var(--accent); }
+
+.atm-col-badge-ce {
+  background: var(--green-dim);
+  color: var(--green);
+}
+
+.atm-col-badge-pe {
+  background: var(--red-dim);
+  color: var(--red);
+}
+
+.atm-col-badge-mid {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
 
 .atm-col-symbol {
   font-size: 11px;
@@ -153,6 +198,7 @@
   padding: 3px 4px;
   cursor: pointer;
 }
+
 .atm-col-res-select:hover {
   border-color: var(--accent);
   color: var(--text);
@@ -209,6 +255,7 @@
   padding: 2px 4px;
   border-radius: 4px;
 }
+
 .atm-col-close:hover {
   color: var(--red);
   background: var(--red-dim);

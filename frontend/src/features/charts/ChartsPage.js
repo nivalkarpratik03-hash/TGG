@@ -1155,6 +1155,15 @@ export default function ChartsPage() {
   // replaces the normal panel layout while open (see the render below).
   const [atmWorkspace, setAtmWorkspace] = useState(null);
 
+  // Same actions-ref pattern as panelActionsRef above, scoped to the ATM
+  // Workspace instead of the normal panel grid. AtmWorkspace.js registers
+  // applyTypedTimeframe here (targeting whichever of its 3 columns is
+  // currently focused) whenever it's mounted, and clears it back to null on
+  // unmount — so the digit-buffer handler below can always tell whether the
+  // workspace is the correct target just by checking this ref, with no
+  // separate "is atmWorkspace open" bookkeeping needed.
+  const atmActionsRef = useRef({ applyTypedTimeframe: null });
+
   const panelLinkRef = useRef({ linked: false, setLinked: null });
   const [toolbarLinked, setToolbarLinked] = useState(false);
 
@@ -1233,7 +1242,15 @@ export default function ChartsPage() {
     function applyBuffer() {
       const digits = tfDigitBufferRef.current;
       clearBuffer();
-      if (digits) panelActionsRef.current?.applyTypedTimeframe?.(digits);
+      if (!digits) return;
+      // ATM Workspace, when open, owns the keyboard the same way the active
+      // normal panel does — route to whichever of its 3 columns is focused
+      // instead, same reasoning as the getAtmBaseSymbol/openSearchWithQuery
+      // routing already done via panelActionsRef.
+      const target = atmActionsRef.current?.applyTypedTimeframe
+        ? atmActionsRef.current
+        : panelActionsRef.current;
+      target?.applyTypedTimeframe?.(digits);
     }
     function onKey(e) {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -1263,7 +1280,10 @@ export default function ChartsPage() {
         e.stopImmediatePropagation();
         const code = { d: "1440", D: "1440", w: "10080", W: "10080", h: "60", H: "60" }[e.key];
         clearBuffer();
-        panelActionsRef.current?.applyTypedTimeframe?.(code);
+        const target = atmActionsRef.current?.applyTypedTimeframe
+          ? atmActionsRef.current
+          : panelActionsRef.current;
+        target?.applyTypedTimeframe?.(code);
         return;
       }
 
@@ -1401,6 +1421,7 @@ export default function ChartsPage() {
             selectedTool={selectedTool}
             setSelectedTool={setSelectedTool}
             drawColor={drawColor}
+            actionsRef={atmActionsRef}
             onClose={() => setAtmWorkspace(null)}
           />
         ) : renderLayout()}
