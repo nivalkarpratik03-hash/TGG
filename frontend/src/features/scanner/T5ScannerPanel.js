@@ -100,6 +100,13 @@ function ColumnFilter({ options, selected, onApply }) {
     onApply(null);
     setOpen(false);
   }
+  function clearFilterQuick(e) {
+    // Standalone clear — sits next to the filter icon itself so an active
+    // filter can be cleared in one click without opening the dropdown.
+    e.stopPropagation();
+    onApply(null);
+    setOpen(false);
+  }
 
   return (
     <span className="t5-colfilter" ref={ref}>
@@ -113,6 +120,16 @@ function ColumnFilter({ options, selected, onApply }) {
           <path d="M1 2h14l-5.5 6.2v4.3L6.5 14V8.2z" />
         </svg>
       </button>
+      {isActive && (
+        <button
+          type="button"
+          className="t5-colfilter-clearx"
+          onClick={clearFilterQuick}
+          title="Clear filter"
+        >
+          &times;
+        </button>
+      )}
       {open && (
         <div className="t5-colfilter-menu" onClick={(e) => e.stopPropagation()}>
           <input
@@ -330,12 +347,6 @@ export default function T5ScannerPanel({
           <div className="t5-subrow">
             <span className="t5-sub">
               What's live right now &mdash; P3 forming, P4 fired, or closed today &middot; hover a point for its candle time
-              {resultsTagFilter && (
-                <>
-                  {" "}&middot; filtered to {Array.from(resultsTagFilter).join(", ")}{" "}
-                  <button type="button" className="t5-filter-reset" onClick={() => setResultsTagFilter(null)}>clear filter</button>
-                </>
-              )}
             </span>
           </div>
           <div className="t5-table-wrap">
@@ -417,12 +428,6 @@ export default function T5ScannerPanel({
           <div className="t5-subrow">
             <span className="t5-sub">
               Confirmed / cancelled / flipped closes from earlier days &mdash; kept, not deleted, just out of the live feed
-              {historyTagFilter && (
-                <>
-                  {" "}&middot; filtered to {Array.from(historyTagFilter).join(", ")}{" "}
-                  <button type="button" className="t5-filter-reset" onClick={() => setHistoryTagFilter(null)}>clear filter</button>
-                </>
-              )}
             </span>
           </div>
           <div className="t5-table-wrap">

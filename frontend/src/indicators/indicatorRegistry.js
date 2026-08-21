@@ -34,6 +34,16 @@ export const INDICATOR_REGISTRY = [
     label: "SR Zones",
     color: "#00c853",
   },
+  {
+    id: "t5",
+    label: "T5 (Double Top/Bottom)",
+    color: "#ff5fa2",
+  },
+  {
+    id: "ema9pivot",
+    label: "9EMA Pivot S/R Bands",
+    color: "#2962ff",
+  },
 ];
 
 export function buildDefaultIndicators() {
@@ -42,6 +52,8 @@ export function buildDefaultIndicators() {
     waves: false,
     consolidation: false,
     srZones: false,
+    t5: false,
+    ema9pivot: false,
     bubbleGap: 4,    // shared param for consolidation
   };
 }

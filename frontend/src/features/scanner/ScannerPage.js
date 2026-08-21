@@ -86,6 +86,10 @@ function openChart(symbol, timeframe, mw) {
   window.open(buildChartUrl(symbol, timeframe, mw), "_blank");
 }
 
+function openT5Chart(symbol, timeframe) {
+  window.open(buildChartUrl(symbol, timeframe, null, { t5: true }), "_blank");
+}
+
 // ─── MWCard — one stock in the motherwave dashboard ───────────────────────────
 function MWCard({ r, timeframe }) {
   const bull = isMWBull(r);
@@ -777,7 +781,7 @@ export default function ScannerPage() {
                 rows={t5Rows}
                 scannedCount={results.length}
                 resolution={tfLabel}
-                onRowClick={(symbol) => openChart(symbol, timeframe)}
+                onRowClick={(symbol) => openT5Chart(symbol, timeframe)}
               />
             ) : (
               <>

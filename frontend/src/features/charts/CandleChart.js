@@ -23,6 +23,16 @@ import {
   removeSRZonesIndicator,
 } from "../../indicators/SRZonesIndicator";
 import {
+  createT5Indicator,
+  updateT5Indicator,
+  removeT5Indicator,
+} from "../../indicators/T5Indicator";
+import {
+  createEMA9PivotSRIndicator,
+  updateEMA9PivotSRIndicator,
+  removeEMA9PivotSRIndicator,
+} from "../../indicators/EMA9PivotSRIndicator";
+import {
   buildBubbleMarkers,
   setMarkersIfChanged,
 } from "../../indicators/BubbleIndicator";
@@ -333,6 +343,8 @@ export default function CandleChart({
   showSRZones = false,
   srStrongTouches = 3,
   srLookbackBars = 300,
+  showT5 = false,
+  showEMA9Pivot = false,
   onResetViewReady,
   reloadToken = 0,
   onIntentionalReloadAck,
@@ -411,6 +423,8 @@ export default function CandleChart({
   const showSRZonesRef = useRef(showSRZones);
   const srStrongTouchesRef = useRef(srStrongTouches);
   const srLookbackBarsRef = useRef(srLookbackBars);
+  const showT5Ref = useRef(showT5);
+  const showEMA9PivotRef = useRef(showEMA9Pivot);
   const onIntentionalReloadAckRef = useRef(onIntentionalReloadAck);
   const waveTargetRef = useRef(waveTarget);
   const selectedToolRef = useRef(selectedTool);
@@ -431,6 +445,8 @@ export default function CandleChart({
   showSRZonesRef.current = showSRZones;
   srStrongTouchesRef.current = srStrongTouches;
   srLookbackBarsRef.current = srLookbackBars;
+  showT5Ref.current = showT5;
+  showEMA9PivotRef.current = showEMA9Pivot;
   onIntentionalReloadAckRef.current = onIntentionalReloadAck;
   waveTargetRef.current = waveTarget;
   selectedToolRef.current = selectedTool;
@@ -598,6 +614,18 @@ export default function CandleChart({
       candleSeries
     );
 
+    createT5Indicator(
+      chart,
+      containerRef.current,
+      candleSeries
+    );
+
+    createEMA9PivotSRIndicator(
+      chart,
+      containerRef.current,
+      candleSeries
+    );
+
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       if (!range) return;
       const total = candlesRef.current?.length ?? 0;
@@ -644,6 +672,8 @@ export default function CandleChart({
       removeWavesIndicator(true, chart);
       removeConsolidationIndicator(true, chart);
       removeSRZonesIndicator(true, chart);
+      removeT5Indicator(true, chart);
+      removeEMA9PivotSRIndicator(true, chart);
       // Null refs before deferred remove so any queued RAF paint callbacks bail cleanly
       chartRef.current = null;
       candleRef.current = null;
@@ -750,6 +780,8 @@ export default function CandleChart({
           if (showWavesRef.current) updateWavesIndicator(candles, emaH, emaL, chartRef.current);
           if (showConsolidationRef.current) updateConsolidationIndicator(candles, emaH, emaL, chartRef.current, bubbleGapRef.current);
           if (showSRZonesRef.current) updateSRZonesIndicator(candles, emaH, emaL, chartRef.current, srStrongTouchesRef.current, srLookbackBarsRef.current);
+          if (showT5Ref.current) updateT5Indicator(candles, chartRef.current);
+          if (showEMA9PivotRef.current) updateEMA9PivotSRIndicator(candles, emaH, emaL, chartRef.current);
 
           prevCountRef.current = candles.length;
           prevLastCandleKeyRef.current = lastKey;
@@ -826,6 +858,12 @@ export default function CandleChart({
 
     if (showSRZonesRef.current) updateSRZonesIndicator(candles, emaH, emaL, chartRef.current, srStrongTouchesRef.current, srLookbackBarsRef.current);
     else removeSRZonesIndicator(false, chartRef.current);
+
+    if (showT5Ref.current) updateT5Indicator(candles, chartRef.current);
+    else removeT5Indicator(false, chartRef.current);
+
+    if (showEMA9PivotRef.current) updateEMA9PivotSRIndicator(candles, emaH, emaL, chartRef.current);
+    else removeEMA9PivotSRIndicator(false, chartRef.current);
 
     // After setData, markers need a full refresh (series was rebuilt)
     // Reset the key so setMarkersIfChanged always fires after setData
@@ -1007,6 +1045,34 @@ export default function CandleChart({
     // candlesRef/emaHighsRef/emaLowsRef/chartRef are stable refs — not deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showSRZones, srStrongTouches, srLookbackBars]);
+
+  // ── T5 (Double Top/Bottom) toggle ───────────────────────────────────────
+  useEffect(() => {
+    if (!chartRef.current) return;
+    if (showT5) {
+      if (candlesRef.current?.length)
+        updateT5Indicator(candlesRef.current, chartRef.current);
+    } else {
+      removeT5Indicator(false, chartRef.current);
+    }
+    // candlesRef/chartRef are stable refs — not deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showT5]);
+
+  // ── 9EMA Pivot S/R Bands toggle ───────────────────────────────────────────
+  useEffect(() => {
+    if (!chartRef.current) return;
+    if (showEMA9Pivot) {
+      if (candlesRef.current?.length)
+        updateEMA9PivotSRIndicator(
+          candlesRef.current, emaHighsRef.current, emaLowsRef.current, chartRef.current
+        );
+    } else {
+      removeEMA9PivotSRIndicator(false, chartRef.current);
+    }
+    // candlesRef/emaHighsRef/emaLowsRef/chartRef are stable refs — not deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showEMA9Pivot]);
 
   // ── Candle countdown timer — pixel-tracked to last price ──────────────────
   // timerInfo: { price, secsLeft, isBull, yPx }

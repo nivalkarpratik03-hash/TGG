@@ -129,10 +129,11 @@ export function stageLabel(r) {
 // ─── Chart URL builder ──────────────────────────────────────────────────────
 // Query params match ChartsPage.js's own urlParams parser exactly
 // (symbol, resolution, waveFrom, waveTo → urlWaveTarget as {fromMs, toMs}).
-export function buildChartUrl(symbol, timeframe, mw) {
+export function buildChartUrl(symbol, timeframe, mw, opts = {}) {
   const wave = mw?.wave || mw;
   const params = new URLSearchParams({ symbol, resolution: String(timeframe) });
   if (wave?.fromTime) params.set("waveFrom", String(wave.fromTime));
   if (wave?.toTime) params.set("waveTo", String(wave.toTime));
+  if (opts?.t5) params.set("t5", "1");
   return `/charts?${params.toString()}`;
 }

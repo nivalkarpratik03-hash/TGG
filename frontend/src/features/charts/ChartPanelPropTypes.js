@@ -22,6 +22,7 @@ export const ChartPanelPropTypes = {
   urlWaveTarget: PropTypes.object,
   urlFibDrawing: PropTypes.object,
   urlSrLines: PropTypes.arrayOf(PropTypes.object),
+  urlT5: PropTypes.bool,
 
   // ── Global toolbar state ──────────────────────────────────────────────────
   selectedTool: PropTypes.string.isRequired,

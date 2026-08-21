@@ -55,6 +55,7 @@ const ChartPanel = memo(function ChartPanel({
   urlWaveTarget,
   urlFibDrawing,
   urlSrLines,
+  urlT5,
   // Global toolbar state (from ChartsPage)
   selectedTool,
   setSelectedTool,
@@ -277,6 +278,7 @@ const ChartPanel = memo(function ChartPanel({
   const [indicators, setIndicators] = useState(() => {
     const defaults = loadPref(pfx + "indicators", buildDefaultIndicators());
     if (urlWaveTarget) return { ...defaults, waves: true };
+    if (urlT5) return { ...defaults, t5: true };
     return defaults;
   });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -290,6 +292,8 @@ const ChartPanel = memo(function ChartPanel({
   const wavesOn = !!indicators.waves;
   const consolidationOn = !!indicators.consolidation;
   const srZonesOn = !!indicators.srZones;
+  const t5On = !!indicators.t5;
+  const ema9PivotOn = !!indicators.ema9pivot;
   const bubbleGap = typeof indicators.bubbleGap === "number" ? indicators.bubbleGap : 4;
 
   // Wave/consolidation callbacks — CandleChart calls these to output processed data.
@@ -692,6 +696,8 @@ const ChartPanel = memo(function ChartPanel({
               bubbleGap={bubbleGap}
               onConsolidationData={handleConsolidationData}
               showSRZones={srZonesOn}
+              showT5={t5On}
+              showEMA9Pivot={ema9PivotOn}
               onResetViewReady={handleResetViewReady}
               reloadToken={reloadToken}
               onIntentionalReloadAck={handleIntentionalReloadAck}
@@ -875,7 +881,7 @@ function LayoutSingle({ urlParams, layoutId, onLayoutChange, toolbarProps }) {
           layoutId={layoutId} onLayoutChange={onLayoutChange}
           urlSymbol={urlParams.symbol}
           urlResolution={urlParams.resolution}
-          urlWaveTarget={urlParams.waveTarget} urlFibDrawing={urlParams.fibDrawing}
+          urlWaveTarget={urlParams.waveTarget} urlT5={urlParams.t5} urlFibDrawing={urlParams.fibDrawing}
           urlSrLines={urlParams.srLines}
           isActivePanel={toolbarProps.activePanel === 0}
           onPanelActivate={() => toolbarProps.setActivePanel(0)}
@@ -896,7 +902,7 @@ function Layout2H({ urlParams, layoutId, onLayoutChange, toolbarProps }) {
             layoutId={layoutId} onLayoutChange={onLayoutChange}
             urlSymbol={urlParams.symbol}
             urlResolution={urlParams.resolution}
-            urlWaveTarget={urlParams.waveTarget}
+            urlWaveTarget={urlParams.waveTarget} urlT5={urlParams.t5}
             urlFibDrawing={urlParams.fibDrawing}
             urlSrLines={urlParams.srLines}
             isActivePanel={toolbarProps.activePanel === 0}
@@ -912,7 +918,7 @@ function Layout2H({ urlParams, layoutId, onLayoutChange, toolbarProps }) {
             layoutId={undefined} onLayoutChange={undefined}
             urlSymbol={null}
             urlResolution={null}
-            urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]}
+            urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]} urlT5={null}
             isActivePanel={toolbarProps.activePanel === 1}
             onPanelActivate={() => toolbarProps.setActivePanel(1)}
             {...toolbarProps.shared}
@@ -932,7 +938,7 @@ function Layout2V({ urlParams, layoutId, onLayoutChange, toolbarProps }) {
           <ChartPanel key="p0" pfx="" panelIdx={0} panelCount={2}
             layoutId={layoutId} onLayoutChange={onLayoutChange}
             urlSymbol={urlParams.symbol} urlResolution={urlParams.resolution}
-            urlWaveTarget={urlParams.waveTarget} urlFibDrawing={urlParams.fibDrawing}
+            urlWaveTarget={urlParams.waveTarget} urlT5={urlParams.t5} urlFibDrawing={urlParams.fibDrawing}
             urlSrLines={urlParams.srLines}
             isActivePanel={toolbarProps.activePanel === 0}
             onPanelActivate={() => toolbarProps.setActivePanel(0)}
@@ -946,7 +952,7 @@ function Layout2V({ urlParams, layoutId, onLayoutChange, toolbarProps }) {
           <ChartPanel key="p1" pfx="p2_" panelIdx={1} panelCount={2}
             layoutId={undefined} onLayoutChange={undefined}
             urlSymbol={null} urlResolution={null}
-            urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]}
+            urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]} urlT5={null}
             isActivePanel={toolbarProps.activePanel === 1}
             onPanelActivate={() => toolbarProps.setActivePanel(1)}
             {...toolbarProps.shared}
@@ -967,7 +973,7 @@ function Layout3({ urlParams, layoutId, onLayoutChange, toolbarProps }) {
           <ChartPanel key="p0" pfx="" panelIdx={0} panelCount={3}
             layoutId={layoutId} onLayoutChange={onLayoutChange}
             urlSymbol={urlParams.symbol} urlResolution={urlParams.resolution}
-            urlWaveTarget={urlParams.waveTarget} urlFibDrawing={urlParams.fibDrawing}
+            urlWaveTarget={urlParams.waveTarget} urlT5={urlParams.t5} urlFibDrawing={urlParams.fibDrawing}
             urlSrLines={urlParams.srLines}
             isActivePanel={toolbarProps.activePanel === 0}
             onPanelActivate={() => toolbarProps.setActivePanel(0)}
@@ -982,7 +988,7 @@ function Layout3({ urlParams, layoutId, onLayoutChange, toolbarProps }) {
             <ChartPanel key="p1" pfx="p2_" panelIdx={1} panelCount={3}
               layoutId={undefined} onLayoutChange={undefined}
               urlSymbol={null} urlResolution={null}
-              urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]}
+              urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]} urlT5={null}
               isActivePanel={toolbarProps.activePanel === 1}
               onPanelActivate={() => toolbarProps.setActivePanel(1)}
               {...toolbarProps.shared}
@@ -995,7 +1001,7 @@ function Layout3({ urlParams, layoutId, onLayoutChange, toolbarProps }) {
             <ChartPanel key="p2" pfx="p3_" panelIdx={2} panelCount={3}
               layoutId={undefined} onLayoutChange={undefined}
               urlSymbol={null} urlResolution={null}
-              urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]}
+              urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]} urlT5={null}
               isActivePanel={toolbarProps.activePanel === 2}
               onPanelActivate={() => toolbarProps.setActivePanel(2)}
               {...toolbarProps.shared}
@@ -1016,7 +1022,7 @@ function Layout3H({ urlParams, layoutId, onLayoutChange, toolbarProps }) {
           <ChartPanel key="p0" pfx="" panelIdx={0} panelCount={3}
             layoutId={layoutId} onLayoutChange={onLayoutChange}
             urlSymbol={urlParams.symbol} urlResolution={urlParams.resolution}
-            urlWaveTarget={urlParams.waveTarget} urlFibDrawing={urlParams.fibDrawing}
+            urlWaveTarget={urlParams.waveTarget} urlT5={urlParams.t5} urlFibDrawing={urlParams.fibDrawing}
             urlSrLines={urlParams.srLines}
             isActivePanel={toolbarProps.activePanel === 0}
             onPanelActivate={() => toolbarProps.setActivePanel(0)}
@@ -1030,7 +1036,7 @@ function Layout3H({ urlParams, layoutId, onLayoutChange, toolbarProps }) {
           <ChartPanel key="p1" pfx="p2_" panelIdx={1} panelCount={3}
             layoutId={undefined} onLayoutChange={undefined}
             urlSymbol={null} urlResolution={null}
-            urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]}
+            urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]} urlT5={null}
             isActivePanel={toolbarProps.activePanel === 1}
             onPanelActivate={() => toolbarProps.setActivePanel(1)}
             {...toolbarProps.shared}
@@ -1043,7 +1049,7 @@ function Layout3H({ urlParams, layoutId, onLayoutChange, toolbarProps }) {
           <ChartPanel key="p2" pfx="p3_" panelIdx={2} panelCount={3}
             layoutId={undefined} onLayoutChange={undefined}
             urlSymbol={null} urlResolution={null}
-            urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]}
+            urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]} urlT5={null}
             isActivePanel={toolbarProps.activePanel === 2}
             onPanelActivate={() => toolbarProps.setActivePanel(2)}
             {...toolbarProps.shared}
@@ -1066,7 +1072,7 @@ function Layout4({ urlParams, layoutId, onLayoutChange, toolbarProps }) {
             <ChartPanel key="p0" pfx="" panelIdx={0} panelCount={4}
               layoutId={layoutId} onLayoutChange={onLayoutChange}
               urlSymbol={urlParams.symbol} urlResolution={urlParams.resolution}
-              urlWaveTarget={urlParams.waveTarget} urlFibDrawing={urlParams.fibDrawing}
+              urlWaveTarget={urlParams.waveTarget} urlT5={urlParams.t5} urlFibDrawing={urlParams.fibDrawing}
               urlSrLines={urlParams.srLines}
               isActivePanel={toolbarProps.activePanel === 0}
               onPanelActivate={() => toolbarProps.setActivePanel(0)}
@@ -1080,7 +1086,7 @@ function Layout4({ urlParams, layoutId, onLayoutChange, toolbarProps }) {
             <ChartPanel key="p2" pfx="p3_" panelIdx={2} panelCount={4}
               layoutId={undefined} onLayoutChange={undefined}
               urlSymbol={null} urlResolution={null}
-              urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]}
+              urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]} urlT5={null}
               isActivePanel={toolbarProps.activePanel === 2}
               onPanelActivate={() => toolbarProps.setActivePanel(2)}
               {...toolbarProps.shared}
@@ -1095,7 +1101,7 @@ function Layout4({ urlParams, layoutId, onLayoutChange, toolbarProps }) {
             <ChartPanel key="p1" pfx="p2_" panelIdx={1} panelCount={4}
               layoutId={undefined} onLayoutChange={undefined}
               urlSymbol={null} urlResolution={null}
-              urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]}
+              urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]} urlT5={null}
               isActivePanel={toolbarProps.activePanel === 1}
               onPanelActivate={() => toolbarProps.setActivePanel(1)}
               {...toolbarProps.shared}
@@ -1108,7 +1114,7 @@ function Layout4({ urlParams, layoutId, onLayoutChange, toolbarProps }) {
             <ChartPanel key="p3" pfx="p4_" panelIdx={3} panelCount={4}
               layoutId={undefined} onLayoutChange={undefined}
               urlSymbol={null} urlResolution={null}
-              urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]}
+              urlWaveTarget={null} urlFibDrawing={null} urlSrLines={[]} urlT5={null}
               isActivePanel={toolbarProps.activePanel === 3}
               onPanelActivate={() => toolbarProps.setActivePanel(3)}
               {...toolbarProps.shared}
@@ -1367,6 +1373,7 @@ export default function ChartsPage() {
       : null;
     const symbol = p.get("symbol") || null;
     const resolution = p.get("resolution") ? Number(p.get("resolution")) : null;
+    const t5 = p.get("t5") === "1";
     let fibDrawing = null;
     try {
       const raw = p.get("fibDrawing");
@@ -1377,7 +1384,7 @@ export default function ChartsPage() {
       const raw = p.get("srLines");
       if (raw) srLines = JSON.parse(decodeURIComponent(raw));
     } catch { }
-    return { waveTarget, symbol, resolution, fibDrawing, srLines };
+    return { waveTarget, symbol, resolution, fibDrawing, srLines, t5 };
     // Mount-only: URL params are parsed once at load. The location object doesn't
     // change during the component lifetime (panels don't navigate).
     // eslint-disable-next-line react-hooks/exhaustive-deps

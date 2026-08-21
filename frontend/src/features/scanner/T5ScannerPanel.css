@@ -561,12 +561,25 @@
   color: #fff !important;
 }
 
-.t5-filter-reset {
-  background: transparent;
-  border: none;
-  color: var(--t5-accent-text);
-  cursor: pointer;
-  font-size: 11px;
-  text-decoration: underline;
+.t5-colfilter-clearx {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 2px;
   padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--t5-card);
+  color: var(--t5-mut);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.t5-colfilter-clearx:hover {
+  background: var(--t5-accent);
+  color: #fff;
 }
