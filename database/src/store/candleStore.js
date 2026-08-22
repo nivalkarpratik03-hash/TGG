@@ -4,20 +4,29 @@
  * CENTRALIZED SOURCE OF TRUTH — all candle persistence lives here.
  *
  * ╔══════════════════════════════════════════════════════════════════════╗
- * ║  ARCHITECTURE RULE — 1m-ONLY DB STORAGE                            ║
+ * ║  ARCHITECTURE RULE — 1m + 1D DB STORAGE (updated 2026-08-21)        ║
  * ║                                                                      ║
- * ║  The database stores ONLY resolution=1 (1-minute) candles.          ║
- * ║  All higher timeframes (3m, 5m, 15m, 1h, 1D, 1W) are derived        ║
- * ║  in-memory from 1m data by CandleBuilder / deriveTimeframe.         ║
+ * ║  The database stores resolution=1 (1-minute) AND resolution=1440    ║
+ * ║  (1-Day) candles — see database/migrations/005_daily_candles.sql.   ║
+ * ║  Everything ABOVE 1D (10080=1W, 43200=1M, …) is still derived       ║
+ * ║  in-memory, but now from the stored 1D rows instead of from 1m —    ║
+ * ║  see backend/src/services/timeframeAggregator.js, the single        ║
+ * ║  source of truth for that derivation. 3m/5m/15m/1h are still        ║
+ * ║  derived in-memory from 1m, unchanged.                              ║
  * ║                                                                      ║
- * ║  upsertCandles MUST always be called with resolution=1.             ║
- * ║  loadCandles MUST always be called with resolution=1.               ║
- * ║  Other resolutions passed here will silently store/read nothing     ║
- * ║  useful because no such rows exist in the DB.                       ║
+ * ║  upsertCandles / loadCandles / getLatestCandle etc. are resolution- ║
+ * ║  generic — they accept 1 or 1440 and store/read exactly that table  ║
+ * ║  row shape. The `candles` table's CHECK constraint is the only      ║
+ * ║  thing enforcing "no other resolution may be stored here" — pass    ║
+ * ║  anything else and Postgres itself will reject the write.           ║
+ * ║                                                                      ║
+ * ║  This does NOT apply to derivative (option/future) symbols — those  ║
+ * ║  route through dataRouter.js to separate per-segment tables that    ║
+ * ║  remain 1m-only by design (see dataRouter.js's own header).         ║
  * ╚══════════════════════════════════════════════════════════════════════╝
  *
  * Rules enforced here (matching architecture diagram):
- *  • Only FINALIZED 1m candles are stored (no forming / live candles).
+ *  • Only FINALIZED 1m/1D candles are stored (no forming / live candles).
  *  • Only VALIDATED candles enter the DB.
  *  • Broker-synchronized 1m timeline is maintained.
  *  • The frontend reads candles ONLY from this module (via the API).

@@ -43,6 +43,17 @@
  * remaining candleStore.js import, upsertValidationState, stays there
  * unrouted — it writes to a single generic validation_state table with no
  * per-symbol-type table to route between.
+ *
+ * RESOLUTION NOTE (2026-08-21, 1D-storage change): the spot-symbol branch
+ * above already forwards `resolution` straight through to candleStore.js
+ * untouched — it never hardcoded resolution=1, so resolution=1440 (Daily)
+ * candles for spot symbols route correctly through here with ZERO changes
+ * needed in this file. The derivatives tables (derivativesStore.js) remain
+ * 1m-only by design — they have no `resolution` column at all — so Daily+
+ * requests for option/future symbols are intentionally kept OUT of this
+ * router's spot path by dataFetch.js's isDerivativeSymbol() check before
+ * ever reaching here; they continue deriving from 1m the way every
+ * resolution used to.
  */
 
 const candleStore = require("./candleStore");

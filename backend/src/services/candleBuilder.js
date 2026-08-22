@@ -42,6 +42,14 @@
 // was a byte-identical local copy here, tickStream.js already exports the
 // real one, no reason to keep a second copy in sync by hand.
 const { isLiveMarket, isMCXSymbol } = require("../fyers/tickStream");
+// monthAnchorMs — reused here so the "which calendar month does this 1m
+// candle belong to" math has exactly one implementation (see
+// timeframeAggregator.js's header for why weekAnchor-style logic
+// duplicated across files is something this project is actively moving
+// away from). weekAnchorMs is NOT reused the same way here because
+// _buildWeeklyBars()'s existing ms-based bucketing already matches it
+// exactly — only Monthly is new, so only Monthly borrows the shared helper.
+const { monthAnchorMs } = require("./timeframeAggregator");
 
 // ── Constants ────────────────────────────────────────────────────
 const MARKET_OPEN_HOUR = 9;
@@ -62,6 +70,7 @@ const TF_MINUTES = {
   60: 60,
   1440: null,  // "1D" — special: all candles in an IST calendar day
   10080: null, // "1W" — special: all candles in an IST calendar week (Mon–Fri)
+  43200: null, // "1M" — special: all candles in an IST calendar month
 };
 
 /**
@@ -441,6 +450,10 @@ class CandleBuilder {
       return this._buildWeeklyBars();
     }
 
+    if (resolution === 43200) {
+      return this._buildMonthlyBars();
+    }
+
     const bars = [];
     let groupStart = null;
     let group = [];
@@ -530,11 +543,34 @@ class CandleBuilder {
   }
 
   /**
+   * Build monthly bars by grouping 1m candles into IST calendar-month buckets.
+   * Mirrors _buildWeeklyBars()'s structure but anchors to the 1st of the
+   * month (via the shared monthAnchorMs helper) instead of Monday.
+   */
+  _buildMonthlyBars() {
+    const byMonth = new Map();
+    for (const c of this._oneMinHistory) {
+      const key = monthAnchorMs(c.time);
+      if (!byMonth.has(key)) byMonth.set(key, []);
+      byMonth.get(key).push(c);
+    }
+    const bars = [];
+    const sortedKeys = [...byMonth.keys()].sort((a, b) => a - b);
+    for (const key of sortedKeys) {
+      const candles = byMonth.get(key);
+      if (candles.length > 0) bars.push(this._aggregateCandles(candles, key));
+    }
+    return bars;
+  }
+
+  /**
    * Compute the window-start timestamp for a given 1m candle time and resolution.
    * For intraday resolutions, windows are aligned to market open (09:15 IST).
    */
   _windowStartForCandle(resolution, tsMs) {
     if (resolution === 1440) return istDateKey(tsMs);
+
+    if (resolution === 43200) return monthAnchorMs(tsMs);
 
     if (resolution === 10080) {
       // Return Monday 09:15 IST of the week containing tsMs
@@ -606,7 +642,7 @@ class CandleBuilder {
  * to display 3m/5m/15m/1h/1D without extra API calls.
  *
  * @param {Array} oneMinCandles - sorted oldest first, OHLC
- * @param {number} resolution   - target resolution (3|5|15|60|1440)
+ * @param {number} resolution   - target resolution (3|5|15|60|1440|10080|43200)
  * @returns {Array} aggregated candles
  */
 function deriveTimeframe(oneMinCandles, resolution) {

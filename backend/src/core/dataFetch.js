@@ -16,11 +16,34 @@
 // isOptionSymbol — see fetchAndProcess below). One-directional dependency:
 // dataFetch requires tickEngine, tickEngine never requires dataFetch back.
 const { runSignalEngine } = require("../services/signalEngine");
-const { fetchCandles } = require("../fyers/client");
-const { deriveTimeframe } = require("../services/candleBuilder");
+const { fetchCandles, fetchDailyCandles, FULL_HISTORY_DAILY_LOOKBACK_DAYS } = require("../fyers/client");
+const { deriveTimeframe, istDateKey } = require("../services/candleBuilder");
+const { DAILY_RESOLUTION, isDailyOrHigher, aggregateDailyCandles } = require("../services/timeframeAggregator");
 const { isTradingDay, isAnyMarketLive } = require("../fyers/tickStream");
 const state = require("./state");
 const { vlog } = require("../utils/verboseLog");
+
+// ─── Derivative-symbol detection (DB optional, same guarded pattern as
+// tickEngine.js's isOptionSymbol/deriveUnderlyingSymbol) ────────────────────
+// The 1D-storage path below only applies to SPOT symbols (equities, indices,
+// MCX continuous roots) — dated option/future contracts route through
+// database/src/store/dataRouter.js to 6 separate derivatives tables that
+// have no `resolution` column and are 1m-only by design (see dataRouter.js
+// header). A short-lived weekly/monthly option contract also doesn't have a
+// meaningful "complete historical 1D" to fetch in the first place. Those
+// symbols keep the PRE-EXISTING behavior unchanged: Daily/Weekly/Monthly
+// derived in-memory from their (already-stored) 1m history, exactly as
+// before this change.
+let parseDerivativeSymbol = null;
+try {
+  ({ parseDerivativeSymbol } = require("../../../database/src/parsing/symbolParser"));
+} catch (err) {
+  console.warn("[DataFetch] symbolParser module not found — treating all symbols as spot for the 1D-storage path:", err.message);
+}
+function isDerivativeSymbol(symbol) {
+  if (!parseDerivativeSymbol) return false;
+  try { return !!parseDerivativeSymbol(symbol); } catch { return false; }
+}
 
 function createDataFetch({ io, tickEngine }) {
   const { SYMBOL, RESOLUTION, CANDLES_TO_FETCH, CHART_DB_WINDOW_DAYS, REFRESH_MS, candleBuilders, socketSymbols, socketResolutions } = state;
@@ -134,6 +157,71 @@ function createDataFetch({ io, tickEngine }) {
     }
   }
 
+  // ─── Daily (1D) staleness check — mirrors ensureFreshOneMinData above ─────
+  //
+  // 1D bars only ever change once per trading day (today's bar, while the
+  // market is open) plus one final settle after close. So instead of a
+  // tight few-minute tolerance like the 1m check, this only re-fetches when
+  // the DB's latest daily row is from a PRIOR calendar day (IST) than
+  // today's actual/most-recent trading day — i.e. "we don't have today's
+  // bar yet" or "yesterday's bar never got its final settle". Throttled the
+  // same way (per-symbol cooldown) so this can't turn into a hammering loop
+  // across a full symbol list either.
+  //
+  // Never throws — same guarantee as ensureFreshOneMinData: any failure here
+  // just means we serve the (possibly one-day-stale) DB data exactly as
+  // before this existed.
+  const DAILY_STALENESS_CHECK_COOLDOWN_MS = 5 * 60 * 1000; // at most once per 5 min per symbol
+  const lastDailyStalenessCheckAt = new Map();
+
+  async function ensureFreshDailyData(symbol, dailyCandles) {
+    try {
+      if (!dailyCandles || dailyCandles.length === 0) return dailyCandles;
+
+      const lastCandle = dailyCandles[dailyCandles.length - 1];
+      const todayKey = istDateKey(Date.now());
+      const lastKey = istDateKey(lastCandle.time);
+      if (lastKey === todayKey) return dailyCandles; // already has today's bar — current
+
+      const nowMs = Date.now();
+      const lastCheck = lastDailyStalenessCheckAt.get(symbol) || 0;
+      if (nowMs - lastCheck < DAILY_STALENESS_CHECK_COOLDOWN_MS) return dailyCandles; // throttled
+      lastDailyStalenessCheckAt.set(symbol, nowMs);
+
+      const tokenOk = await state.validateToken().catch(() => false);
+      if (!tokenOk) return dailyCandles;
+
+      vlog(`[Staleness] ${symbol}: DB latest daily bar is ${lastKey}, today is ${todayKey} — fetching delta from Fyers`);
+
+      // Small bounded lookback (5 days) always covers the gap — even a
+      // multi-day outage or a weekend/holiday never spans more than a
+      // handful of calendar days without a new trading-day bar appearing.
+      const freshDaily = await fetchDailyCandles(symbol, 5);
+      if (!freshDaily || freshDaily.length === 0) return dailyCandles;
+
+      const newOnes = freshDaily.filter((c) => c.time > lastCandle.time);
+      if (newOnes.length === 0) return dailyCandles;
+
+      if (state.dbEnabled && state.db) {
+        try {
+          const inserted = await state.db.upsertCandles(symbol, DAILY_RESOLUTION, newOnes);
+          vlog(`[Staleness] ${symbol}: backfilled ${inserted} missing daily candle(s)`);
+          io.emit("history_updated", { symbol, resolution: DAILY_RESOLUTION, reason: "daily_staleness_backfill", count: inserted });
+        } catch (err) {
+          console.warn(`[Staleness] ${symbol}: daily upsert failed (${err.message}) — still using them in-memory for this response`);
+        }
+      }
+
+      const merged = [...dailyCandles, ...newOnes]
+        .sort((a, b) => a.time - b.time)
+        .filter((c, i, arr) => i === 0 || c.time !== arr[i - 1].time);
+      return merged;
+    } catch (err) {
+      console.warn(`[Staleness] ${symbol}: daily check failed (${err.message}) — serving DB data as-is`);
+      return dailyCandles;
+    }
+  }
+
   // ─── Staleness SWEEP — proactive, over a full symbol list ─────────────────
   // Added 2026-08-06 (item 3 of the ongoing cleanup plan): this used to be
   // an inline loop inside catchUp.js's runCuratedSymbolCatchUp(), calling
@@ -197,38 +285,65 @@ function createDataFetch({ io, tickEngine }) {
   // cleanup pass.
   //
   // Order of operations:
-  //   1. DB-first  — if DB is enabled and has 1m rows for `symbol`, derive the
+  //   1. DB-first  — if DB is enabled and has data for `symbol`, derive the
   //      requested resolution from Postgres. No Fyers call needed. This is the
   //      common case once a symbol has been backfilled at least once.
   //   2. Fyers fallback — only when DB is disabled, DB has zero rows for this
   //      symbol (fresh symbol, never backfilled), or the DB read throws. Fetches
-  //      from Fyers REST and write-throughs 1m candles to DB so the *next* call
+  //      from Fyers REST and write-throughs candles to DB so the *next* call
   //      for this symbol takes the DB-first path.
   //
-  // Daily/Weekly (1440/10080) always derive from the FULL 1m history stored in
-  // DB (not the CHART_DB_WINDOW_DAYS slice) — they need long lookback to form
-  // correct calendar-day/week boundaries. Everything else (1/3/5/15/60) uses
-  // the last CHART_DB_WINDOW_DAYS days only, which is what keeps the chart
-  // smooth.
+  // CHANGED (2026-08-21): resolution now splits into two independent
+  // storage tiers instead of always deriving everything from 1-minute data:
+  //   • 1m – 1h (1/3/5/15/60): UNCHANGED. Reads the last CHART_DB_WINDOW_DAYS
+  //     of 1-minute candles and derives via deriveTimeframe(). Exactly the
+  //     same logic as before this change, byte-for-byte.
+  //   • 1D and higher (1440/10080/43200/…), spot symbols only: reads the
+  //     symbol's COMPLETE stored 1-Day history from the `candles` table
+  //     (loadDailyFromDB) and derives Weekly/Monthly/etc. from THAT via
+  //     timeframeAggregator.js — never touches 1-minute data at all. See
+  //     isDerivativeSymbol()'s header comment for why option/future
+  //     contracts are excluded from this tier and keep deriving from 1m.
+  // Daily and higher (1440/10080/43200/…) now read from the PERSISTED 1D
+  // table (see database/migrations/005_daily_candles.sql) instead of
+  // deriving from the full 1m history — this is the core of the "fetch
+  // complete 1D data, derive Weekly/Monthly from stored 1D, not from 1m"
+  // requirement. Applies to spot symbols only; derivative (option/future)
+  // symbols keep deriving from 1m exactly as before (see
+  // isDerivativeSymbol's header comment above for why).
+  //
+  // Everything below 1D (1/3/5/15/60) is completely unchanged — still reads
+  // the CHART_DB_WINDOW_DAYS slice of 1m and derives via deriveTimeframe().
+  async function loadDailyFromDB(symbol) {
+    // NEWEST rows first is irrelevant here (unlike the 1m 100000-row cap) —
+    // a symbol's full daily history is small enough (a few thousand rows
+    // even over 10+ years) that `mostRecent` is mainly about ordering
+    // consistency with loadFromDB's other branch, not truncation risk.
+    let dailyCandles = await state.db.loadCandles(symbol, DAILY_RESOLUTION, { limit: 20000, mostRecent: true });
+    if (!dailyCandles || dailyCandles.length === 0) return null;
+    dailyCandles = await ensureFreshDailyData(symbol, dailyCandles);
+    return dailyCandles;
+  }
+
   async function loadFromDB(symbol, resolution) {
     if (!state.dbEnabled || !state.db) return null;
     try {
-      let oneMinCandles;
-      if (resolution === 1440 || resolution === 10080) {
-        // FIX (2026-08-13): must be the NEWEST 100000 1m rows, not the
-        // oldest — without mostRecent:true, any symbol whose full 1m
-        // history exceeds 100000 rows silently lost its most recent
-        // months from Daily/Weekly (ASC-from-start was the default). See
-        // candleStore.js's loadCandles() for the full explanation.
-        oneMinCandles = await state.db.loadCandles(symbol, 1, { limit: 100000, mostRecent: true });
-      } else {
-        const windowMs = CHART_DB_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-        oneMinCandles = await state.db.loadCandles(symbol, 1, {
-          from: new Date(Date.now() - windowMs),
-          to: new Date(),
-          limit: 50000,
-        });
+      if (isDailyOrHigher(resolution) && !isDerivativeSymbol(symbol)) {
+        const dailyCandles = await loadDailyFromDB(symbol);
+        if (!dailyCandles || dailyCandles.length === 0) return null;
+        const candles = aggregateDailyCandles(dailyCandles, resolution);
+        if (!candles || candles.length === 0) return null;
+        // No 1m candles fetched/returned for this path — see fetchAndProcess
+        // for why builder-seeding is skipped when oneMinCandles is null.
+        return { candles, oneMinCandles: null, dailyCandles };
       }
+
+      const windowMs = CHART_DB_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+      let oneMinCandles = await state.db.loadCandles(symbol, 1, {
+        from: new Date(Date.now() - windowMs),
+        to: new Date(),
+        limit: 50000,
+      });
 
       if (!oneMinCandles || oneMinCandles.length === 0) return null;
 
@@ -257,24 +372,81 @@ function createDataFetch({ io, tickEngine }) {
     // for every option on every request.
     const dbHit = await loadFromDB(symbol, resolution);
     if (dbHit) {
-      const { candles, oneMinCandles } = dbHit;
+      const { candles, oneMinCandles, dailyCandles } = dbHit;
       console.log(`[DB-first] ${symbol} res=${resolution}m → ${candles.length} candles from DB`);
 
       // Seed the candle builder so the live tick stream has 1m continuity for
       // this symbol — same seedHistory() call the Fyers path always made.
       // Safe to call repeatedly: seedHistory() fully replaces _oneMinHistory.
-      tickEngine.getOrCreateBuilder(symbol).seedHistory(oneMinCandles);
+      // SKIPPED when oneMinCandles is null — the new 1D-and-higher DB path
+      // (loadDailyFromDB) never fetches 1m data at all (that's the whole
+      // point: avoid the duplicate fetch a Daily/Weekly/Monthly request used
+      // to trigger). The live "today" bar for Daily+ still ticks correctly
+      // without this: tickEngine.js's per-1m-finalize patch reads directly
+      // off the builder's live forming-tick state, not off seeded history.
+      if (oneMinCandles) {
+        tickEngine.getOrCreateBuilder(symbol).seedHistory(oneMinCandles);
+      }
 
       const result = runSignalEngine(candles);
       state.setCache(symbol, resolution, candles, result);
-      if (resolution !== 1) {
+      if (resolution !== 1 && oneMinCandles) {
         try { state.setCache(symbol, 1, oneMinCandles, runSignalEngine(oneMinCandles)); } catch { }
+      }
+      // Also cache the underlying stored daily candles under DAILY_RESOLUTION
+      // itself when we derived a higher timeframe from them (Weekly/Monthly)
+      // — mirrors the existing "also cache the 1m source" behavior above, so
+      // a follow-up request for plain "1D" on this symbol is a cache hit
+      // instead of re-deriving from the same dailyCandles array again.
+      if (dailyCandles && resolution !== DAILY_RESOLUTION) {
+        try { state.setCache(symbol, DAILY_RESOLUTION, dailyCandles, runSignalEngine(dailyCandles)); } catch { }
       }
       return { candles, result };
     }
 
     // ── 2. Fyers fallback (DB disabled, empty, or read failed) ───────────────
     console.log(`[Fyers-fallback] ${symbol} res=${resolution}m — no DB data, fetching from Fyers`);
+
+    // ── 2a. Daily and higher, spot symbols ──────────────────────────────────
+    // "Fetch the symbol's complete historical 1D data" — this is the ONE
+    // place that happens. No raw1m fetch here at all (that was the old
+    // behavior's redundant call for every Daily/Weekly request); the 1m
+    // candle builder gets seeded lazily the next time an intraday (1-60m)
+    // resolution is requested for this symbol, same as any other symbol
+    // that's never had an intraday chart opened for it yet.
+    if (isDailyOrHigher(resolution) && !isDerivativeSymbol(symbol)) {
+      const dailyCandles = await fetchCandles(symbol, DAILY_RESOLUTION, CANDLES_TO_FETCH, FULL_HISTORY_DAILY_LOOKBACK_DAYS);
+
+      if (state.dbEnabled && dailyCandles.length > 0) {
+        state.db.getLatestCandle(symbol, DAILY_RESOLUTION).then((latest) => {
+          const newCandles = latest ? dailyCandles.filter((c) => c.time > latest.time) : dailyCandles;
+          if (newCandles.length === 0) {
+            console.log(`[DB] ${symbol} — no new daily candles to upsert (already up to date)`);
+            return;
+          }
+          return state.db.upsertCandles(symbol, DAILY_RESOLUTION, newCandles).then((n) => {
+            const since = latest ? new Date(latest.time).toISOString() : "first time";
+            console.log(`[DB] Upserted ${n} new daily candles for ${symbol} (${since})`);
+          });
+        }).catch((err) => {
+          console.warn(`[DB] getLatestCandle(daily) failed for ${symbol} (${err.message}) — skipping daily upsert`);
+        });
+      }
+
+      const candles = aggregateDailyCandles(dailyCandles, resolution);
+      const result = runSignalEngine(candles);
+      state.setCache(symbol, resolution, candles, result);
+      if (resolution !== DAILY_RESOLUTION) {
+        try { state.setCache(symbol, DAILY_RESOLUTION, dailyCandles, runSignalEngine(dailyCandles)); } catch { }
+      }
+      return { candles, result };
+    }
+
+    // ── 2b. Everything else (1m–1h, and Daily+ for derivative symbols) ──────
+    // UNCHANGED from before this feature — 1-minute through 1-hour always
+    // goes through here exactly as it always has. Derivative (option/future)
+    // symbols also still take this path even for Daily+ requests, per
+    // isDerivativeSymbol's header comment.
     // Option contracts (CE/PE) only exist for days/weeks — using the default
     // 30-day lookback causes Fyers to return empty chunks for dates before the
     // contract was listed. Use a 5-day lookback instead so every chunk is valid.
@@ -396,7 +568,7 @@ function createDataFetch({ io, tickEngine }) {
     const dayLabel = isTradingDay() ? (isAnyMarketLive(tickEngine.getActiveTickSymbols()) ? "live market" : "weekday (market closed)") : "weekend/holiday";
     console.log(`[INIT] Pre-warming all resolutions for ${SYMBOL} (${dayLabel})...`);
 
-    const ALL_RESOLUTIONS = [1, 3, 5, 15, 60, 1440, 10080];
+    const ALL_RESOLUTIONS = [1, 3, 5, 15, 60, 1440, 10080, 43200];
 
     for (const res of ALL_RESOLUTIONS) {
       const MAX_RETRIES = 3;

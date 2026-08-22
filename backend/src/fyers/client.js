@@ -9,6 +9,10 @@ const fs = require("fs");
 const path = require("path");
 const { fyersModel } = require("fyers-api-v3");
 const { vlog } = require("../utils/verboseLog");
+const {
+  DAILY_RESOLUTION, WEEKLY_RESOLUTION, MONTHLY_RESOLUTION,
+  aggregateDailyCandles,
+} = require("../services/timeframeAggregator");
 
 const ROOT = path.resolve(__dirname, "../..");
 const TOKEN_FILE = path.join(ROOT, "fyers_access_token.txt");
@@ -168,10 +172,21 @@ function weekAnchor(epochSec) {
 }
 
 // ── Smart lookback calculator ─────────────────────────────────────────────────
+// FULL_HISTORY_DAILY_LOOKBACK_DAYS — used the FIRST time a symbol's Daily
+// candles are backfilled (DB has none yet), per the "fetch the symbol's
+// complete historical 1D data" requirement. 3650 days (10 years) at
+// CHUNK_DAYS=360 in fetchDailyCandles() is ~11 sequential chunk requests —
+// only ever paid once per symbol (the result is persisted to `candles` via
+// dataFetch.js), never again on every chart load. Subsequent staleness
+// top-ups (ensureFreshDailyData in dataFetch.js) use a tiny few-day
+// lookback instead, same pattern as the existing 1m staleness check.
+const FULL_HISTORY_DAILY_LOOKBACK_DAYS = 3650;
+
 function calcLookbackDays(resolution) {
   const res = String(resolution).toUpperCase();
-  if (res === "W" || res === "10080") return 1095; // 3 years = 4 chunks max (was 3650 = 11 chunks, caused rate storm)
-  if (res === "D" || res === "1440") return 730;
+  if (res === "M" || res === String(MONTHLY_RESOLUTION)) return 1095; // monthly needs the same long daily lookback as weekly
+  if (res === "W" || res === String(WEEKLY_RESOLUTION)) return 1095; // 3 years = 4 chunks max (was 3650 = 11 chunks, caused rate storm)
+  if (res === "D" || res === String(DAILY_RESOLUTION)) return 730;
   const mins = parseInt(res, 10) || 3;
   if (mins === 60) return 150;
   if (mins === 15) return 60;
@@ -278,25 +293,12 @@ async function fetchDailyCandles(symbol, lookbackDays) {
   return sorted;
 }
 
-// ── Aggregate daily → weekly ──────────────────────────────────────────────────
+// ── Aggregate daily → weekly/monthly ────────────────────────────────────────
+// Delegates to timeframeAggregator.js (the single source of truth for
+// bucketing daily bars into higher timeframes — see that file's header for
+// why this used to be a local copy and no longer is).
 function aggregateDailyToWeekly(dailyCandles) {
-  const weekMap = new Map();
-  for (const d of dailyCandles) {
-    const anchorMs = weekAnchor(Math.floor(d.time / 1000)) * 1000;
-    if (!weekMap.has(anchorMs)) {
-      weekMap.set(anchorMs, {
-        time: anchorMs, open: d.open, high: d.high,
-        low: d.low, close: d.close, volume: d.volume,
-      });
-    } else {
-      const w = weekMap.get(anchorMs);
-      w.high = Math.max(w.high, d.high);
-      w.low = Math.min(w.low, d.low);
-      w.close = d.close;
-      w.volume += d.volume;
-    }
-  }
-  return [...weekMap.values()].sort((a, b) => a.time - b.time);
+  return aggregateDailyCandles(dailyCandles, WEEKLY_RESOLUTION);
 }
 
 // ── Fetch historical candles ──────────────────────────────────────────────────
@@ -306,22 +308,29 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
   }
   const fyers = getFyersClient();
   const now = Math.floor(Date.now() / 1000);
-  const isWeekly = resolution === 10080 || String(resolution).toUpperCase() === "W";
-  const isDaily = resolution === 1440 || String(resolution).toUpperCase() === "D";
+  const isMonthly = resolution === MONTHLY_RESOLUTION || String(resolution).toUpperCase() === "M";
+  const isWeekly = resolution === WEEKLY_RESOLUTION || String(resolution).toUpperCase() === "W";
+  const isDaily = resolution === DAILY_RESOLUTION || String(resolution).toUpperCase() === "D";
   const lookbackDays = lookbackDaysOverride != null ? lookbackDaysOverride : calcLookbackDays(resolution);
 
-  // ── WEEKLY ────────────────────────────────────────────────────────────────
-  if (isWeekly) {
-    console.log(`[Fyers] Weekly: aggregating from daily over ${lookbackDays}d`);
+  // ── WEEKLY / MONTHLY ────────────────────────────────────────────────────
+  // Both derive from a fresh Fyers daily fetch via the SAME aggregator
+  // dataFetch.js uses for the DB-stored-daily path (see
+  // services/timeframeAggregator.js) — only the daily SOURCE differs
+  // (Fyers here vs. Postgres there), the bucketing logic is identical.
+  if (isWeekly || isMonthly) {
+    const label = isMonthly ? "Monthly" : "Weekly";
+    const targetRes = isMonthly ? MONTHLY_RESOLUTION : WEEKLY_RESOLUTION;
+    console.log(`[Fyers] ${label}: aggregating from daily over ${lookbackDays}d`);
     const daily = await fetchDailyCandles(symbol, lookbackDays);
-    if (daily.length === 0) throw new Error(`[Fyers] No daily candles for ${symbol} — cannot build weekly`);
-    const weekly = aggregateDailyToWeekly(daily);
+    if (daily.length === 0) throw new Error(`[Fyers] No daily candles for ${symbol} — cannot build ${label.toLowerCase()}`);
+    const bars = aggregateDailyCandles(daily, targetRes);
     console.log(
-      `[Fyers] ${symbol} W: ${daily.length} daily → ${weekly.length} weekly | ` +
-      `${new Date(weekly[0].time).toISOString().slice(0, 10)} → ` +
-      `${new Date(weekly[weekly.length - 1].time).toISOString().slice(0, 10)}`
+      `[Fyers] ${symbol} ${label}: ${daily.length} daily → ${bars.length} ${label.toLowerCase()} | ` +
+      `${new Date(bars[0].time).toISOString().slice(0, 10)} → ` +
+      `${new Date(bars[bars.length - 1].time).toISOString().slice(0, 10)}`
     );
-    return weekly;
+    return bars;
   }
 
   // ── DAILY ────────────────────────────────────────────────────────────────
@@ -564,4 +573,5 @@ async function validateSymbols(symbols) {
 module.exports = {
   loadToken, saveToken, getAuthURL, getRedirectUri, generateToken, validateToken, fetchCandles, fetchOptionChain,
   validateSymbols, setExcludedSymbols, isExcludedSymbol,
+  fetchDailyCandles, FULL_HISTORY_DAILY_LOOKBACK_DAYS,
 };

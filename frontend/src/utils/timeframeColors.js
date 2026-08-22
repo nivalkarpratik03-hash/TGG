@@ -1,4 +1,3 @@
-
 /** @type {Record<number, string>} resolution (minutes) → hex color */
 export const TIMEFRAME_COLORS = {
   1: "#ff9500", // 1m  → Orange
@@ -8,13 +7,14 @@ export const TIMEFRAME_COLORS = {
   60: "#ff1493", // 1H  → Neon Pink
   1440: "#00e5ff", // 1D  → Cyan Blue  
   10080: "#ffff00", // 1W  → Yellow
+  43200: "#ff6ec7", // 1M  → Bubblegum Pink
 };
 
 /**
  * Returns the configured color for a given resolution.
  * Falls back to a neutral default so the app never breaks on an unknown TF.
  *
- * @param {number|string} resolution  – resolution in minutes (1, 3, 5, 15, 60, 1440, 10080)
+ * @param {number|string} resolution  – resolution in minutes (1, 3, 5, 15, 60, 1440, 10080, 43200)
  * @param {string}        [fallback]  – color to use when resolution is unknown
  * @returns {string} hex color string
  */
@@ -34,4 +34,5 @@ export const TIMEFRAME_LABELS = {
   60: "1H",
   1440: "1D",
   10080: "1W",
+  43200: "1M",
 };

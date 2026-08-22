@@ -18,6 +18,7 @@ const RESOLUTION_LABELS = {
   60:    "1h",
   1440:  "1D",
   10080: "1W",
+  43200: "1M",
 };
 
 /**
@@ -42,4 +43,5 @@ export const TIMEFRAMES = [
   { label: "1h",  value: 60    },
   { label: "1D",  value: 1440  },
   { label: "1W",  value: 10080 },
+  { label: "1M",  value: 43200 },
 ];

@@ -143,7 +143,7 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
   // ── Edit drag for fib ───────────────────────────────────────────────────────
   const editDragRef = useRef({
     active: false, id: null, mode: null,
-    startCoord: null, origP1: null, origP2: null,
+    startCoord: null, origP1: null, origP2: null, origDrawing: null,
     isShared: false,
   });
 
@@ -323,9 +323,18 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
 
   useEffect(() => { hitTestRef.current = hitTest; }, [hitTest]);
 
-  // ── Fib hit detail ───────────────────────────────────────────────────────
-  const fibHitDetail = useCallback((drawing, px, py) => {
-    if (drawing.type !== "fibRetracement") return null;
+  // ── Line hit detail (body vs endpoint) ────────────────────────────────────
+  // Shared by BOTH trendline and fibRetracement — the two "two-point" (p1/p2)
+  // drawing types. This is the "one global/common logic instead of separate
+  // logic per feature" fix: trendline used to have NO drag-to-move support
+  // at all (only fibRetracement did), because onWindowMouseDown only ever
+  // checked `type === "fibRetracement"` here. Now both types share this one
+  // function AND the one generic editDrag "move"/"p1"/"p2" pipeline in
+  // onWindowMouseMove below (which already never special-cased type — it
+  // just reads/writes d.p1/d.p2 generically — so extending mousedown to
+  // recognize trendlines was the entire fix).
+  const lineHitDetail = useCallback((drawing, px, py) => {
+    if (drawing.type !== "fibRetracement" && drawing.type !== "trendline") return null;
     const dtc = dataToCoordRef.current;
     if (!dtc) return null;
     const c1 = dtc(drawing.p1.time, drawing.p1.price, drawing.p1.barOffset ?? null);
@@ -335,6 +344,13 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
     if (ax1 != null && Math.hypot(px - ax1, py - (c1.y ?? 0)) < 12) return "p1";
     if (ax2 != null && Math.hypot(px - ax2, py - (c2.y ?? 0)) < 12) return "p2";
     if (ax1 == null && ax2 == null) return null;
+
+    if (drawing.type === "trendline") {
+      if (c1.y == null || c2.y == null || ax1 == null || ax2 == null) return null;
+      return distToSegment(px, py, ax1, c1.y, ax2, c2.y) < HIT_SLOP ? "body" : null;
+    }
+
+    // fibRetracement body = near any of its horizontal level lines
     const bx1 = Math.min(ax1 ?? 0, ax2 ?? 0);
     const bx2 = Math.max(ax1 ?? 0, ax2 ?? 0);
     if (px < bx1 || px > bx2) return null;
@@ -347,7 +363,38 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
     return null;
   }, []);
 
-  useEffect(() => { fibHitDetailRef.current = fibHitDetail; }, [fibHitDetail]);
+  useEffect(() => { fibHitDetailRef.current = lineHitDetail; }, [lineHitDetail]);
+
+  // ── Shift-move offset (freehand + text) ───────────────────────────────────
+  // Freehand and text are single/multi "point cloud" shapes rather than
+  // p1/p2 shapes, so they can't reuse the p1/p2 move logic directly — but
+  // they DO reuse the exact same dPrice/dTime/dPx delta-from-drag-start
+  // computation the p1/p2 "move" mode uses (see onWindowMouseMove's
+  // editDragRef.current.mode === "shift" branch below), just applied to a
+  // different point shape. This is the other half of "one global drag
+  // engine instead of separate per-feature logic": one offset-computation,
+  // reused by every movable drawing type via a small per-shape apply step.
+  const applyMoveOffset = useCallback((orig, dPrice, dTime, dPx, dPy) => {
+    const shiftPt = (p) => ({
+      ...p,
+      price: p.price != null ? p.price + dPrice : p.price,
+      time: p.time != null ? p.time + dTime : p.time,
+      x: p.x != null ? p.x + dPx : p.x,
+      y: p.y != null ? p.y + dPy : p.y,
+    });
+    if (orig.type === "freehand") return { ...orig, points: (orig.points || []).map(shiftPt) };
+    if (orig.type === "text") {
+      return {
+        ...orig,
+        price: orig.price != null ? orig.price + dPrice : orig.price,
+        time: orig.time != null ? orig.time + dTime : orig.time,
+        x: orig.x != null ? orig.x + dPx : orig.x,
+        y: orig.y != null ? orig.y + dPy : orig.y,
+      };
+    }
+    return orig;
+  }, []);
+
 
   // ── Delete a drawing ──────────────────────────────────────────────────────
   const deleteDrawing = useCallback((id, e) => {
@@ -497,7 +544,29 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
         setSelectedHL(null);
       }
 
-      if (clickedDrawing?.type === "fibRetracement") {
+      // Freehand / text — pixel-delta "shift" move (see applyMoveOffset above).
+      if (clickedDrawing?.type === "freehand" || clickedDrawing?.type === "text") {
+        e.stopPropagation();
+        e.preventDefault();
+        const pt = coordToDataRef.current?.(x, y) ?? { price: null, time: null };
+        editDragRef.current = {
+          active: true,
+          id: clickedDrawing.id,
+          mode: "shift",
+          startCoord: { price: pt.price, time: pt.time, x, y },
+          origDrawing: clickedDrawing.type === "freehand"
+            ? { type: "freehand", points: (clickedDrawing.points || []).map((p) => ({ ...p })) }
+            : { type: "text", price: clickedDrawing.price, time: clickedDrawing.time, x: clickedDrawing.x, y: clickedDrawing.y },
+          isShared: !!clickedDrawing.linked || sharedDrawings.some((d) => d.id === clickedDrawing.id),
+        };
+        setLocalDrawings((d) => [...d]);
+        return;
+      }
+
+      // Trendline / fibRetracement — shared p1/p2 "move"/"p1"/"p2" pipeline
+      // (see lineHitDetail above — this used to be fibRetracement-only,
+      // which is why trendlines couldn't be dragged with the mouse before).
+      if (clickedDrawing?.type === "fibRetracement" || clickedDrawing?.type === "trendline") {
         const detail = fibHitDetailRef.current?.(clickedDrawing, x, y);
         if (!detail) return;
         e.stopPropagation();
@@ -562,6 +631,24 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
           const newPrice = ed.origPrice + dPrice;
           const updated = [...localDrawingsRef.current];
           updated[idx] = { ...updated[idx], price: newPrice };
+          localDrawingsRef.current = updated;
+          setLocalDrawings([...updated]);
+          return;
+        }
+
+        if (ed.mode === "shift") {
+          if (!ed.moved && (Math.abs(x - ed.startCoord.x) > 3 || Math.abs(y - ed.startCoord.y) > 3)) {
+            ed.moved = true;
+          }
+          const idx = localDrawingsRef.current.findIndex((d) => d.id === ed.id);
+          if (idx < 0) return;
+          const dPrice = cur.price - ed.startCoord.price;
+          const dTime = cur.time != null && ed.startCoord.time != null ? cur.time - ed.startCoord.time : 0;
+          const dPx = x - ed.startCoord.x;
+          const dPy = y - ed.startCoord.y;
+          const moved = applyMoveOffset(ed.origDrawing, dPrice, dTime, dPx, dPy);
+          const updated = [...localDrawingsRef.current];
+          updated[idx] = { ...updated[idx], ...moved };
           localDrawingsRef.current = updated;
           setLocalDrawings([...updated]);
           return;
@@ -634,11 +721,13 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
       if (svgEl) {
         if (hitId != null) {
           const hd = allForHit.find((d) => d.id === hitId);
-          if (hd?.type === "fibRetracement") {
+          if (hd?.type === "fibRetracement" || hd?.type === "trendline") {
             const detail = fibHitDetailRef.current?.(hd, x, y);
             svgEl.style.cursor = (detail === "p1" || detail === "p2") ? "ew-resize" : "move";
           } else if (hd?.type === "horizontal") {
             svgEl.style.cursor = "ns-resize";
+          } else if (hd?.type === "freehand" || hd?.type === "text") {
+            svgEl.style.cursor = "move";
           } else {
             svgEl.style.cursor = "pointer";
           }
@@ -671,7 +760,7 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
           }
           editDragRef.current = {
             active: false, id: null, mode: null,
-            startCoord: null, origP1: null, origP2: null, isShared: false,
+            startCoord: null, origP1: null, origP2: null, origDrawing: null, isShared: false,
           };
           setLocalDrawings((d) => [...d]);
           return;
@@ -679,7 +768,7 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
 
         editDragRef.current = {
           active: false, id: null, mode: null,
-          startCoord: null, origP1: null, origP2: null, isShared: false,
+          startCoord: null, origP1: null, origP2: null, origDrawing: null, isShared: false,
         };
         saveDrawings(localDrawingsRef.current, panelKey);
         publishLinked(localDrawingsRef.current);
@@ -732,7 +821,7 @@ const DrawingOverlay = forwardRef(function DrawingOverlay(
     // getAllDrawingsForHit / publishLinked / commitLocalDrawings are stable
     // useCallback instances. svgRelCoord and hidden are the real triggers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hidden, svgRelCoord, getAllDrawingsForHit, publishLinked, commitLocalDrawings, setSelectedTool]);
+  }, [hidden, svgRelCoord, getAllDrawingsForHit, publishLinked, commitLocalDrawings, setSelectedTool, applyMoveOffset]);
 
   const selectedToolRef = useRef(selectedTool);
   useEffect(() => {

@@ -26,6 +26,7 @@ import { useTheme } from "../../App";
 import { BACKEND } from "../../config";
 import { getOptionRoot, getStrikeStep, nearestStrikeWithHysteresis } from "../../utils/optionsChain";
 import { TIMEFRAMES } from "../../utils/formatResolution";
+import { resolveTypedTimeframe } from "../../utils/timeframeShortcut";
 import "./AtmWorkspace.css";
 
 // Same debounce window as the single-panel Auto ATM feature in
@@ -414,12 +415,13 @@ export default function AtmWorkspace({
   }, [focused, ceStrikes, peStrikes, ceSymbol, peSymbol]);
 
   // ── Type-a-number → switch the FOCUSED column's timeframe (Fyers-style) ──
-  // Same validation ChartPanel's applyTypedTimeframe uses in ChartsPage.js
-  // (only ever applies a value from TIMEFRAMES, same warning message) —
-  // just re-targeted to whichever of ceResolution/midResolution/peResolution
-  // belongs to the focused column, instead of a single panel's resolution.
-  // The digit-buffer/timer itself stays owned by ChartsPage.js; this only
-  // supplies "what to do with already-parsed digits", registered below.
+  // Validation now lives in ONE shared place — utils/timeframeShortcut.js's
+  // resolveTypedTimeframe(), the same function ChartPanel's applyTypedTimeframe
+  // in ChartsPage.js calls. This function only owns what's specific to ATM
+  // Workspace: requiring a focused column first, then re-targeting whichever
+  // of ceResolution/midResolution/peResolution belongs to it. The digit-buffer/
+  // timer itself stays owned by ChartsPage.js; this only supplies "what to do
+  // with already-parsed digits", registered below.
   const [tfWarning, setTfWarning] = useState(null);
   useEffect(() => {
     if (!tfWarning) return;
@@ -432,10 +434,9 @@ export default function AtmWorkspace({
       setTfWarning("Click a column (CE / Underlying / PE) to focus it first.");
       return;
     }
-    const n = parseInt(digits, 10);
-    const supported = TIMEFRAMES.some((tf) => tf.value === n);
-    if (!Number.isFinite(n) || !supported) {
-      setTfWarning(`"${digits}" isn't a supported timeframe (1, 3, 5, 15, 60, 1440, 10080).`);
+    const { resolution: n, error } = resolveTypedTimeframe(digits);
+    if (error) {
+      setTfWarning(error);
       return;
     }
     if (focused === "ce") setCeResolution(n);
@@ -534,4 +535,4 @@ export default function AtmWorkspace({
       </div>
     </div>
   );
-}
+} 

@@ -29,6 +29,7 @@ import { useSocket } from "../../hooks/useSocket";
 import { buildDefaultIndicators } from "../../indicators/indicatorRegistry";
 import { loadPref, savePref } from "../../utils/prefs";
 import { formatResolution, TIMEFRAMES } from "../../utils/formatResolution";
+import { resolveTypedTimeframe } from "../../utils/timeframeShortcut";
 import { parseOptionSymbol, isOptionSymbol, getOptionRoot, getStrikeStep, nearestStrikeWithHysteresis, NSE_INDEX_TICKERS } from "../../utils/optionsChain";
 import { BACKEND } from "../../config";
 import { LAYOUTS } from "./layout/LayoutPicker";
@@ -372,18 +373,18 @@ const ChartPanel = memo(function ChartPanel({
   }, [shortcutWarning]);
 
   // ── Type-a-number → switch timeframe (Fyers-style) ─────────────────────────
-  // Only ever applies a SUPPORTED resolution (from TIMEFRAMES — the same list
-  // driving the timeframe pill buttons). Typing any number that isn't one of
-  // 1/3/5/15/60/1440/10080 does nothing and shows a brief warning — the
-  // chart stays exactly on its current timeframe, never a half-applied or
-  // invalid resolution. Also called (with "1440"/"10080"/"60") from the
-  // 1D/1W/1H letter-shortcut in the keydown handler above — same validation
-  // path either way, nothing special-cased for the letter entry point.
+  // Validation (parse digits, check against TIMEFRAMES, warning text) now
+  // lives in one shared place — utils/timeframeShortcut.js's
+  // resolveTypedTimeframe() — reused verbatim by AtmWorkspace.js's own
+  // applyTypedTimeframe. This function only owns what to DO with the
+  // result for a normal panel: apply the resolution and refresh. Also
+  // called (with "1440"/"10080"/"60") from the 1D/1W/1H letter-shortcut in
+  // the keydown handler above — same validation path either way, nothing
+  // special-cased for the letter entry point.
   const applyTypedTimeframe = useCallback((digits) => {
-    const n = parseInt(digits, 10);
-    const supported = TIMEFRAMES.some((tf) => tf.value === n);
-    if (!Number.isFinite(n) || !supported) {
-      setShortcutWarning(`"${digits}" isn't a supported timeframe (1, 3, 5, 15, 60, 1440, 10080).`);
+    const { resolution: n, error } = resolveTypedTimeframe(digits);
+    if (error) {
+      setShortcutWarning(error);
       return;
     }
     handleResolutionChange(n);

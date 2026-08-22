@@ -48,7 +48,7 @@ function createTickEngine({ io }) {
               try { const result = runSignalEngine(candles); state.setCache(symbol, res, candles, result); }
               catch (err) { console.error(`[Builder:${symbol}] Signal engine error res=${res}:`, err.message); }
             }
-            for (const res of [60, 1440, 10080]) {
+            for (const res of [60, 1440, 10080, 43200]) {
               const cache = state.getCache(symbol, res);
               if (!cache.candles.length) continue;
               const forming1m = b.getCandlesForResolution(1);
@@ -67,7 +67,7 @@ function createTickEngine({ io }) {
           setTimeout(() => {
             const b = candleBuilders.get(symbol);
             if (!b) return;
-            for (const res of [1, 3, 5, 15, 60, 1440, 10080]) {
+            for (const res of [1, 3, 5, 15, 60, 1440, 10080, 43200]) {
               const room = `res:${res}`;
               const roomSockets = io.sockets.adapter.rooms.get(room);
               if (!roomSockets?.size) continue;
@@ -108,7 +108,7 @@ function createTickEngine({ io }) {
   }
 
   function emitFinalCandle(symbol, finalizedCandle) {
-    for (const res of [1, 3, 5, 15, 60, 1440, 10080]) {
+    for (const res of [1, 3, 5, 15, 60, 1440, 10080, 43200]) {
       const room = `res:${res}`;
       const roomSockets = io.sockets.adapter.rooms.get(room);
       if (!roomSockets?.size) continue;
