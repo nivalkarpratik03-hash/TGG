@@ -42,6 +42,15 @@ const strategies = [
   // no separate engine/session/trend service files.
   require("./tgT5"),
 
+  // ── 9EMA Absorption / Flip Break — direct Pine port ──────────────────────
+  // Single self-contained file, same pattern as scannerS1.S2.S3.js / tgT5.js:
+  // the full 9EMA-pivot S/R band engine (regime state machine, band
+  // clustering/lifecycle, ABSORPTION watch-state) is ported and inlined in
+  // absorptionFlip.js itself. Detects two Pine alertconditions across the
+  // full candle history — "Absorbing RESISTANCE/SUPPORT broken" and
+  // "TREND FLIPPED UP/DOWN" — and returns them as a symbol's events/results.
+  require("./absorptionFlip"),
+
   // ── Add new strategies below ──────────────────────────────────
   // require("./breakoutStrategy"),
   // require("./divergenceStrategy"),
