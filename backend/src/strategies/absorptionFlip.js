@@ -382,17 +382,25 @@ class AbsorptionFlipEngine {
           const brkNow = b.isRes ? (close > brkLevel) : (close < brkLevel);
 
           // ── absorption-break check against the PRE-mutation snapshot ──
+          // `pokes` is captured here alongside `weak` — both are read BEFORE
+          // this bar's poke/hold/break mutation block below runs, same as
+          // `weak`/`wasAbsorb` already were, so it's the correct pre-mutation
+          // value, not double-counting this bar's own poke if one occurs.
+          // Two distinct Pine-verified numbers, not the same thing twice:
+          // `weak` = the weak-test count that flagged ABSORBING (the amber
+          // "ABSORBING R ×3" alert box), `pokes` = the band's own wick-through
+          // count (the "POKED ×N" band-state label). Scanner UI shows both.
           if (wasAbsorb) {
             if (b.isRes && prevAbsHi != null && close > prevAbsHi) {
               this.events.push({
                 type: "absorption_break", direction: "up", side: "resistance",
-                level: prevAbsHi, weak: b.weak, stepNo: b.stepNo, time: T[i], price: close, barIndex: i,
+                level: prevAbsHi, weak: b.weak, pokes: b.pokes, stepNo: b.stepNo, time: T[i], price: close, barIndex: i,
               });
             }
             if (!b.isRes && prevAbsLo != null && close < prevAbsLo) {
               this.events.push({
                 type: "absorption_break", direction: "down", side: "support",
-                level: prevAbsLo, weak: b.weak, stepNo: b.stepNo, time: T[i], price: close, barIndex: i,
+                level: prevAbsLo, weak: b.weak, pokes: b.pokes, stepNo: b.stepNo, time: T[i], price: close, barIndex: i,
               });
             }
           }
@@ -457,10 +465,20 @@ class AbsorptionFlipEngine {
         weak: b.weak, stepNo: b.stepNo, top: b.top, bot: b.bot,
       }));
 
+    // Current ATR (most recent non-null value) — a single scalar for the
+    // whole symbol, not per-band. Deliberate: what matters for "how close
+    // is price to breaking this, right now" is TODAY's volatility regime,
+    // not the ATR from whenever each band happened to form.
+    let lastAtr = null;
+    for (let k = n - 1; k >= 0; k--) {
+      if (atrArr[k] != null) { lastAtr = atrArr[k]; break; }
+    }
+
     const finalState = {
       regime: this.regime === 1 ? "up" : this.regime === -1 ? "down" : "none",
       flipLevel: this.regime === 1 ? this.refSWL : this.regime === -1 ? this.refSWH : null,
       liveAbsorbing,
+      atr: lastAtr,
     };
 
     return { events: this.events, finalState };

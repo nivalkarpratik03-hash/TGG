@@ -26,6 +26,8 @@ import {
 } from "./mwScanHelpers";
 import { buildScannerRows } from "./t5ResultShape";
 import T5ScannerPanel from "./T5ScannerPanel";
+import AbsorptionScannerPanel from "./AbsorptionScannerPanel";
+import { buildAbsorptionRows } from "./absorptionResultShape";
 import "./ScannerPage.css";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -88,6 +90,14 @@ function openChart(symbol, timeframe, mw) {
 
 function openT5Chart(symbol, timeframe) {
   window.open(buildChartUrl(symbol, timeframe, null, { t5: true }), "_blank");
+}
+
+function openAbsorptionChart(symbol, timeframe) {
+  // No mw object (this strategy isn't motherwave-driven) and no special
+  // chart flag needed — buildChartUrl already handles mw=null cleanly
+  // (see mwScanHelpers.js), same as openT5Chart's pattern minus the
+  // t5-specific opts flag.
+  window.open(buildChartUrl(symbol, timeframe, null), "_blank");
 }
 
 // ─── MWCard — one stock in the motherwave dashboard ───────────────────────────
@@ -462,6 +472,15 @@ export default function ScannerPage() {
   // (T5ScannerPanel) instead of going through SignalsTable/TypeSignalsTable.
   const isT5 = activeStrategy === "tg-t5";
 
+  // 9EMA Absorption / Flip Break — same self-contained-panel treatment as
+  // T5 above: its own event/state shape (events[]/results[]/state), not
+  // s1s2s3's or type's patternStage vocabulary, so it gets its own branch
+  // + its own panel (AbsorptionScannerPanel) instead of SignalsTable.
+  // Matched by id directly, same as isT5 — absorptionFlip.js exports
+  // id: "absorption-flip" (see strategyRegistry.js), no group field
+  // needed for this check.
+  const isAbsorption = activeStrategy === "absorption-flip";
+
   // Dropdown-eligible strategies only — excludes variant:"single" entries
   // (type-e/type-r/type-f), which are tab-only, reachable via the R/E/F
   // buttons next to Results/Upcoming instead. Previously the dropdown
@@ -636,6 +655,15 @@ export default function ScannerPage() {
     [results, isT5]
   );
 
+  // Absorption/Flip — reshape raw scan() results (event log + engine
+  // state) into Results/Upcoming/History for AbsorptionScannerPanel.
+  // No-op (empty arrays) whenever isAbsorption is false, same guard
+  // pattern as t5Rows above.
+  const absorptionRows = useMemo(
+    () => (isAbsorption ? buildAbsorptionRows(results) : { results: [], upcoming: [], history: [] }),
+    [results, isAbsorption]
+  );
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="scanner-page">
@@ -782,6 +810,16 @@ export default function ScannerPage() {
                 scannedCount={results.length}
                 resolution={tfLabel}
                 onRowClick={(symbol) => openT5Chart(symbol, timeframe)}
+              />
+            ) : isAbsorption ? (
+              // Same self-contained treatment as T5 above — its own
+              // Results/Upcoming/History tabs and stats row, replacing the
+              // tabs bar + SignalsTable/TypeSignalsTable branch entirely.
+              <AbsorptionScannerPanel
+                rows={absorptionRows}
+                scannedCount={results.length}
+                resolution={tfLabel}
+                onRowClick={(symbol) => openAbsorptionChart(symbol, timeframe)}
               />
             ) : (
               <>
