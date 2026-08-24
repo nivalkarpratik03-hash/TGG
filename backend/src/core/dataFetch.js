@@ -266,7 +266,7 @@ function createDataFetch({ io, tickEngine }) {
         await new Promise((r) => setTimeout(r, 1200));
       }
     }
-    console.log(`[Staleness] ${label} sweep complete — ${staleFound} symbol(s) backfilled out of ${symbols.length} checked`);
+    // Summary now logged in catchUp.js with start/end timestamps
     return { checked: symbols.length, backfilled: staleFound };
   }
 

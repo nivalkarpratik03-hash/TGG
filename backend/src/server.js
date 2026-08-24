@@ -1,4 +1,3 @@
-require("./utils/fileLogger"); // MUST be first — mirrors every console line to backend/logs/run-*.log
 require("dotenv").config();
 const express = require("express");
 const http = require("http");
