@@ -8,7 +8,7 @@
 const fs = require("fs");
 const path = require("path");
 const { fyersModel } = require("fyers-api-v3");
-const { vlog } = require("../utils/verboseLog");
+const { vlog, vwarn } = require("../utils/verboseLog");
 const {
   DAILY_RESOLUTION, WEEKLY_RESOLUTION, MONTHLY_RESOLUTION,
   aggregateDailyCandles,
@@ -412,7 +412,7 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
     }
     const parsed = parseIntraday(res);
     if (parsed && parsed.length > 0) allCandles.push(...parsed);
-    else console.warn(`[Fyers] Intraday chunk empty: ${res?.message || res?.errmsg || "unknown"}`);
+    else vwarn(`[Fyers] Intraday chunk empty: ${res?.message || res?.errmsg || "unknown"}`);
   }
 
   if (allCandles.length === 0) throw new Error(`Fyers getHistory returned no candles for ${symbol} res=${fyersResolution}`);
@@ -488,7 +488,7 @@ async function fetchOptionChain(underlyingSymbol, opts = {}) {
         ltp: Number(s.ltp) || 0,
         oi: Number(s.oi) || 0,
       }));
-    console.log(`[Fyers] fetchOptionChain ${underlyingSymbol}: ${expiries.length} expiries, ${strikes.length} real strike symbols`);
+    vlog(`[Fyers] fetchOptionChain ${underlyingSymbol}: ${expiries.length} expiries, ${strikes.length} real strike symbols`);
     return { expiries, strikes };
   } catch (err) {
     console.warn(`[Fyers] fetchOptionChain error for ${underlyingSymbol}:`, err.message);

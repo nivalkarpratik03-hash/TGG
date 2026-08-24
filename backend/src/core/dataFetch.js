@@ -21,7 +21,7 @@ const { deriveTimeframe, istDateKey } = require("../services/candleBuilder");
 const { DAILY_RESOLUTION, isDailyOrHigher, aggregateDailyCandles } = require("../services/timeframeAggregator");
 const { isTradingDay, isAnyMarketLive } = require("../fyers/tickStream");
 const state = require("./state");
-const { vlog } = require("../utils/verboseLog");
+const { vlog, vwarn } = require("../utils/verboseLog");
 
 // ─── Derivative-symbol detection (DB optional, same guarded pattern as
 // tickEngine.js's isOptionSymbol/deriveUnderlyingSymbol) ────────────────────
@@ -240,6 +240,7 @@ function createDataFetch({ io, tickEngine }) {
   async function sweepStalenessForSymbols(symbols, label = "sweep") {
     console.log(`[Staleness] ${label}: checking ${symbols.length} symbol(s) for staleness...`);
     let staleFound = 0;
+    const failed = [];
     // Concurrency=3 / 1200ms between batches to stay comfortably under
     // Fyers' rate limit across a long sweep (a faster 5/500ms setting was
     // seen failing near the tail end of a 205-symbol list in production
@@ -259,7 +260,8 @@ function createDataFetch({ io, tickEngine }) {
           const after = await state.db.getLatestCandle(symbol, 1).catch(() => null);
           if (after && after.time > before) staleFound++;
         } catch (e) {
-          console.warn(`[Staleness] ${label} sweep error for ${symbol}:`, e.message);
+          vwarn(`[Staleness] ${label} sweep error for ${symbol}:`, e.message);
+          failed.push(symbol);
         }
       }));
       if (i + SWEEP_CONCURRENCY < symbols.length) {
@@ -267,7 +269,7 @@ function createDataFetch({ io, tickEngine }) {
       }
     }
     // Summary now logged in catchUp.js with start/end timestamps
-    return { checked: symbols.length, backfilled: staleFound };
+    return { checked: symbols.length, backfilled: staleFound, failed };
   }
 
   // SINGLE SOURCE OF TRUTH for "get me candles for symbol+resolution".

@@ -104,7 +104,12 @@ function createCatchUp({ dataFetch }) {
       console.log(`[Staleness] ${trigger}: started ${startTime}`);
       const r = await dataFetch.sweepStalenessForSymbols(curatedSymbols, trigger);
       const endTime = new Date().toISOString();
-      console.log(`[Staleness] ${trigger}: ended ${endTime} — ${r.backfilled} backfilled out of ${r.checked} checked`);
+      const upToDate = r.checked - r.backfilled - (r.failed?.length || 0);
+      const failedStr = r.failed && r.failed.length > 0 ? `, FAILED ${r.failed.length} (${r.failed.slice(0, 5).join(", ")}${r.failed.length > 5 ? "..." : ""})` : "";
+      const statusStr = r.backfilled === 0 && upToDate === r.checked
+        ? `all ${r.checked} symbols up to date`
+        : `${r.backfilled} backfilled, ${upToDate} up to date`;
+      console.log(`[Staleness] ${trigger}: ended ${endTime} — ${statusStr}${failedStr}`);
     } finally {
       _stalenessInFlight = false;
     }
