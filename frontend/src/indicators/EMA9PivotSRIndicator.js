@@ -46,6 +46,23 @@ const CFG = {
   showFlipLine: true,
   showTris: true,
 
+  // Ceiling/floor fire-gate + ABSORPTION watch-state — ported from the
+  // newer "SR_Absorption_Pinaka_22_Augh" Pine source, same defaults as
+  // backend/src/strategies/absorptionFlip.js's AbsorptionFlipEngine, so
+  // the chart and the scanner compute IDENTICAL bands/events/timestamps
+  // off the same candle history. See absorptionFlip.js's file header for
+  // the "pre-mutation snapshot" Pine-quirk note this mirrors exactly.
+  ceilOn: true,
+  ceilTol: 0.25,
+  absorbOn: true,
+  weakBodyATR: 0.40,
+  absN: 3,
+  absMinPokes: 1,
+  resetBodyATR: 0.80,
+  rejAway: 0.50,
+  absDecay: true,
+  absMaxATR: 6.0,                // declared for parity — unused in the engine, same as backend
+
   extMode: "untilBroken",        // "Until broken" (default)
   pokeMode: "farEdge",           // "Wick beyond the far edge" (default)
   brkBuffer: 0.0,
@@ -226,6 +243,13 @@ export function calcEMA9PivotSRPure(candles, emaHighsIn, emaLowsIn) {
   const resPub = new Array(13).fill(0), resBrk = new Array(13).fill(0);
   let regime = 0, legNo = 1;
   let refSWH = null, refSWL = null;
+  // Ceiling/floor fire-gate state (see CFG.ceilOn) + the event log this
+  // engine now emits — identical shape to absorptionFlip.js's
+  // { type, direction, side, level, weak, stepNo, time, price, barIndex }
+  // so a symbol's Absorption/Breakthrough signal in the Scanner lines up
+  // exactly with what this chart indicator computes for the same candles.
+  let lastPH = null, lastPL = null;
+  const events = [];
   let pRTop = null, pRBot = null, pRHigh = null, pRPierce = 0, pRBar = null, pRPivLow = null, pRZone = "E";
   let pSTop = null, pSBot = null, pSLow = null, pSPierce = 0, pSBar = null, pSZone = "E";
   const phTop = [], phBot = [], phPx = [], phPrc = [], phBar = [], phZn = [];
@@ -268,6 +292,8 @@ export function calcEMA9PivotSRPure(candles, emaHighsIn, emaLowsIn) {
         touches: 0, pokes: 0, lastSeen: curI, broken: false, frozen: false,
         bwBirth, maxAway: 0, pierce, trend: isRes ? dnOK[curI] : upOK[curI],
         rightBar: curI, score: 0, stateText: "",
+        // ABSORPTION watch-state — mirrors absorptionFlip.js's Band shape.
+        weak: 0, absorb: false, absHi: null, absLo: null,
       });
       const si = Math.min(st, 12);
       if (isRes) resPub[si]++; else supPub[si]++;
@@ -307,6 +333,7 @@ export function calcEMA9PivotSRPure(candles, emaHighsIn, emaLowsIn) {
   for (let i = 0; i < n; i++) {
     const hi = highs[i], lo = lows[i], cl = closes[i], op = candles[i].open;
     if (emaH[i] == null || emaL[i] == null || bw[i] == null || atr[i] == null) continue;
+    const bodyN = Math.abs(cl - op); // needed by both the absorption band loop below and the SHORT/LONG entry logic further down
 
     // ── pivot confirmation (lags pivR bars, like ta.pivotlow/pivothigh) ───────
     const pivotBarIndex = i - CFG.pivR;
@@ -368,6 +395,7 @@ export function calcEMA9PivotSRPure(candles, emaHighsIn, emaLowsIn) {
 
     // ── the state machine ──────────────────────────────────────────────────────
     let flippedDn = false, flippedUp = false;
+    const prevRefSWL = refSWL, prevRefSWH = refSWH; // pre-mutation snapshot for the flip_break event's `level`
 
     if (regime === 0) {
       if (newPL && pSLow != null) { regime = 1; refSWL = pSLow; }
@@ -384,6 +412,10 @@ export function calcEMA9PivotSRPure(candles, emaHighsIn, emaLowsIn) {
         refSWH = pRHigh ?? (hh === -Infinity ? hi : hh);
       }
       legStartBar = i;
+      events.push({
+        type: "flip_break", direction: "down", side: "support",
+        level: prevRefSWL, time: candles[i].time, price: cl, barIndex: i,
+      });
     } else if (regime === -1 && refSWH != null && cl > refSWH) {
       regime = 1; legNo += 1; flippedUp = true;
       if (CFG.scanTops) scanBelow(pSLow ?? cl, legStartBar, CFG.maxScan, i);
@@ -394,17 +426,33 @@ export function calcEMA9PivotSRPure(candles, emaHighsIn, emaLowsIn) {
         refSWL = pSLow ?? (ll === Infinity ? lo : ll);
       }
       legStartBar = i;
+      events.push({
+        type: "flip_break", direction: "up", side: "resistance",
+        level: prevRefSWH, time: candles[i].time, price: cl, barIndex: i,
+      });
     }
 
-    const supFires = newPL && !flippedUp && touchSup && (regime === 1 || (CFG.bothWays && pSZone === "M"));
-    const resFires = newPH && !flippedDn && touchRes && (regime === -1 || (CFG.bothWays && pRZone === "M"));
+    // ── ceiling / floor fire-gate — ported from the newer Pine source
+    // alongside absorption (absorptionFlip.js's ceilNow/floorNow) ────────────
+    const ceilNow = CFG.ceilOn && lastPH != null && newPH && highs[pivotBarIndex] <= lastPH + CFG.ceilTol * atr[i];
+    const floorNow = CFG.ceilOn && lastPL != null && newPL && lows[pivotBarIndex] >= lastPL - CFG.ceilTol * atr[i];
+    const supFires = newPL && !flippedUp && ((touchSup && (regime === 1 || (CFG.bothWays && pSZone === "M"))) || floorNow);
+    const resFires = newPH && !flippedDn && ((touchRes && (regime === -1 || (CFG.bothWays && pRZone === "M"))) || ceilNow);
     if (supFires) {
       addBand(pSTop, pSBot, false, pSPierce, pSBar, false, pSZone, i);
-      if (CFG.refMode === "ratchet") refSWL = refSWL == null ? pSLow : Math.max(refSWL, pSLow);
+      refSWL = refSWL == null ? pSLow : Math.max(refSWL, pSLow);
     }
     if (resFires) {
       addBand(pRTop, pRBot, true, pRPierce, pRBar, false, pRZone, i);
-      if (CFG.refMode === "ratchet") refSWH = refSWH == null ? pRHigh : Math.min(refSWH, pRHigh);
+    }
+    // NOTE: refSWH ratchets on EVERY newPH (not just resFires) below — this
+    // asymmetry with refSWL (which only ratchets on supFires, above) is
+    // intentional and matches absorptionFlip.js's AbsorptionFlipEngine.run()
+    // exactly, itself a direct port of the Pine source's own behaviour.
+    if (newPL) lastPL = lows[pivotBarIndex];
+    if (newPH) {
+      lastPH = highs[pivotBarIndex];
+      refSWH = refSWH == null ? pRHigh : Math.min(refSWH, pRHigh);
     }
 
     if (CFG.showTris) {
@@ -428,6 +476,13 @@ export function calcEMA9PivotSRPure(candles, emaHighsIn, emaLowsIn) {
       const brkLevel = b.isRes ? b.top + CFG.brkBuffer * atr[i] : b.bot - CFG.brkBuffer * atr[i];
 
       if (!b.broken) {
+        // pre-mutation snapshot — same fix absorptionFlip.js documents in
+        // its header: a band's `broken` flag (and absHi/absLo) must be read
+        // as they stood ENTERING this bar, BEFORE this bar's poke/hold/break
+        // mutation below, or the "absorption extreme got closed through"
+        // event is structurally unreachable (see that file's header note).
+        const wasAbsorb = b.absorb, prevAbsHi = b.absHi, prevAbsLo = b.absLo;
+
         if (b.isRes && lo < b.bot) b.maxAway = Math.max(b.maxAway, (b.bot - lo) / b.bwBirth);
         if (!b.isRes && hi > b.top) b.maxAway = Math.max(b.maxAway, (hi - b.top) / b.bwBirth);
 
@@ -437,6 +492,22 @@ export function calcEMA9PivotSRPure(candles, emaHighsIn, emaLowsIn) {
         const pokeNow = deepPoke || (CFG.pokeMode === "intoBand" && softPoke);
         const heldNow = softPoke && !pokeNow;
         const brkNow = b.isRes ? (cl > brkLevel) : (cl < brkLevel);
+
+        // ── absorption-break check against the PRE-mutation snapshot ──────
+        if (wasAbsorb) {
+          if (b.isRes && prevAbsHi != null && cl > prevAbsHi) {
+            events.push({
+              type: "absorption_break", direction: "up", side: "resistance",
+              level: prevAbsHi, weak: b.weak, stepNo: b.stepNo, time: candles[i].time, price: cl, barIndex: i,
+            });
+          }
+          if (!b.isRes && prevAbsLo != null && cl < prevAbsLo) {
+            events.push({
+              type: "absorption_break", direction: "down", side: "support",
+              level: prevAbsLo, weak: b.weak, stepNo: b.stepNo, time: candles[i].time, price: cl, barIndex: i,
+            });
+          }
+        }
 
         if (pokeNow) {
           b.pokes++; b.lastSeen = i;
@@ -454,9 +525,26 @@ export function calcEMA9PivotSRPure(candles, emaHighsIn, emaLowsIn) {
         } else if (reached) {
           b.lastSeen = i;
         }
+
+        // ── absorption weak/decisive tracking — mirrors absorptionFlip.js ──
+        if (CFG.absorbOn && (pokeNow || heldNow || reached)) {
+          const drove = b.isRes ? cl < b.bot - CFG.rejAway * atr[i] : cl > b.top + CFG.rejAway * atr[i];
+          const decisive = bodyN >= CFG.resetBodyATR * atr[i] && drove && (b.isRes ? cl < op : cl > op);
+          if (decisive) {
+            b.weak = CFG.absDecay ? Math.max(0, b.weak - 1) : 0;
+            if (b.weak < CFG.absN) b.absorb = false;
+          } else if (bodyN < CFG.weakBodyATR * atr[i]) {
+            b.weak += 1;
+            b.absHi = (b.absHi == null || hi > b.absHi) ? hi : b.absHi;
+            b.absLo = (b.absLo == null || lo < b.absLo) ? lo : b.absLo;
+            if (b.weak >= CFG.absN && b.pokes >= CFG.absMinPokes && !b.absorb) {
+              b.absorb = true;
+            }
+          }
+        }
       }
 
-      const drop = (b.broken && !CFG.keepBroken) || (i - b.lastSeen > CFG.expireBars);
+      const drop = (b.broken && !CFG.keepBroken) || (i - b.lastSeen > CFG.expireBars) || (!b.broken && scoreOf(b, i) < CFG.minScore);
       if (drop) { lib.splice(bi, 1); continue; }
       if (!b.frozen && CFG.extMode !== "forever") b.rightBar = i;
 
@@ -496,7 +584,6 @@ export function calcEMA9PivotSRPure(candles, emaHighsIn, emaLowsIn) {
     }
 
     // ── SHORT entry (rejection at resistance) ─────────────────────────────────
-    const bodyN = Math.abs(cl - op);
     const upWk = hi - Math.max(op, cl);
     const dnWk = Math.min(op, cl) - lo;
     const fullRed = cl < op && bodyN > 0 && (upWk + dnWk) <= CFG.wickRatio * bodyN;
@@ -618,6 +705,13 @@ export function calcEMA9PivotSRPure(candles, emaHighsIn, emaLowsIn) {
     stepStats,
     emaHighs: emaH,
     emaLows: emaL,
+    // Absorption-break / flip-break event log — SAME shape, SAME values as
+    // backend/src/strategies/absorptionFlip.js's scan().events for the same
+    // candle history, so the chart and the Scanner never disagree on when
+    // an Absorption/Breakthrough signal fired. Most-recent-first for
+    // convenience (mirrors absorptionFlip.js's `results` field).
+    events,
+    results: events.slice().reverse(),
   };
 }
 
