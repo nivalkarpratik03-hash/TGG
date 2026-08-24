@@ -60,17 +60,56 @@
   font-weight: 600;
   margin-top: 3px;
 }
-.af-val.purple { color: var(--af-accent); }
-.af-val.amber  { color: var(--af-amber); }
-.af-val.blue   { color: var(--af-accent); }
-.af-val.green  { color: var(--af-green); }
+
+.af-val.purple {
+  color: var(--af-accent);
+}
+
+.af-val.amber {
+  color: var(--af-amber);
+}
+
+.af-val.blue {
+  color: var(--af-accent);
+}
+
+.af-val.green {
+  color: var(--af-green);
+}
 
 /* ── Tabs ─────────────────────────────────────────────────────────── */
 .af-tabs {
   display: flex;
+  align-items: center;
   gap: 4px;
   border-bottom: 1px solid var(--af-border);
   margin-bottom: 0;
+}
+
+/* ── Download ─────────────────────────────────────────────────────── */
+.af-download-btn {
+  margin-left: auto;
+  align-self: center;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--af-border);
+  border-radius: 5px;
+  background: var(--af-card);
+  color: var(--af-mut);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.af-download-btn:hover:not(:disabled) {
+  background: var(--af-bg);
+  color: var(--af-ink);
+  border-color: var(--af-accent);
+}
+
+.af-download-btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
 }
 
 .af-tab {
@@ -84,23 +123,39 @@
   border-bottom: 2px solid transparent;
   font-family: inherit;
 }
+
 .af-tab.active {
   color: var(--af-ink);
   border-bottom-color: var(--af-accent);
 }
+
 .af-count {
   color: var(--af-mut2);
   font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   margin-left: 5px;
   font-size: 12px;
 }
-.af-tab.active .af-count { color: var(--af-accent); }
 
-.af-panel { display: none; }
-.af-panel.active { display: block; }
+.af-tab.active .af-count {
+  color: var(--af-accent);
+}
 
-.af-subrow { padding: 10px 2px 8px; }
-.af-sub { color: var(--af-mut); font-size: 12.5px; }
+.af-panel {
+  display: none;
+}
+
+.af-panel.active {
+  display: block;
+}
+
+.af-subrow {
+  padding: 10px 2px 8px;
+}
+
+.af-sub {
+  color: var(--af-mut);
+  font-size: 12.5px;
+}
 
 /* ── Table ────────────────────────────────────────────────────────── */
 .af-table-wrap {
@@ -126,8 +181,11 @@
   position: sticky;
   top: 0;
 }
+
 .af-table thead th.num,
-.af-table tbody td.num { text-align: right; }
+.af-table tbody td.num {
+  text-align: right;
+}
 
 .af-table tbody td {
   padding: 10px 12px;
@@ -135,13 +193,31 @@
   font-size: 13px;
   vertical-align: middle;
 }
-.af-table tbody tr { cursor: pointer; }
-.af-table tbody tr:hover { background: var(--af-card); }
-.af-table tbody tr:last-child td { border-bottom: none; }
 
-.af-sr { color: var(--af-mut2); font-family: monospace; font-size: 12px; width: 32px; }
+.af-table tbody tr {
+  cursor: pointer;
+}
 
-.af-symbol { font-weight: 600; letter-spacing: .2px; }
+.af-table tbody tr:hover {
+  background: var(--af-card);
+}
+
+.af-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.af-sr {
+  color: var(--af-mut2);
+  font-family: monospace;
+  font-size: 12px;
+  width: 32px;
+}
+
+.af-symbol {
+  font-weight: 600;
+  letter-spacing: .2px;
+}
+
 .af-exch {
   color: var(--af-mut2);
   font-weight: 400;
@@ -157,10 +233,22 @@
   font-size: 12.5px;
   white-space: nowrap;
 }
-.af-broke.abs-up { color: var(--af-amber); }
-.af-broke.abs-dn { color: var(--af-amber); }
-.af-broke.flip-up { color: var(--af-green); }
-.af-broke.flip-dn { color: var(--af-red); }
+
+.af-broke.abs-up {
+  color: var(--af-amber);
+}
+
+.af-broke.abs-dn {
+  color: var(--af-amber);
+}
+
+.af-broke.flip-up {
+  color: var(--af-green);
+}
+
+.af-broke.flip-dn {
+  color: var(--af-red);
+}
 
 .af-sidetag {
   font-size: 10px;
@@ -173,10 +261,25 @@
   margin-left: 2px;
 }
 
-.af-level { font-family: monospace; font-weight: 600; }
-.af-poked { font-family: monospace; color: var(--af-mut); }
-.af-dist { font-family: monospace; color: var(--af-mut); }
-.af-dash { color: var(--af-mut2); }
+.af-level {
+  font-family: monospace;
+  font-weight: 600;
+}
+
+.af-poked {
+  font-family: monospace;
+  color: var(--af-mut);
+}
+
+.af-dist {
+  font-family: monospace;
+  color: var(--af-mut);
+}
+
+.af-dash {
+  color: var(--af-mut2);
+}
+
 .af-time {
   color: var(--af-mut);
   font-family: monospace;
@@ -202,4 +305,7 @@
   color: var(--af-mut);
   line-height: 1.7;
 }
-.af-legend b { color: var(--af-ink); }
+
+.af-legend b {
+  color: var(--af-ink);
+}

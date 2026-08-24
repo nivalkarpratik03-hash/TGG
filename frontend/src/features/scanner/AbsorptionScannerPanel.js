@@ -24,6 +24,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import React, { useState, useMemo } from "react";
+import * as XLSX from "xlsx";
 import { tickerOf, exchangeOf } from "../../utils/symbolMeta";
 import { fmt } from "../../utils/format";
 import "./AbsorptionScannerPanel.css";
@@ -72,6 +73,27 @@ function WatchBadge({ kind, side, regime }) {
 
 function Dash() {
   return <span className="af-dash">&mdash;</span>;
+}
+
+// ── plain-text versions of BreakBadge / WatchBadge — same logic, used
+// for the Excel export (cells need text, not JSX). ──────────────────────
+function breakLabelText(r) {
+  if (r.type === "absorption_break") {
+    const up = r.direction === "up";
+    const sideLabel = r.side === "resistance" ? "R" : "S";
+    return `${up ? "Absorption UP" : "Absorption DOWN"} - ${sideLabel} Broken${r.stepNo != null ? ` (${sideLabel}${r.stepNo})` : ""}`;
+  }
+  const up = r.direction === "up";
+  return `${up ? "Flip UP" : "Flip DOWN"} (${r.side === "resistance" ? "Resistance" : "Support"})`;
+}
+
+function watchLabelText(r) {
+  if (r.kind === "absorbing") {
+    const isRes = r.side === "resistance";
+    return `Absorbing ${isRes ? "R" : "S"}`;
+  }
+  const wouldFlipUp = r.regime === "down";
+  return wouldFlipUp ? "Watching Flip UP" : "Watching Flip DOWN";
 }
 
 function SymbolCell({ symbol }) {
@@ -163,7 +185,7 @@ export default function AbsorptionScannerPanel({
   rows = { results: [], upcoming: [], history: [] },
   scannedCount = 0,
   resolution = "15m",
-  onRowClick = () => {},
+  onRowClick = () => { },
 }) {
   const [tab, setTab] = useState("results");
 
@@ -176,6 +198,60 @@ export default function AbsorptionScannerPanel({
     const flipBreaks = results.filter((r) => r.type === "flip_break").length;
     return { absorptionBreaks, flipBreaks };
   }, [results]);
+
+  const hasAnyRows = results.length > 0 || upcoming.length > 0 || history.length > 0;
+
+  // ── Download — Results / Upcoming / History as three sheets in one
+  // .xlsx, columns mirroring exactly what's on screen in each tab. ───────
+  function handleDownload() {
+    if (!hasAnyRows) return;
+
+    const eventRows = (rowsArr) =>
+      rowsArr.map((r, i) => ({
+        "Sr": i + 1,
+        "Symbol": tickerOf(r.symbol),
+        "Exchange": exchangeOf(r.symbol),
+        "What Broke": breakLabelText(r),
+        "Level": r.level ?? "",
+        "Weak": r.weak != null ? r.weak : "",
+        "Poked": r.pokes != null ? r.pokes : "",
+        "Time": r.timeLabel || "",
+      }));
+
+    const upcomingRows = upcoming.map((r, i) => ({
+      "Sr": i + 1,
+      "Symbol": tickerOf(r.symbol),
+      "Exchange": exchangeOf(r.symbol),
+      "Watching": watchLabelText(r),
+      "Level": r.level ?? "",
+      "Close": r.close ?? "",
+      "Distance (ATR)": r.distanceATR != null ? Number(r.distanceATR.toFixed(2)) : "",
+      "Weak": r.kind === "absorbing" && r.weak != null ? r.weak : "",
+    }));
+
+    const resultsSheetRows = eventRows(results);
+    const historySheetRows = eventRows(history);
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(resultsSheetRows.length ? resultsSheetRows : [{ "Info": "Nothing broke today yet." }]),
+      "Results"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(upcomingRows.length ? upcomingRows : [{ "Info": "Nothing currently absorbing or being watched for a flip." }]),
+      "Upcoming"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(historySheetRows.length ? historySheetRows : [{ "Info": "No breaks from earlier days yet." }]),
+      "History"
+    );
+
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    XLSX.writeFile(wb, `absorption_scanner_${resolution}_${stamp}.xlsx`);
+  }
 
   return (
     <div className="af-wrap">
@@ -211,6 +287,15 @@ export default function AbsorptionScannerPanel({
         </button>
         <button className={`af-tab ${tab === "history" ? "active" : ""}`} onClick={() => setTab("history")}>
           History <span className="af-count">({history.length})</span>
+        </button>
+
+        <button
+          className="af-download-btn"
+          onClick={handleDownload}
+          disabled={!hasAnyRows}
+          title="Download Results, Upcoming & History as one Excel file"
+        >
+          ⬇ Download
         </button>
       </div>
 
