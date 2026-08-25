@@ -86,7 +86,7 @@ const derivativesStore = require("../../../database/src/store/derivativesStore")
 const { lastTuesdayOfMonth, lastThursdayOfMonth, parseDerivativeSymbol } = require("../../../database/src/parsing/symbolParser");
 const symbolsRouter = require("../routes/symbolsRouter");
 const { loadCuratedUnderlyings } = require("./curatedUnderlyingsLoader");
-const { VERBOSE } = require("../utils/verboseLog");
+const { VERBOSE, vlog } = require("../utils/verboseLog");
 
 const RESOLUTION = "1"; // 1-minute candles, same convention as every other fetchCandles caller in this repo
 const OPTION_LOOKBACK_DAYS_DEFAULT = 5; // for an already-tracked symbol, just catch up recent gaps
@@ -288,7 +288,7 @@ async function discoverStrikesSinceCheckpoint(entry, atmBandWidth, label, deps =
   }
   const gap = deriveStrikeGap(probe.strikes);
   if (!gap) {
-    log(`[GapFill] ${entry.underlying} — fewer than 2 strikes in the live chain, can't derive a real strike gap this call — falling back to point-in-time discovery for this checkpoint`);
+    vlog(`[GapFill] ${entry.underlying} — fewer than 2 strikes in the live chain, can't derive a real strike gap this call — falling back to point-in-time discovery for this checkpoint`);
     return discoverStrikes(entry, atmBandWidth, deps);
   }
 
@@ -307,12 +307,12 @@ async function discoverStrikesSinceCheckpoint(entry, atmBandWidth, label, deps =
   try {
     priceCandles = await fetchFn(priceSymbol, 1, 200000, lookbackDays);
   } catch (err) {
-    log(`[GapFill] ${entry.underlying} — couldn't fetch ${priceSymbol} price history (${err.message}) — falling back to point-in-time discovery for this checkpoint`);
+    vlog(`[GapFill] ${entry.underlying} — couldn't fetch ${priceSymbol} price history (${err.message}) — falling back to point-in-time discovery for this checkpoint`);
     return discoverStrikes(entry, atmBandWidth, deps);
   }
   const inWindow = (priceCandles || []).filter((c) => c.time >= sinceMs);
   if (inWindow.length === 0) {
-    log(`[GapFill] ${entry.underlying} — no ${priceSymbol} candles in the last ${lookbackDays}d, nothing to derive strike history from — falling back to point-in-time discovery for this checkpoint`);
+    vlog(`[GapFill] ${entry.underlying} — no ${priceSymbol} candles in the last ${lookbackDays}d, nothing to derive strike history from — falling back to point-in-time discovery for this checkpoint`);
     return discoverStrikes(entry, atmBandWidth, deps);
   }
 
@@ -336,7 +336,7 @@ async function discoverStrikesSinceCheckpoint(entry, atmBandWidth, label, deps =
   // covering the full derived range, not just the current atmBandWidth.
   const strikesEachSide = Math.max(atmBandWidth, Math.ceil(Math.max(currentAtm - minW, maxW - currentAtm) / gap) + 2);
 
-  log(`[GapFill] ${entry.underlying} — ${inWindow.length} price candle(s) since last checkpoint, ATM ranged across ${wantedArr.length} strike(s) (gap=${gap}, strikeCount=${strikesEachSide} for follow-up chain call)`);
+  vlog(`[GapFill] ${entry.underlying} — ${inWindow.length} price candle(s) since last checkpoint, ATM ranged across ${wantedArr.length} strike(s) (gap=${gap}, strikeCount=${strikesEachSide} for follow-up chain call)`);
 
   // Step D — one wide-enough chain call, filtered down to only the strikes
   // actually in `wanted`. Reuses the exact same dual-cycle (weekly+monthly)
@@ -367,7 +367,7 @@ async function discoverStrikesSinceCheckpoint(entry, atmBandWidth, label, deps =
 
   if (monthlyDate && !nearestIsMonthly) {
     const monthlyEntry = wide.expiries.find((e) => e.date === monthlyDate);
-    log(`[GapFill] ${entry.underlying} — nearest expiry wasn't monthly, fetching monthly chain separately (expiry=${monthlyDate})`);
+    vlog(`[GapFill] ${entry.underlying} — nearest expiry wasn't monthly, fetching monthly chain separately (expiry=${monthlyDate})`);
     await delayFn(INTER_STRIKE_DELAY_MS);
     const monthlyChain = await chainFn(lookupSymbol, { strikeCount: strikesEachSide, timestamp: monthlyEntry.expiry });
     results.push(...filterAndTag(monthlyChain, "monthly"));
@@ -381,7 +381,7 @@ function logMissingStrikes(entry, wantedArr, results, log) {
   const found = new Set(results.map((r) => r.strike_price));
   const missing = wantedArr.filter((w) => !found.has(w));
   if (missing.length) {
-    log(`[GapFill] ${entry.underlying} — ${missing.length} derived strike(s) not returned by the live chain (likely outside what's currently listed, or already expired within the window): ${missing.join(", ")}`);
+    vlog(`[GapFill] ${entry.underlying} — ${missing.length} derived strike(s) not returned by the live chain (likely outside what's currently listed, or already expired within the window): ${missing.join(", ")}`);
   }
 }
 
@@ -421,9 +421,9 @@ async function discoverStrikes(entry, atmBandWidth, deps = {}) {
 
   if (monthlyDate && !nearestIsMonthly) {
     const monthlyEntry = nearest.expiries.find((e) => e.date === monthlyDate);
-    log(`[GapFill] ${entry.underlying} — nearest expiry wasn't monthly, fetching monthly chain separately (expiry=${monthlyDate})`);
+    vlog(`[GapFill] ${entry.underlying} — nearest expiry wasn't monthly, fetching monthly chain separately (expiry=${monthlyDate})`);
     const monthlyChain = await chainFn(lookupSymbol, { strikeCount: atmBandWidth, timestamp: monthlyEntry.expiry });
-    log(`[GapFill] ${entry.underlying} — monthly chain fetch returned ${monthlyChain.strikes.length} strike(s)`);
+    vlog(`[GapFill] ${entry.underlying} — monthly chain fetch returned ${monthlyChain.strikes.length} strike(s)`);
     results.push(...monthlyChain.strikes.map((s) => ({ ...s, expiryType: "monthly" })));
   }
 
@@ -566,10 +566,10 @@ async function backfillStrikesForEntry(entry, strikes, label, log, delayFn, deps
       }
       // Per-strike success line — noisy at full scale (can be hundreds per
       // checkpoint), gated behind VERBOSE_LOGS. Failures below stay always-on.
-      if (VERBOSE) log(`[GapFill] ${label}: ${entry.underlying} — strike (${i + 1}/${strikes.length}) ${s.symbol}: ${r.isNew ? "new, retroactive backfill" : "existing, gap catch-up"}, ${r.stored} candle row(s) stored`);
+      if (VERBOSE) vlog(`[GapFill] ${label}: ${entry.underlying} — strike (${i + 1}/${strikes.length}) ${s.symbol}: ${r.isNew ? "new, retroactive backfill" : "existing, gap catch-up"}, ${r.stored} candle row(s) stored`);
     } catch (err) {
       strikesFailed++;
-      log(`[GapFill] ${label}: ${entry.underlying} — strike (${i + 1}/${strikes.length}) ${s.symbol}: FAILED (${err.message}) — skipping, continuing to remaining strikes`);
+      vlog(`[GapFill] ${label}: ${entry.underlying} — strike (${i + 1}/${strikes.length}) ${s.symbol}: FAILED (${err.message}) — skipping, continuing to remaining strikes`);
     }
     if (i < strikes.length - 1) await delayFn(INTER_STRIKE_DELAY_MS);
   }
@@ -648,11 +648,16 @@ async function runGapFillCheckpoint(label, deps = {}) {
   const discoveredFuturesSymbols = [];
   const discoveredOptionsSymbols = [];
 
-  log(`[GapFill] ${label}: starting checkpoint — ${scoped.length} underlying(s) (${scoped.filter((e) => e.assetClass === "INDEX").length} index, ${scoped.filter((e) => e.assetClass === "EQUITY").length} equity, ${scoped.filter((e) => e.assetClass === "COMMODITY").length} commodity)`);
+  // Summary with details now logged with start/end timestamps (see new "started" line below)
+  const startTime = new Date().toISOString();
+  console.log(`[GapFill] ${label}: started ${startTime} — ${scoped.length} underlying(s) (${scoped.filter((e) => e.assetClass === "INDEX").length} index, ${scoped.filter((e) => e.assetClass === "EQUITY").length} equity, ${scoped.filter((e) => e.assetClass === "COMMODITY").length} commodity)`);
 
   for (let idx = 0; idx < scoped.length; idx++) {
     const entry = scoped[idx];
-    log(`[GapFill] ${label}: (${idx + 1}/${scoped.length}) ${entry.underlying} — starting`);
+    // Progress line every 50, not per-underlying detail
+    if ((idx + 1) % 50 === 0 || idx === scoped.length - 1) {
+      console.log(`[GapFill] ${label}: (${idx + 1}/${scoped.length})`);
+    }
     let entryOptionsFound = 0, entryOptionsStored = 0, entryFuturesStored = 0, entryStrikesFailed = 0;
 
     // Futures — respected for EVERY remaining asset class (index, commodity).
@@ -682,7 +687,7 @@ async function runGapFillCheckpoint(label, deps = {}) {
         discoveredFuturesSymbols.push(...futSymbols);
       } catch (err) {
         failed.push({ underlying: entry.underlying, stage: "futures-resolve", error: err.message });
-        log(`[GapFill] ${label}: ${entry.underlying} — could not resolve futures symbols: ${err.message}`);
+        vlog(`[GapFill] ${label}: ${entry.underlying} — could not resolve futures symbols: ${err.message}`);
       }
       for (const sym of futSymbols) {
         try {
@@ -690,7 +695,7 @@ async function runGapFillCheckpoint(label, deps = {}) {
           if (r.stored > 0) { futuresBackfilled++; entryFuturesStored += r.stored; }
         } catch (err) {
           failed.push({ underlying: entry.underlying, stage: "futures", symbol: sym, error: err.message });
-          log(`[GapFill] ${label}: ${entry.underlying} — futures ${sym} FAILED: ${err.message}`);
+          vlog(`[GapFill] ${label}: ${entry.underlying} — futures ${sym} FAILED: ${err.message}`);
         }
       }
     }
@@ -702,7 +707,7 @@ async function runGapFillCheckpoint(label, deps = {}) {
         const strikes = await discoverStrikesSinceCheckpoint(entry, atmBandWidth, label, deps);
         entryOptionsFound = strikes.length;
         optionsDiscovered += strikes.length;
-        log(`[GapFill] ${label}: ${entry.underlying} — ${strikes.length} real strike(s) discovered, backfilling one at a time (${INTER_STRIKE_DELAY_MS}ms apart)`);
+        vlog(`[GapFill] ${label}: ${entry.underlying} — ${strikes.length} real strike(s) discovered, backfilling one at a time (${INTER_STRIKE_DELAY_MS}ms apart)`);
         const result = await backfillStrikesForEntry(entry, strikes, label, log, delayFn, deps);
         entryOptionsStored = result.storedRows;
         entryStrikesFailed = result.strikesFailed;
@@ -714,20 +719,19 @@ async function runGapFillCheckpoint(label, deps = {}) {
         // it's a known, intentional gap, not an unexpected error.
         if (err.message.includes("UNCONFIRMED")) {
           skipped.push({ underlying: entry.underlying, reason: err.message });
-          log(`[GapFill] ${label}: ${entry.underlying} — options SKIPPED (${err.message})`);
+          vvlog(`[GapFill] ${label}: ${entry.underlying} — options SKIPPED (${err.message})`);
         } else {
           failed.push({ underlying: entry.underlying, stage: "options", error: err.message });
-          log(`[GapFill] ${label}: ${entry.underlying} — options FAILED: ${err.message}`);
+          vvlog(`[GapFill] ${label}: ${entry.underlying} — options FAILED: ${err.message}`);
         }
       }
     }
 
-    log(`[GapFill] ${label}: (${idx + 1}/${scoped.length}) ${entry.underlying} — done (futures candle-rows stored ${entryFuturesStored}, strikes discovered ${entryOptionsFound}, option candle-rows stored ${entryOptionsStored}${entryStrikesFailed > 0 ? `, ${entryStrikesFailed} strike(s) failed and skipped` : ""})`);
-
     if (idx < scoped.length - 1) await delayFn(INTER_UNDERLYING_DELAY_MS);
   }
 
-  log(`[GapFill] ${label}: checkpoint complete — ${scoped.length} scanned, ${optionsDiscovered} strikes discovered, ${optionsBackfilled} option symbols backfilled, ${futuresBackfilled} futures symbols backfilled${failed.length ? `, FAILED ${failed.length}` : ""}${skipped.length ? `, SKIPPED ${skipped.length}` : ""}`);
+  const endTime = new Date().toISOString();
+  console.log(`[GapFill] ${label}: ended ${endTime} — options ${optionsBackfilled}, futures ${futuresBackfilled}${failed.length ? `, FAILED ${failed.length} (${failed.map((f) => f.underlying).join(", ")})` : ""}`);
 
   return {
     label,
@@ -737,11 +741,8 @@ async function runGapFillCheckpoint(label, deps = {}) {
     futuresBackfilled,
     skipped,
     failed,
-    // FIX (Blocker 2, 2026-08-06): real symbol strings for every currently
-    // discovered option/future contract this checkpoint touched — additive
-    // field, existing callers (integration test, gapFillScheduler.js)
-    // confirmed unaffected (checked via grep, neither does whole-object
-    // equality on the return value).
+    startTime,
+    endTime,
     discoveredSymbols: {
       futures: discoveredFuturesSymbols,
       options: discoveredOptionsSymbols,

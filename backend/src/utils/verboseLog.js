@@ -1,26 +1,21 @@
 /**
  * backend/src/utils/verboseLog.js
  *
- * Single on/off switch for the noisy PER-SYMBOL / PER-STRIKE log lines
- * ([Fyers] candle-fetch-per-symbol, [Staleness] per-symbol lag/backfill,
- * [GapFill] strike (n/N), [Recovery] per-symbol issue lines). All the
- * SUMMARY lines (checkpoint start/complete, sweep complete, counts) are
- * NOT gated by this — those stay on always, they're what you actually
- * want to see in a normal run.
+ * Terminal output verbosity gate — controls whether per-symbol detail lines are shown.
+ * Summary lines (checkpoint start/complete, counts) are ALWAYS shown regardless of this.
  *
- * OFF by default. Flip on with an env var when you need the full
- * line-by-line trace to debug something — no code edits, no
- * comment/uncomment hunting across 8 files:
+ * TERMINAL_VERBOSE_LOGS=true  → show SHORT SUMMARIES ONLY (per-symbol lines are suppressed)
+ * TERMINAL_VERBOSE_LOGS=false → show FULL DETAIL (per-symbol lines included)
  *
- *   VERBOSE_LOGS=true npm start          (one-off)
- *   # or add VERBOSE_LOGS=true to your .env file
+ * Default: true (short, clean output for normal operation)
  *
- * Every call site that used to be a raw console.log/log(...) for one of
- * those noisy per-symbol lines now calls vlog(...) instead. Nothing else
- * changed — same message text, same log level, just gated.
+ * Example:
+ *   TERMINAL_VERBOSE_LOGS=true npm start           (quiet mode, summaries only)
+ *   TERMINAL_VERBOSE_LOGS=false npm start          (debug mode, full per-symbol detail)
  */
 
-const VERBOSE = process.env.VERBOSE_LOGS === "true";
+// Invert: if TERMINAL_VERBOSE_LOGS=true, we want VERBOSE=false (suppress detail)
+const VERBOSE = process.env.TERMINAL_VERBOSE_LOGS !== "true";
 
 function vlog(...args) {
   if (VERBOSE) console.log(...args);

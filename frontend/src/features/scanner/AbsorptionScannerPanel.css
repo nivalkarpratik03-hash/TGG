@@ -1,0 +1,311 @@
+/* AbsorptionScannerPanel.css
+ * Ported from the user's own mockup (9EMA Absorption / Flip Break —
+ * Scanner.html) — same colors, same layout — but the --af-* palette
+ * below is MAPPED onto the app's real theme tokens (--bg/--bg2/--text/
+ * --accent/... from styles/index.css), same pattern T5ScannerPanel.css
+ * already uses, so this panel respects the app-wide light/dark toggle
+ * instead of being permanently dark.
+ */
+.af-wrap {
+  --af-bg: var(--bg);
+  --af-panel: var(--bg2);
+  --af-card: var(--bg3);
+  --af-border: var(--border);
+  --af-ink: var(--text);
+  --af-mut: var(--text2);
+  --af-mut2: var(--text3);
+  --af-accent: var(--accent);
+  --af-amber: var(--yellow);
+  --af-green: var(--green);
+  --af-red: var(--red);
+
+  background: var(--af-panel);
+  border: 1px solid var(--af-border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  color: var(--af-ink);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  box-sizing: border-box;
+}
+
+.af-wrap * {
+  box-sizing: border-box;
+}
+
+/* ── Stats ────────────────────────────────────────────────────────── */
+.af-stats {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.af-stat {
+  background: var(--af-card);
+  border: 1px solid var(--af-border);
+  border-radius: 9px;
+  padding: 11px 14px;
+}
+
+.af-lbl {
+  font-size: 10px;
+  color: var(--af-mut2);
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+
+.af-val {
+  font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 17px;
+  font-weight: 600;
+  margin-top: 3px;
+}
+
+.af-val.purple {
+  color: var(--af-accent);
+}
+
+.af-val.amber {
+  color: var(--af-amber);
+}
+
+.af-val.blue {
+  color: var(--af-accent);
+}
+
+.af-val.green {
+  color: var(--af-green);
+}
+
+/* ── Tabs ─────────────────────────────────────────────────────────── */
+.af-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid var(--af-border);
+  margin-bottom: 0;
+}
+
+/* ── Download ─────────────────────────────────────────────────────── */
+.af-download-btn {
+  margin-left: auto;
+  align-self: center;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--af-border);
+  border-radius: 5px;
+  background: var(--af-card);
+  color: var(--af-mut);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.af-download-btn:hover:not(:disabled) {
+  background: var(--af-bg);
+  color: var(--af-ink);
+  border-color: var(--af-accent);
+}
+
+.af-download-btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.af-tab {
+  background: none;
+  border: none;
+  color: var(--af-mut);
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 10px 16px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  font-family: inherit;
+}
+
+.af-tab.active {
+  color: var(--af-ink);
+  border-bottom-color: var(--af-accent);
+}
+
+.af-count {
+  color: var(--af-mut2);
+  font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  margin-left: 5px;
+  font-size: 12px;
+}
+
+.af-tab.active .af-count {
+  color: var(--af-accent);
+}
+
+.af-panel {
+  display: none;
+}
+
+.af-panel.active {
+  display: block;
+}
+
+.af-subrow {
+  padding: 10px 2px 8px;
+}
+
+.af-sub {
+  color: var(--af-mut);
+  font-size: 12.5px;
+}
+
+/* ── Table ────────────────────────────────────────────────────────── */
+.af-table-wrap {
+  max-height: 460px;
+  overflow-y: auto;
+}
+
+.af-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.af-table thead th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--af-mut2);
+  font-weight: 600;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--af-border);
+  background: var(--af-panel);
+  position: sticky;
+  top: 0;
+}
+
+.af-table thead th.num,
+.af-table tbody td.num {
+  text-align: right;
+}
+
+.af-table tbody td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--af-border);
+  font-size: 13px;
+  vertical-align: middle;
+}
+
+.af-table tbody tr {
+  cursor: pointer;
+}
+
+.af-table tbody tr:hover {
+  background: var(--af-card);
+}
+
+.af-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.af-sr {
+  color: var(--af-mut2);
+  font-family: monospace;
+  font-size: 12px;
+  width: 32px;
+}
+
+.af-symbol {
+  font-weight: 600;
+  letter-spacing: .2px;
+}
+
+.af-exch {
+  color: var(--af-mut2);
+  font-weight: 400;
+  font-size: 10.5px;
+  margin-left: 5px;
+}
+
+.af-broke {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.af-broke.abs-up {
+  color: var(--af-amber);
+}
+
+.af-broke.abs-dn {
+  color: var(--af-amber);
+}
+
+.af-broke.flip-up {
+  color: var(--af-green);
+}
+
+.af-broke.flip-dn {
+  color: var(--af-red);
+}
+
+.af-sidetag {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--af-mut);
+  background: var(--af-panel);
+  border: 1px solid var(--af-border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-left: 2px;
+}
+
+.af-level {
+  font-family: monospace;
+  font-weight: 600;
+}
+
+.af-poked {
+  font-family: monospace;
+  color: var(--af-mut);
+}
+
+.af-dist {
+  font-family: monospace;
+  color: var(--af-mut);
+}
+
+.af-dash {
+  color: var(--af-mut2);
+}
+
+.af-time {
+  color: var(--af-mut);
+  font-family: monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.af-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--af-mut2);
+  font-size: 13px;
+}
+
+/* ── Legend ───────────────────────────────────────────────────────── */
+.af-legend {
+  margin-top: 18px;
+  padding: 14px 16px;
+  background: var(--af-card);
+  border: 1px solid var(--af-border);
+  border-radius: 9px;
+  font-size: 12.5px;
+  color: var(--af-mut);
+  line-height: 1.7;
+}
+
+.af-legend b {
+  color: var(--af-ink);
+}

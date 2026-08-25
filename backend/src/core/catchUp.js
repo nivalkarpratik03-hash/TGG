@@ -96,11 +96,20 @@ function createCatchUp({ dataFetch }) {
 
       const tokenOk = await state.validateToken().catch(() => false);
       if (!tokenOk) {
-        console.log(`[Staleness] Sweep (${trigger}) skipped — token invalid. Will run after re-auth.`);
+        console.log(`[Staleness] ${trigger}: skipped — token invalid. Will run after re-auth.`);
         return;
       }
 
-      await dataFetch.sweepStalenessForSymbols(curatedSymbols, trigger);
+      const startTime = new Date().toISOString();
+      console.log(`[Staleness] ${trigger}: started ${startTime}`);
+      const r = await dataFetch.sweepStalenessForSymbols(curatedSymbols, trigger);
+      const endTime = new Date().toISOString();
+      const upToDate = r.checked - r.backfilled - (r.failed?.length || 0);
+      const failedStr = r.failed && r.failed.length > 0 ? `, FAILED ${r.failed.length} (${r.failed.slice(0, 5).join(", ")}${r.failed.length > 5 ? "..." : ""})` : "";
+      const statusStr = r.backfilled === 0 && upToDate === r.checked
+        ? `all ${r.checked} symbols up to date`
+        : `${r.backfilled} backfilled, ${upToDate} up to date`;
+      console.log(`[Staleness] ${trigger}: ended ${endTime} — ${statusStr}${failedStr}`);
     } finally {
       _stalenessInFlight = false;
     }
@@ -127,11 +136,12 @@ function createCatchUp({ dataFetch }) {
 
       const tokenOk = await state.validateToken().catch(() => false);
       if (!tokenOk) {
-        console.log(`[Recovery] Validator/Recovery (${trigger}) skipped — token invalid. Will repair after re-auth.`);
+        console.log(`[Recovery] Validator/Recovery (${trigger}): skipped — token invalid. Will repair after re-auth.`);
         return;
       }
 
-      console.log(`[Recovery] Validator/Recovery (${trigger}): checking ${trackedSymbols.length} tracked symbol(s) (spot + fut/opt)...`);
+      const startTime = new Date().toISOString();
+      console.log(`[Recovery] Validator/Recovery (${trigger}): started ${startTime} — checking tracked symbols...`);
       let repaired = 0;
       let clean = 0;
       let skippedKnown = 0;
