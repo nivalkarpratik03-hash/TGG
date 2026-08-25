@@ -1,8 +1,8 @@
 // AbsorptionScannerPanel.js
 // ─────────────────────────────────────────────────────────────────
-// 9EMA Absorption / Flip Break strategy panel — Results / Upcoming /
-// History tabs. Same self-contained pattern as T5ScannerPanel.js: this
-// component does NO pattern logic of its own, it only renders rows
+// 9EMA Absorption / Flip Break strategy panel — Results / Doji Breakthroughs /
+// Upcoming / History tabs. Same self-contained pattern as T5ScannerPanel.js:
+// this component does NO pattern logic of its own, it only renders rows
 // already shaped by absorptionResultShape.js's buildAbsorptionRows().
 //
 // Visual language ported from the user's own mockup
@@ -11,12 +11,22 @@
 // table layout — made data-driven and re-themed onto the app's real
 // theme tokens (see AbsorptionScannerPanel.css), same as T5's CSS does.
 //
+// Doji Breakthroughs tab — every flip_break ("Breakthrough") signal that
+// reaches this panel has ALREADY passed the backend's post-breakthrough
+// Doji check (absorptionFlip.js only emits a flip_break event once a Doji
+// candle shows up within 2 candles of the breakthrough candle — no event
+// is emitted at all otherwise, so there's nothing to filter client-side).
+// This tab exists purely so those confirmed breakthroughs are easy to find
+// on their own instead of scanning them out of the mixed Results/History
+// tables, and shows the confirming Doji candle's own timestamp alongside
+// the breakthrough candle's.
+//
 // USAGE (drop into ScannerPage.js next to T5ScannerPanel):
 //   import AbsorptionScannerPanel from "./AbsorptionScannerPanel";
 //   import { buildAbsorptionRows } from "./absorptionResultShape";
 //   ...
 //   <AbsorptionScannerPanel
-//     rows={buildAbsorptionRows(results)}   // { results, upcoming, history }
+//     rows={buildAbsorptionRows(results)}   // { results, upcoming, history, dojiBreakthroughs }
 //     scannedCount={results.length}
 //     resolution={tfLabel}
 //     onRowClick={(symbol) => openChart(symbol, timeframe, null)}
@@ -41,12 +51,15 @@ function BreakBadge({ type, direction, side, stepNo }) {
       </span>
     );
   }
-  // flip_break
+  // flip_break — every one of these already passed the backend's
+  // post-breakthrough Doji check (see absorptionFlip.js), so the tag here
+  // is just a visual confirmation, not a filter.
   const up = direction === "up";
   return (
     <span className={`af-broke ${up ? "flip-up" : "flip-dn"}`}>
       {up ? "\u25B2 Flip UP" : "\u25BC Flip DOWN"}
       <span className="af-sidetag">{side === "resistance" ? "Resistance" : "Support"}</span>
+      <span className="af-sidetag af-dojitag" title="Doji candle confirmed within 2 candles of the breakthrough">Doji ✓</span>
     </span>
   );
 }
@@ -85,6 +98,11 @@ function breakLabelText(r) {
   }
   const up = r.direction === "up";
   return `${up ? "Flip UP" : "Flip DOWN"} (${r.side === "resistance" ? "Resistance" : "Support"})`;
+}
+
+function dojiBreakthroughLabelText(r) {
+  const up = r.direction === "up";
+  return `${up ? "Flip UP" : "Flip DOWN"} (${r.side === "resistance" ? "Resistance" : "Support"}) - Doji confirmed`;
 }
 
 function watchLabelText(r) {
@@ -144,6 +162,44 @@ function EventTable({ rows, emptyLabel, onRowClick }) {
   );
 }
 
+// ── Doji Breakthrough table — flip_break events, Doji-confirmed by the
+// backend, shown with their own confirming Doji candle's time. ─────────
+function DojiBreakthroughTable({ rows, emptyLabel, onRowClick }) {
+  if (rows.length === 0) {
+    return <div className="af-empty">{emptyLabel}</div>;
+  }
+  return (
+    <div className="af-table-wrap">
+      <table className="af-table">
+        <thead>
+          <tr>
+            <th>Sr</th>
+            <th>Symbol</th>
+            <th>Breakthrough</th>
+            <th className="num">Level</th>
+            <th>Breakthrough Time</th>
+            <th>Doji Candle</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={`${r.symbol}-${r.timeMs}-${i}`} onClick={() => onRowClick(r.symbol)}>
+              <td className="af-sr">{i + 1}</td>
+              <td><SymbolCell symbol={r.symbol} /></td>
+              <td>
+                <BreakBadge type={r.type} direction={r.direction} side={r.side} />
+              </td>
+              <td className="af-level num">{fmt(r.level)}</td>
+              <td className="af-time">{r.timeLabel}</td>
+              <td className="af-time">{r.dojiTimeLabel || <Dash />}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ── Upcoming table — live absorbing bands / flip-watch, nearest first ──
 function UpcomingTable({ rows, emptyLabel, onRowClick }) {
   if (rows.length === 0) {
@@ -182,7 +238,7 @@ function UpcomingTable({ rows, emptyLabel, onRowClick }) {
 }
 
 export default function AbsorptionScannerPanel({
-  rows = { results: [], upcoming: [], history: [] },
+  rows = { results: [], upcoming: [], history: [], dojiBreakthroughs: [] },
   scannedCount = 0,
   resolution = "15m",
   onRowClick = () => { },
@@ -192,6 +248,7 @@ export default function AbsorptionScannerPanel({
   const results = rows.results || [];
   const upcoming = rows.upcoming || [];
   const history = rows.history || [];
+  const dojiBreakthroughs = rows.dojiBreakthroughs || [];
 
   const stats = useMemo(() => {
     const absorptionBreaks = results.filter((r) => r.type === "absorption_break").length;
@@ -199,7 +256,7 @@ export default function AbsorptionScannerPanel({
     return { absorptionBreaks, flipBreaks };
   }, [results]);
 
-  const hasAnyRows = results.length > 0 || upcoming.length > 0 || history.length > 0;
+  const hasAnyRows = results.length > 0 || upcoming.length > 0 || history.length > 0 || dojiBreakthroughs.length > 0;
 
   // ── Download — Results / Upcoming / History as three sheets in one
   // .xlsx, columns mirroring exactly what's on screen in each tab. ───────
@@ -217,6 +274,16 @@ export default function AbsorptionScannerPanel({
         "Poked": r.pokes != null ? r.pokes : "",
         "Time": r.timeLabel || "",
       }));
+
+    const dojiBreakthroughRows = dojiBreakthroughs.map((r, i) => ({
+      "Sr": i + 1,
+      "Symbol": tickerOf(r.symbol),
+      "Exchange": exchangeOf(r.symbol),
+      "Breakthrough": dojiBreakthroughLabelText(r),
+      "Level": r.level ?? "",
+      "Breakthrough Time": r.timeLabel || "",
+      "Doji Candle Time": r.dojiTimeLabel || "",
+    }));
 
     const upcomingRows = upcoming.map((r, i) => ({
       "Sr": i + 1,
@@ -237,6 +304,11 @@ export default function AbsorptionScannerPanel({
       wb,
       XLSX.utils.json_to_sheet(resultsSheetRows.length ? resultsSheetRows : [{ "Info": "Nothing broke today yet." }]),
       "Results"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(dojiBreakthroughRows.length ? dojiBreakthroughRows : [{ "Info": "No Doji-confirmed breakthroughs yet." }]),
+      "Doji Breakthroughs"
     );
     XLSX.utils.book_append_sheet(
       wb,
@@ -269,6 +341,10 @@ export default function AbsorptionScannerPanel({
           <div className="af-val blue">{stats.flipBreaks}</div>
         </div>
         <div className="af-stat">
+          <div className="af-lbl">Doji Breakthroughs</div>
+          <div className="af-val green">{dojiBreakthroughs.length}</div>
+        </div>
+        <div className="af-stat">
           <div className="af-lbl">Watching</div>
           <div className="af-val green">{upcoming.length}</div>
         </div>
@@ -281,6 +357,9 @@ export default function AbsorptionScannerPanel({
       <div className="af-tabs">
         <button className={`af-tab ${tab === "results" ? "active" : ""}`} onClick={() => setTab("results")}>
           Results <span className="af-count">({results.length})</span>
+        </button>
+        <button className={`af-tab ${tab === "doji" ? "active" : ""}`} onClick={() => setTab("doji")}>
+          Doji Breakthroughs <span className="af-count">({dojiBreakthroughs.length})</span>
         </button>
         <button className={`af-tab ${tab === "upcoming" ? "active" : ""}`} onClick={() => setTab("upcoming")}>
           Upcoming <span className="af-count">({upcoming.length})</span>
@@ -308,6 +387,15 @@ export default function AbsorptionScannerPanel({
         </div>
       )}
 
+      {tab === "doji" && (
+        <div className="af-panel active">
+          <div className="af-subrow">
+            <span className="af-sub">Breakthroughs where a Doji candle showed up within 2 candles of the break &middot; every row here already satisfies that condition &middot; newest first</span>
+          </div>
+          <DojiBreakthroughTable rows={dojiBreakthroughs} emptyLabel="No Doji-confirmed breakthroughs yet." onRowClick={onRowClick} />
+        </div>
+      )}
+
       {tab === "upcoming" && (
         <div className="af-panel active">
           <div className="af-subrow">
@@ -332,7 +420,10 @@ export default function AbsorptionScannerPanel({
         chart's own amber "ABSORBING R &times;3" alert. <b>Poked &times;N</b> is a separate number &mdash; the band's
         own wick-through count, matching the chart's "POKED &times;N" band-state label.<br />
         <b>Flip UP</b> / <b>Flip DOWN</b> &mdash; the regime's own refSWH/refSWL step-line broke; no Weak/Poked count
-        applies (a flip is a single close-through, not a tested band).<br />
+        applies (a flip is a single close-through, not a tested band). Every Flip UP/DOWN signal shown anywhere in
+        this panel already required a <b>Doji</b> candle within the 2 candles right after the breakthrough candle
+        &mdash; if no Doji showed up, the breakthrough is never surfaced at all. The <b>Doji Breakthroughs</b> tab
+        pulls just those confirmed signals out on their own, alongside the exact Doji candle's timestamp.<br />
         <b>Upcoming</b> shows what hasn't broken yet: bands still in the ABSORBING watch-state, and the current
         flip-watch level, sorted by how close price is to breaking each one (in ATRs, not raw price &mdash; keeps a
         &#8377;40-ATR stock and a &#8377;3-ATR stock fairly ranked against each other).

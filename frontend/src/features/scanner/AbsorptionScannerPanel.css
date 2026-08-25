@@ -35,7 +35,7 @@
 /* ── Stats ────────────────────────────────────────────────────────── */
 .af-stats {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
   gap: 8px;
   margin-bottom: 14px;
 }
@@ -259,6 +259,11 @@
   border-radius: 4px;
   padding: 1px 6px;
   margin-left: 2px;
+}
+
+.af-dojitag {
+  color: var(--af-green);
+  border-color: var(--af-green);
 }
 
 .af-level {
