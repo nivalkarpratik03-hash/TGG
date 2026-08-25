@@ -38,6 +38,19 @@
  * score-based eviction ARE kept, because dropping/evicting a band changes
  * whether it's still alive to break later — omitting them would silently
  * change which events fire on longer candle histories.
+ *
+ * ADDED FILTER — post-breakthrough Doji confirmation (not in the Pine
+ * source, added on top of the port): a "TREND FLIPPED UP/DOWN" event (shown
+ * to the user as "Breakthrough") is only emitted if a Doji candle appears
+ * within the 2 candles immediately following the breakthrough candle. This
+ * is a pure gate on whether the alert/event is surfaced — the underlying
+ * regime flip, band creation, and legNo/refSWH/refSWL state machine still
+ * advance exactly as before regardless of the Doji outcome, since later
+ * absorption/flip detection depends on that state staying faithful to the
+ * Pine port. Because scan() always runs over the full historical candle
+ * array in one pass (see "Purity" note below), the 2-candle lookahead is
+ * simply read from the same O/H/L/C arrays already in scope — no separate
+ * buffering or incremental state is needed.
  * ─────────────────────────────────────────────────────────────────
  */
 
@@ -82,6 +95,12 @@ const rejAway = 0.50;
 const absDecay = true;
 const absMaxATR = 6.0;
 
+// ─── post-breakthrough Doji confirmation (added filter, not from Pine) ───
+// Standard candlestick Doji definition: real body is small relative to the
+// candle's total high-low range. 0.10 (10%) is the conventional threshold.
+const dojiBodyRatio = 0.10;
+const dojiLookahead = 2; // candles after the breakthrough candle to check
+
 // ─── small numeric helpers ──────────────────────────────────────────────
 function sma(values, i, len) {
   if (i < len - 1) return null;
@@ -105,6 +124,13 @@ function lowestOfWindow(values, hiExclusive, len) {
   let m = Infinity;
   for (let k = lo; k <= hi; k++) if (values[k] < m) m = values[k];
   return m === Infinity ? null : m;
+}
+// Doji test: tiny real body relative to the candle's own high-low range.
+function isDoji(o, h, l, c) {
+  const range = h - l;
+  if (!(range > 0)) return false;
+  const body = Math.abs(c - o);
+  return body <= dojiBodyRatio * range;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -232,6 +258,19 @@ class AbsorptionFlipEngine {
     const pivHighArr = pivotHigh(H, pivL, pivR);
     const pivLowArr = pivotLow(L, pivL, pivR);
 
+    // Looks at the `dojiLookahead` candles right after the breakthrough
+    // candle at `fromIndex` and returns the index of the first Doji found,
+    // or -1 if none of those candles are a Doji (or they don't exist yet in
+    // this candle history). Safe to call mid-loop because `run()` always
+    // receives the full historical candle array up front — nothing here is
+    // "future" data relative to the scan as a whole.
+    const dojiWithinLookahead = (fromIndex) => {
+      for (let j = fromIndex + 1; j <= fromIndex + dojiLookahead && j < n; j++) {
+        if (isDoji(O[j], H[j], L[j], C[j])) return j;
+      }
+      return -1;
+    };
+
     for (let i = 0; i < n; i++) {
       const open = O[i], high = H[i], low = L[i], close = C[i];
       // ATR/EMA not yet seeded this early — Pine's ta.* would be na too;
@@ -319,10 +358,17 @@ class AbsorptionFlipEngine {
         }
         this.legStartBar = i;
 
-        this.events.push({
-          type: "flip_break", direction: "down", side: "support",
-          level: prevRefSWL, time: T[i], price: close, barIndex: i,
-        });
+        // Only surface the "Breakthrough" event if a Doji shows up within
+        // the next `dojiLookahead` candles. The regime/band state above has
+        // already advanced either way — this only gates the emitted event.
+        const dojiBarDn = dojiWithinLookahead(i);
+        if (dojiBarDn !== -1) {
+          this.events.push({
+            type: "flip_break", direction: "down", side: "support",
+            level: prevRefSWL, time: T[i], price: close, barIndex: i,
+            dojiConfirmed: true, dojiBarIndex: dojiBarDn, dojiTime: T[dojiBarDn],
+          });
+        }
       } else if (this.regime === -1 && this.refSWH != null && close > this.refSWH) {
         this.regime = 1; this.legNo += 1; flippedUp = true;
         if (scanTopsOn) this.scanBelow(this.pSLow != null ? this.pSLow : close, this.legStartBar, maxScanN, i, bw[i], atr, dnOK, upOK);
@@ -334,10 +380,15 @@ class AbsorptionFlipEngine {
         }
         this.legStartBar = i;
 
-        this.events.push({
-          type: "flip_break", direction: "up", side: "resistance",
-          level: prevRefSWH, time: T[i], price: close, barIndex: i,
-        });
+        // Same Doji gate as the down-flip branch above.
+        const dojiBarUp = dojiWithinLookahead(i);
+        if (dojiBarUp !== -1) {
+          this.events.push({
+            type: "flip_break", direction: "up", side: "resistance",
+            level: prevRefSWH, time: T[i], price: close, barIndex: i,
+            dojiConfirmed: true, dojiBarIndex: dojiBarUp, dojiTime: T[dojiBarUp],
+          });
+        }
       }
 
       // ── ceiling / floor + fire gates ────────────────────────────────
@@ -540,7 +591,7 @@ function scan(symbol, candles /*, context = {} */) {
 module.exports = {
   id: "absorption-flip",
   name: "9EMA Absorption / Flip Break",
-  description: "Direct Pine port of the 9EMA Pivot S/R Bands' ABSORPTION watch-state + trend-flip step-line — flags every symbol where an absorbing band's extreme got closed through, or the regime's refSWL/refSWH flip level broke, across the full candle history.",
+  description: "Direct Pine port of the 9EMA Pivot S/R Bands' ABSORPTION watch-state + trend-flip step-line — flags every symbol where an absorbing band's extreme got closed through, or the regime's refSWL/refSWH flip level broke, across the full candle history. Breakthrough (flip) signals additionally require a Doji candle within 2 candles after the breakthrough candle.",
   scan,
   // Also exported for direct/standalone use and testing.
   AbsorptionFlipEngine,
