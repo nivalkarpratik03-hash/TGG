@@ -26,8 +26,8 @@ import {
 } from "./mwScanHelpers";
 import { buildScannerRows } from "./t5ResultShape";
 import T5ScannerPanel from "./T5ScannerPanel";
-import { buildAbsorptionFlipRows } from "./absorptionFlipResultShape";
-import AbsorptionFlipScannerPanel from "./AbsorptionFlipScannerPanel";
+import AbsorptionScannerPanel from "./AbsorptionScannerPanel";
+import { buildAbsorptionRows } from "./absorptionResultShape";
 import "./ScannerPage.css";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -92,12 +92,12 @@ function openT5Chart(symbol, timeframe) {
   window.open(buildChartUrl(symbol, timeframe, null, { t5: true }), "_blank");
 }
 
-function openAbsorptionFlipChart(symbol, timeframe) {
-  // No special query flag needed (unlike T5's `t5=1`) — the SR Pivot
-  // bands/absorption overlay is EMA9PivotSRIndicator.js, a normal
-  // dashboard-togglable indicator (id "ema9pivot" in indicatorRegistry.js),
-  // not a scanner-specific chart mode.
-  window.open(buildChartUrl(symbol, timeframe), "_blank");
+function openAbsorptionChart(symbol, timeframe) {
+  // No mw object (this strategy isn't motherwave-driven) and no special
+  // chart flag needed — buildChartUrl already handles mw=null cleanly
+  // (see mwScanHelpers.js), same as openT5Chart's pattern minus the
+  // t5-specific opts flag.
+  window.open(buildChartUrl(symbol, timeframe, null), "_blank");
 }
 
 // ─── MWCard — one stock in the motherwave dashboard ───────────────────────────
@@ -472,12 +472,14 @@ export default function ScannerPage() {
   // (T5ScannerPanel) instead of going through SignalsTable/TypeSignalsTable.
   const isT5 = activeStrategy === "tg-t5";
 
-  // 9EMA Absorption / Flip Break — own row shapes entirely (Absorption /
-  // Breakthrough tabs, latest+previous signal with exact candle timestamp),
-  // nothing like s1s2s3's/type's patternStage vocabulary or T5's P1-P6
-  // timeline, so it gets its own branch + its own self-contained panel
-  // (AbsorptionFlipScannerPanel), same pattern as isT5/T5ScannerPanel above.
-  const isAbsorptionFlip = activeStrategy === "absorption-flip";
+  // 9EMA Absorption / Flip Break — same self-contained-panel treatment as
+  // T5 above: its own event/state shape (events[]/results[]/state), not
+  // s1s2s3's or type's patternStage vocabulary, so it gets its own branch
+  // + its own panel (AbsorptionScannerPanel) instead of SignalsTable.
+  // Matched by id directly, same as isT5 — absorptionFlip.js exports
+  // id: "absorption-flip" (see strategyRegistry.js), no group field
+  // needed for this check.
+  const isAbsorption = activeStrategy === "absorption-flip";
 
   // Dropdown-eligible strategies only — excludes variant:"single" entries
   // (type-e/type-r/type-f), which are tab-only, reachable via the R/E/F
@@ -618,23 +620,12 @@ export default function ScannerPage() {
         s1: results.filter(r => r.patternStage !== "none").length, // any event ever triggered
       };
     }
-    if (isAbsorptionFlip) {
-      // patternStage here is absorptionFlip.js's LATEST event's type only
-      // ("absorption_break" | "flip_break" | "none") — AbsorptionFlipScannerPanel
-      // itself counts every symbol with each signal type (not just latest),
-      // this top bar is just a quick at-a-glance summary.
-      return {
-        signals: results.filter(r => r.found).length,
-        partial: results.filter(r => r.patternStage === "flip_break").length,
-        s1: results.filter(r => r.patternStage === "absorption_break").length,
-      };
-    }
     return {
       signals: results.filter(r => r.patternStage === "s3_complete").length,
       partial: results.filter(r => r.patternStage === "s2").length,
       s1: results.filter(r => r.patternStage === "s1").length,
     };
-  }, [results, isTypeGroup, isAbsorptionFlip]);
+  }, [results, isTypeGroup]);
 
   // Results table — fully confirmed signals, ALL of them (no 10-row cap —
   // the table wrapper itself scrolls after ~10 visible rows via CSS
@@ -664,13 +655,13 @@ export default function ScannerPage() {
     [results, isT5]
   );
 
-  // 9EMA Absorption / Flip Break — reshape raw scan() results (flat event
-  // log, most-recent-first) into the Absorption/Breakthrough row shapes
-  // AbsorptionFlipScannerPanel needs. No-op (empty arrays) whenever
-  // isAbsorptionFlip is false, so this is safe to always compute.
-  const absorptionFlipRows = useMemo(
-    () => (isAbsorptionFlip ? buildAbsorptionFlipRows(results) : { absorption: [], breakthrough: [] }),
-    [results, isAbsorptionFlip]
+  // Absorption/Flip — reshape raw scan() results (event log + engine
+  // state) into Results/Upcoming/History for AbsorptionScannerPanel.
+  // No-op (empty arrays) whenever isAbsorption is false, same guard
+  // pattern as t5Rows above.
+  const absorptionRows = useMemo(
+    () => (isAbsorption ? buildAbsorptionRows(results) : { results: [], upcoming: [], history: [] }),
+    [results, isAbsorption]
   );
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -710,8 +701,8 @@ export default function ScannerPage() {
       <div className="scanner-stats-bar">
         <div className="stat-chip"><span className="stat-chip-label">Scanned</span>    <span className="stat-chip-val accent">{results.length}</span></div>
         <div className="stat-chip"><span className="stat-chip-label">Full Signals</span><span className="stat-chip-val green">{counts.signals}</span></div>
-        <div className="stat-chip"><span className="stat-chip-label">{isTypeGroup ? "Active" : isAbsorptionFlip ? "Latest: Breakthrough" : "Watching (S2)"}</span><span className="stat-chip-val orange">{counts.partial}</span></div>
-        <div className="stat-chip"><span className="stat-chip-label">{isTypeGroup ? "Ever Triggered" : isAbsorptionFlip ? "Latest: Absorption" : "S1 Formed"}</span>  <span className="stat-chip-val">{counts.s1}</span></div>
+        <div className="stat-chip"><span className="stat-chip-label">{isTypeGroup ? "Active" : "Watching (S2)"}</span><span className="stat-chip-val orange">{counts.partial}</span></div>
+        <div className="stat-chip"><span className="stat-chip-label">{isTypeGroup ? "Ever Triggered" : "S1 Formed"}</span>  <span className="stat-chip-val">{counts.s1}</span></div>
         <div className="stat-chip"><span className="stat-chip-label">Uptrend</span>    <span className="stat-chip-val green">{mwUptrend.length}</span></div>
         <div className="stat-chip"><span className="stat-chip-label">Downtrend</span>  <span className="stat-chip-val red">{mwDowntrend.length}</span></div>
         <div className="stat-chip"><span className="stat-chip-label">No Valid MW</span><span className="stat-chip-val" style={{ color: "#888" }}>{noValidMW.length}</span></div>
@@ -820,17 +811,15 @@ export default function ScannerPage() {
                 resolution={tfLabel}
                 onRowClick={(symbol) => openT5Chart(symbol, timeframe)}
               />
-            ) : isAbsorptionFlip ? (
-              // AbsorptionFlipScannerPanel is fully self-contained — its
-              // own Absorption/Breakthrough tabs, stats row — so like
-              // T5ScannerPanel it replaces the tabs bar + SignalsTable/
-              // TypeSignalsTable branch below entirely rather than
-              // plugging into either.
-              <AbsorptionFlipScannerPanel
-                rows={absorptionFlipRows}
+            ) : isAbsorption ? (
+              // Same self-contained treatment as T5 above — its own
+              // Results/Upcoming/History tabs and stats row, replacing the
+              // tabs bar + SignalsTable/TypeSignalsTable branch entirely.
+              <AbsorptionScannerPanel
+                rows={absorptionRows}
                 scannedCount={results.length}
                 resolution={tfLabel}
-                onRowClick={(symbol) => openAbsorptionFlipChart(symbol, timeframe)}
+                onRowClick={(symbol) => openAbsorptionChart(symbol, timeframe)}
               />
             ) : (
               <>

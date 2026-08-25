@@ -84,9 +84,10 @@ const { fetchOptionChain, fetchCandles } = require("../fyers/client");
 const state = require("../core/state");
 const derivativesStore = require("../../../database/src/store/derivativesStore");
 const { lastTuesdayOfMonth, lastThursdayOfMonth, parseDerivativeSymbol } = require("../../../database/src/parsing/symbolParser");
+const { isDerivativeStorageEnabled } = require("../../../database/src/storageFlags");
 const symbolsRouter = require("../routes/symbolsRouter");
 const { loadCuratedUnderlyings } = require("./curatedUnderlyingsLoader");
-const { VERBOSE, vlog } = require("../utils/verboseLog");
+const { VERBOSE, vlog, vwarn } = require("../utils/verboseLog");
 
 const RESOLUTION = "1"; // 1-minute candles, same convention as every other fetchCandles caller in this repo
 const OPTION_LOOKBACK_DAYS_DEFAULT = 5; // for an already-tracked symbol, just catch up recent gaps
@@ -635,6 +636,32 @@ async function runGapFillCheckpoint(label, deps = {}) {
     return true; // startup — indices, equities, then commodities
   });
 
+  // STORAGE FLAG SHORT-CIRCUIT — if all 6 derivative categories are off
+  // (STORE_*_OPTIONS / STORE_*_FUTURES, see storageFlags.js), there is
+  // nothing this checkpoint could possibly do: every entry's futures leg
+  // and options leg would individually skip anyway (see the per-entry
+  // gates further down), so walking all `scoped.length` entries just to
+  // find that out — and printing a "(50/214)" progress counter for work
+  // that never happens — is pure noise. One line and done. Spot isn't
+  // part of this checkpoint at all (that's catchUp.js's staleness sweep),
+  // so it's unaffected either way.
+  const anyDerivativeStorageOn = ["NSE", "MCX", "BSE"].some(
+    (ex) => isDerivativeStorageEnabled(ex, "option") || isDerivativeStorageEnabled(ex, "future")
+  );
+  if (!anyDerivativeStorageOn) {
+    console.log(`[GapFill] ${label}: all options/futures storage disabled (STORE_* flags) — nothing to do, skipping ${scoped.length} underlying(s)`);
+    return {
+      label,
+      scanned: 0,
+      optionsDiscovered: 0,
+      optionsBackfilled: 0,
+      futuresBackfilled: 0,
+      skipped: [],
+      failed: [],
+      discoveredSymbols: { futures: [], options: [] },
+    };
+  }
+
   let optionsDiscovered = 0, optionsBackfilled = 0, futuresBackfilled = 0;
   const skipped = [];
   const failed = [];
@@ -680,7 +707,14 @@ async function runGapFillCheckpoint(label, deps = {}) {
     // next-month (SEP) works (3741 candles), but AUG's throw aborted the
     // loop before SEP was ever attempted. Now: one symbol failing is
     // logged and skipped, its sibling symbols still get their own chance.
-    if (entry.hasFutures !== false) {
+    // STORAGE FLAG GATE (STORE_*_FUTURES, see storageFlags.js) — checked
+    // BEFORE calling resolveFuturesSymbols/Fyers, not just before the DB
+    // write (derivativesStore.js gates the write too, as a second/lower
+    // safety net). When this category is off, skip the whole futures leg's
+    // broker calls and per-symbol log lines for this entry — this is what
+    // actually saves API calls and reduces terminal noise, not just a
+    // silent DB no-op after the fact.
+    if (entry.hasFutures !== false && isDerivativeStorageEnabled(entry.exchange, "future")) {
       let futSymbols = [];
       try {
         futSymbols = resolveFuturesSymbols(entry);
@@ -701,8 +735,11 @@ async function runGapFillCheckpoint(label, deps = {}) {
     }
 
     // Options — only underlyings that actually have listed options
-    // (excludes SILVERMIC/GOLDPETAL via hasOptions:false).
-    if (entry.hasOptions !== false) {
+    // (excludes SILVERMIC/GOLDPETAL via hasOptions:false). Same
+    // STORE_*_OPTIONS pre-fetch gate reasoning as the futures leg above —
+    // skips the whole discovery+backfill broker-call chain for this entry
+    // when off, not just the final DB write.
+    if (entry.hasOptions !== false && isDerivativeStorageEnabled(entry.exchange, "option")) {
       try {
         const strikes = await discoverStrikesSinceCheckpoint(entry, atmBandWidth, label, deps);
         entryOptionsFound = strikes.length;
@@ -719,10 +756,10 @@ async function runGapFillCheckpoint(label, deps = {}) {
         // it's a known, intentional gap, not an unexpected error.
         if (err.message.includes("UNCONFIRMED")) {
           skipped.push({ underlying: entry.underlying, reason: err.message });
-          vvlog(`[GapFill] ${label}: ${entry.underlying} — options SKIPPED (${err.message})`);
+          vwarn(`[GapFill] ${label}: ${entry.underlying} — options SKIPPED (${err.message})`);
         } else {
           failed.push({ underlying: entry.underlying, stage: "options", error: err.message });
-          vvlog(`[GapFill] ${label}: ${entry.underlying} — options FAILED: ${err.message}`);
+          vwarn(`[GapFill] ${label}: ${entry.underlying} — options FAILED: ${err.message}`);
         }
       }
     }
