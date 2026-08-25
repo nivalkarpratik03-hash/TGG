@@ -171,7 +171,7 @@ function createCatchUp({ dataFetch }) {
                   return;
                 }
 
-                console.log(`[Recovery] ${symbol}: ${issues.length} issue(s) — repairing gap at ${tradingDay.toISOString().slice(0, 10)}`); await state.recoveryEngine.repairDay({
+                vlog(`[Recovery] ${symbol}: ${issues.length} issue(s) — repairing gap at ${tradingDay.toISOString().slice(0, 10)}`); await state.recoveryEngine.repairDay({
                   symbol,
                   tradingDay,
                   fetchCandles: (sym, res) => fetchCandles(sym, res),

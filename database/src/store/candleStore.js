@@ -35,6 +35,7 @@
 
 const { query, transaction } = require("../pool");
 const { isValidCandle } = require("./candleValidation");
+const { isSpotStorageEnabled } = require("../storageFlags");
 
 // ─── Write ─────────────────────────────────────────────────────────────────
 
@@ -118,6 +119,13 @@ async function upsertCandleBatch(exec, symbol, resolution, validCandles) {
 async function upsertCandles(symbol, resolution, candles) {
   if (!candles || candles.length === 0) return 0;
 
+  // STORAGE FLAG GATE (STORE_SPOT, see storageFlags.js) — every spot write
+  // (dataFetch.js write-through, CandleBuilder.onFinalize live ticks,
+  // daily-candle upsert) ends up here. Off = silent no-op; the read side
+  // already treats "nothing in DB" as normal and falls back to a live
+  // Fyers fetch.
+  if (!isSpotStorageEnabled()) return 0;
+
   // Filter valid candles first
   const valid = candles.filter(isValidCandle);
   if (valid.length === 0) return 0;
@@ -170,6 +178,10 @@ async function deleteDayCandles(symbol, resolution, tradingDay) {
  * @returns {Promise<{deleted:number, inserted:number}>}
  */
 async function replaceDayCandles(symbol, resolution, tradingDay, candles) {
+  // STORAGE FLAG GATE (STORE_SPOT) — skip the delete+insert transaction
+  // entirely when spot storage is off.
+  if (!isSpotStorageEnabled()) return { deleted: 0, inserted: 0 };
+
   const d = new Date(tradingDay);
   const dayStart = new Date(d);
   dayStart.setUTCHours(0, 0, 0, 0);

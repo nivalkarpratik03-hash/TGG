@@ -29,6 +29,7 @@
 
 const { query, transaction } = require("../pool");
 const { isValidCandle } = require("./candleValidation");
+const { isDerivativeStorageEnabled } = require("../storageFlags");
 
 const TABLES = {
   option: { NSE: "nse_options_candles", MCX: "mcx_options_candles", BSE: "bse_options_candles" },
@@ -147,6 +148,12 @@ async function upsertRows(rows, kind) {
     throw new Error(`upsert${kind === "option" ? "Option" : "Future"}Candles: mixed exchanges in one call (${[...exchanges].join(",")}) — call once per exchange`);
   }
   const exchange = [...exchanges][0];
+
+  // STORAGE FLAG GATE — single choke point every write path funnels
+  // through (dataFetch.js write-through, GapFill backfill, periodicSync
+  // repair — see storageFlags.js header). Off = silent no-op.
+  if (!isDerivativeStorageEnabled(exchange, kind)) return 0;
+
   const table = kind === "option" ? optionsTable(exchange) : futuresTable(exchange);
 
   let totalInserted = 0;
@@ -184,6 +191,10 @@ async function upsertRows(rows, kind) {
  * @returns {Promise<{deleted:number, inserted:number}>}
  */
 async function replaceDayCandlesBySymbol(exchange, instrumentType, symbol, tradingDay, rows) {
+  // STORAGE FLAG GATE — same reasoning as upsertRows() above. Skip the
+  // delete+insert transaction entirely when this category is off.
+  if (!isDerivativeStorageEnabled(exchange, instrumentType)) return { deleted: 0, inserted: 0 };
+
   const table = instrumentType === "option" ? optionsTable(exchange) : futuresTable(exchange);
   const kind = instrumentType;
 

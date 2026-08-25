@@ -17,6 +17,7 @@ const { wireGapFillScheduler } = require("../derivatives/gapFillScheduler");
 const symbolsRouter = require("../routes/symbolsRouter");
 const { scanner } = require("../services/scannerRunner");
 const { backtestRunner } = require("../services/backtestRunner");
+const { flags: storageFlags } = require("../../../database/src/storageFlags");
 const state = require("./state");
 
 // ── DB: connect, health-check, wire every DB-dependent periodic job ────────
@@ -34,6 +35,14 @@ async function wireDbJobs({ io, sweepCuratedStaleness, runValidatorRecovery }) {
     const ok = await state.db.healthCheck();
     if (ok) {
       console.log("[DB] ✅  PostgreSQL connection healthy");
+
+      // One-line boot summary of the 7 storage flags (storageFlags.js) —
+      // only names the ones actually turned OFF, since ON is the default
+      // and the common case; stays quiet on a normal all-true setup.
+      {
+        const off = Object.entries(storageFlags).filter(([, v]) => !v).map(([k]) => k.replace(/^STORE_/, ""));
+        console.log(off.length ? `[Storage] Write-through DISABLED for: ${off.join(", ")} (reads still work live via Fyers, just nothing persisted)` : "[Storage] All 7 storage categories enabled (default)");
+      }
 
       // ── PRUNING DISABLED (2026-07-03) — legacy `candles`-table pruning ──
       // Both pruneOldCandles() and pruneExpiredContracts() hard-DELETE rows

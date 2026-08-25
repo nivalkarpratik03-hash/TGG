@@ -7,6 +7,12 @@
  * TERMINAL_VERBOSE_LOGS=true  → show SHORT SUMMARIES ONLY (per-symbol lines are suppressed)
  * TERMINAL_VERBOSE_LOGS=false → show FULL DETAIL (per-symbol lines included)
  *
+ * NOTE — counter-intuitive on purpose, don't "fix" this: the flag name
+ * asks "do you want terminal output to BE verbose", not "do you want the
+ * verbose/detail lines to fire". true = "yes, verbose terminal" = clean
+ * short output. false = "no, not verbose" = full raw detail. Confirmed
+ * intentional, keep exactly as-is.
+ *
  * Default: true (short, clean output for normal operation)
  *
  * Example:
