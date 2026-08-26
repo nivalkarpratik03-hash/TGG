@@ -2,20 +2,35 @@
 // ─────────────────────────────────────────────────────────────────
 // Turns the raw absorptionFlip.js scan() output — per symbol:
 //   { events[], results[], state: { regime, flipLevel, liveAbsorbing[], atr }, lastCandle, ... }
-// into the THREE row shapes AbsorptionScannerPanel needs:
+// into the FOUR row shapes AbsorptionScannerPanel needs:
 //
-//   - Results   — every absorption_break / flip_break event, across every
-//                 symbol, that happened TODAY (IST calendar day).
-//   - History   — the same events, from any EARLIER day.
-//   - Upcoming  — NOT events. Currently-live absorbing bands + the current
-//                 flip-watch level per symbol (state.liveAbsorbing /
-//                 state.flipLevel) — things that haven't broken yet —
-//                 sorted nearest-to-break first, by ATR-normalized
-//                 distance from the last close. This is deliberate: a ₹5
-//                 gap on a ₹40-ATR stock is not "closer" than a ₹5 gap on
-//                 a ₹3-ATR stock, so plain % distance would misrank a
-//                 mixed watchlist. absorptionFlip.js's state.atr is the
-//                 CURRENT (most recent) ATR for that symbol.
+//   - Results          — every absorption_break / flip_break event, across
+//                         every symbol, that happened TODAY (IST calendar day).
+//   - History          — the same events, from any EARLIER day.
+//   - Upcoming         — NOT events. Currently-live absorbing bands + the
+//                         current flip-watch level per symbol
+//                         (state.liveAbsorbing / state.flipLevel) — things
+//                         that haven't broken yet — sorted nearest-to-break
+//                         first, by ATR-normalized distance from the last
+//                         close. This is deliberate: a ₹5 gap on a ₹40-ATR
+//                         stock is not "closer" than a ₹5 gap on a ₹3-ATR
+//                         stock, so plain % distance would misrank a mixed
+//                         watchlist. absorptionFlip.js's state.atr is the
+//                         CURRENT (most recent) ATR for that symbol.
+//   - Doji Breakthroughs — every flip_break event across every symbol, ANY
+//                         day (not just today — this is a standalone,
+//                         cross-day list, not a Results/History split).
+//                         absorptionFlip.js (backend) already only emits a
+//                         flip_break event when a Doji candle showed up
+//                         within 2 candles of the breakthrough candle — see
+//                         that file's `dojiWithinLookahead()` — so every
+//                         flip_break here is, by construction, Doji-
+//                         confirmed. This list just pulls those events out
+//                         on their own so "which symbols had a confirmed
+//                         Doji-breakthrough" doesn't have to be read out of
+//                         the mixed Results/History tables. Carries the
+//                         confirming Doji candle's own timestamp
+//                         (`dojiTime`) alongside the breakthrough candle's.
 //
 // Today/History split reuses istUtils' toISTDate/getTodayIST AS-IS — same
 // functions t5ResultShape.js already uses for its own Results/History
@@ -56,6 +71,11 @@ function flattenEvents(scanResults) {
         time: e.time,
         timeMs: e.time ? new Date(e.time).getTime() : 0,
         timeLabel: formatShortDateTimeIST(e.time),
+        // Only flip_break events carry these (see absorptionFlip.js's
+        // dojiWithinLookahead() gate) — undefined on absorption_break.
+        dojiConfirmed: e.dojiConfirmed,
+        dojiTime: e.dojiTime,
+        dojiTimeLabel: e.dojiTime ? formatShortDateTimeIST(e.dojiTime) : null,
       };
       if (toISTDate(e.time) === today) results.push(row);
       else history.push(row);
@@ -115,9 +135,44 @@ function buildUpcomingRows(scanResults) {
   return rows;
 }
 
+// ── Doji Breakthroughs — flip_break events, any day, on their own ──────
+// Every flip_break event absorptionFlip.js emits already passed the
+// backend's post-breakthrough Doji check (dojiConfirmed: true) — nothing
+// here re-derives that condition, it just pulls flip_break events out of
+// the raw per-symbol event logs into their own newest-first list, same
+// shape as flattenEvents()'s rows plus the confirming Doji candle's own
+// time.
+function buildDojiBreakthroughRows(scanResults) {
+  const rows = [];
+
+  for (const r of scanResults || []) {
+    if (!r || r.error || !Array.isArray(r.events) || r.events.length === 0) continue;
+    for (const e of r.events) {
+      if (e.type !== "flip_break" || !e.dojiConfirmed) continue;
+      rows.push({
+        symbol: r.symbol,
+        type: e.type,
+        direction: e.direction,
+        side: e.side,
+        level: e.level,
+        price: e.price,
+        time: e.time,
+        timeMs: e.time ? new Date(e.time).getTime() : 0,
+        timeLabel: formatShortDateTimeIST(e.time),
+        dojiTime: e.dojiTime,
+        dojiTimeLabel: formatShortDateTimeIST(e.dojiTime),
+      });
+    }
+  }
+
+  rows.sort((a, b) => b.timeMs - a.timeMs);
+  return rows;
+}
+
 // scanResults = array of scan() outputs, one per symbol.
 export function buildAbsorptionRows(scanResults) {
   const { results, history } = flattenEvents(scanResults);
   const upcoming = buildUpcomingRows(scanResults);
-  return { results, upcoming, history };
+  const dojiBreakthroughs = buildDojiBreakthroughRows(scanResults);
+  return { results, upcoming, history, dojiBreakthroughs };
 }
