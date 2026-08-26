@@ -110,6 +110,14 @@ class ScannerRunner extends EventEmitter {
     // UI) tell "never scanned" apart from "scanned, zero results".
     this._lastScanAtByCombo = new Map();
     this._lastComboKey = null;
+    // NEW — tracks how many symbols the MOST RECENTLY COMPLETED scan
+    // actually covered (the scoped count for that combo, e.g. 202 for
+    // Equity/Spot), separate from this._symbolList.length (the full
+    // boot-time universe across every asset class + all generated
+    // futures contracts, e.g. 826). getStatus() exposes both — see its
+    // own comment for which the frontend header should show.
+    this._lastScopedSymbolCount = null;
+    this._lastScopedComboKey = null;
 
     for (const s of strategies) {
       // Inner value is now Map<comboKey, Map<symbol, ScanResult>> instead
@@ -206,6 +214,13 @@ class ScannerRunner extends EventEmitter {
     const isScoped = !!scopedSymbols;
     const baseList = isScoped ? scopedSymbols : this._symbolList;
     if (baseList.length === 0) { console.log("[Scanner] No symbols — skipping"); return; }
+
+    // Record BEFORE the running/aborted early-return guards below, so a
+    // scan that starts (even if aborted partway through) still updates
+    // "what was this combo's most recent target size" rather than only
+    // ever reflecting a fully-completed run.
+    this._lastScopedSymbolCount = baseList.length;
+    this._lastScopedComboKey = effectiveComboKey;
 
     this._running = true;
     this._aborted = false;
@@ -469,7 +484,19 @@ class ScannerRunner extends EventEmitter {
   getStatus() {
     return {
       running: this._running,
+      // Full boot-time universe across ALL asset classes plus every
+      // generated futures contract (e.g. 826) — NOT scoped to whatever
+      // is currently selected in the Scanner UI's dropdowns. Kept for
+      // back-compat / anyone relying on "total known symbols".
       symbolCount: this._symbolList.length,
+      // NEW — how many symbols the last COMPLETED (or in-progress) scan
+      // actually targeted for its specific assetClass+instrumentType
+      // combo (e.g. 202 for Equity/Spot). This is what the Scanner UI's
+      // header should show as "N symbols" — it matches the "Scanned"
+      // stat chip instead of the unrelated full-universe count above.
+      // null until the very first scan of this process completes.
+      lastScopedSymbolCount: this._lastScopedSymbolCount,
+      lastScopedComboKey: this._lastScopedComboKey,
       resolution: this._resolution,
       lastScanAt: this._lastScanAt,
       lastScanDurationMs: this._lastScanDurationMs,

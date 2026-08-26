@@ -66,7 +66,7 @@
 
 .t5-stats {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
   gap: 8px;
   margin-bottom: 14px;
 }
@@ -137,9 +137,62 @@
 
 .t5-tabs {
   display: flex;
+  align-items: center;
   gap: 4px;
   border-bottom: 1px solid var(--t5-border);
   margin-bottom: 12px;
+}
+
+/* ── Search box — own state, next to the tabs ────────────────────────── */
+.t5-tabs-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.t5-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--t5-card);
+  border: 1px solid var(--t5-border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  width: 200px;
+}
+
+.t5-search-icon {
+  flex-shrink: 0;
+  color: var(--t5-mut2);
+}
+
+.t5-search input {
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--t5-ink);
+  font-family: inherit;
+  font-size: 12px;
+  width: 100%;
+}
+
+.t5-search input::placeholder {
+  color: var(--t5-mut2);
+}
+
+.t5-search-clear {
+  background: none;
+  border: none;
+  color: var(--t5-mut2);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.t5-search-clear:hover {
+  color: var(--t5-ink);
 }
 
 .t5-tab {

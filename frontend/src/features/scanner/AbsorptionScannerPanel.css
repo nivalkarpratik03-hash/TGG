@@ -35,7 +35,7 @@
 /* ── Stats ────────────────────────────────────────────────────────── */
 .af-stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
   gap: 8px;
   margin-bottom: 14px;
 }
@@ -86,9 +86,60 @@
   margin-bottom: 0;
 }
 
+/* ── Search box + Download — grouped, pushed to the right ────────────── */
+.af-tabs-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.af-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--af-card);
+  border: 1px solid var(--af-border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  width: 200px;
+}
+
+.af-search-icon {
+  flex-shrink: 0;
+  color: var(--af-mut2);
+}
+
+.af-search input {
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--af-ink);
+  font-family: inherit;
+  font-size: 12px;
+  width: 100%;
+}
+
+.af-search input::placeholder {
+  color: var(--af-mut2);
+}
+
+.af-search-clear {
+  background: none;
+  border: none;
+  color: var(--af-mut2);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.af-search-clear:hover {
+  color: var(--af-ink);
+}
+
 /* ── Download ─────────────────────────────────────────────────────── */
 .af-download-btn {
-  margin-left: auto;
   align-self: center;
   padding: 6px 14px;
   font-size: 11px;
@@ -259,11 +310,6 @@
   border-radius: 4px;
   padding: 1px 6px;
   margin-left: 2px;
-}
-
-.af-dojitag {
-  color: var(--af-green);
-  border-color: var(--af-green);
 }
 
 .af-level {
