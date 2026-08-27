@@ -188,6 +188,18 @@ export default function ScannerPage() {
   const [progress, setProgress] = useState(null);
   const [loading, setLoading] = useState(false);
   const [lastScan, setLastScan] = useState(null);
+  // NEW — per-combo, per-strategy last-scanned timestamp, read from
+  // /api/scanner/results/:strategyId's new `scannedAt` field (see
+  // scannerRouter.js). Replaces the global `lastScan` (status.lastScanAt)
+  // as what's actually shown in each panel's "Last scan" display — `lastScan`
+  // itself is still tracked (see fetchStatus/socket handlers below) purely
+  // as a refetch trigger: "some scan somewhere just completed, go refetch",
+  // not as a value ever rendered directly anymore. Without this split, the
+  // Scanner UI would show the timestamp of whatever was scanned MOST
+  // RECENTLY ANYWHERE, even if that was a completely different
+  // strategy+timeframe+assetClass+instrumentType combo than the one
+  // currently on screen.
+  const [comboScannedAt, setComboScannedAt] = useState(null);
   const [timeframe, setTimeframe] = useState(() => {
     try { const v = localStorage.getItem("tgg_scanner_tf"); return v ? JSON.parse(v) : 15; }
     catch { return 15; }
@@ -257,6 +269,11 @@ export default function ScannerPage() {
       });
       const r = await fetch(`${BACKEND}/api/scanner/results/${stratId}?${params.toString()}`).then(r => r.json());
       setResults(r.results || []);
+      // NEW — per-combo, per-strategy scan time straight from this exact
+      // request's response (see scannerRouter.js's new `scannedAt` field),
+      // not the global status.lastScanAt. See comboScannedAt's own
+      // declaration comment above for why this split matters.
+      setComboScannedAt(r.scannedAt || null);
     } catch { }
   }, []);
 
@@ -340,6 +357,10 @@ export default function ScannerPage() {
   // instead of another strategy's incompatible data.
   useEffect(() => {
     setResults([]);
+    // NEW — same reasoning as the setResults([]) fix above: without this,
+    // switching strategies could briefly show the PREVIOUS strategy's
+    // comboScannedAt next to the new (empty) results for one tick.
+    setComboScannedAt(null);
   }, [effectiveStrategyId]);
 
   // FIX (2026-08-18) — previously only depended on [effectiveStrategyId,
@@ -398,7 +419,15 @@ export default function ScannerPage() {
       await fetch(`${BACKEND}/api/scanner/trigger`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resolution: timeframe, assetClass, instrumentType }),
+        // NEW — strategyId scopes this scan to just the dropdown's
+        // selected strategy family (see scannerRunner.js's
+        // resolveStrategiesToRun). Sends `activeStrategy` (the actual
+        // dropdown selection, e.g. "type-ref"), NOT `effectiveStrategyId`
+        // — if an R/E/F tab is active, effectiveStrategyId would be e.g.
+        // "type-e" alone, which would scan ONLY Type E and leave type-r/
+        // type-f/type-ref stale. The dropdown's strategy is always the
+        // right scope for what "Scan Now" should run.
+        body: JSON.stringify({ resolution: timeframe, assetClass, instrumentType, strategyId: activeStrategy }),
       });
       setProgress({ total: status?.symbolCount || 0, done: 0 });
     } catch { }
@@ -632,7 +661,7 @@ export default function ScannerPage() {
                 rows={t5Rows}
                 scannedCount={results.length}
                 resolution={tfLabel}
-                lastScan={lastScan}
+                lastScan={comboScannedAt}
                 durationMs={status?.lastScanDurationMs}
                 onRowClick={(symbol) => openT5Chart(symbol, timeframe)}
               />
@@ -641,7 +670,7 @@ export default function ScannerPage() {
                 rows={absorptionRows}
                 scannedCount={results.length}
                 resolution={tfLabel}
-                lastScan={lastScan}
+                lastScan={comboScannedAt}
                 durationMs={status?.lastScanDurationMs}
                 onRowClick={(symbol) => openAbsorptionChart(symbol, timeframe)}
               />
@@ -651,7 +680,7 @@ export default function ScannerPage() {
                 counts={counts}
                 scannedCount={results.length}
                 resolution={tfLabel}
-                lastScan={lastScan}
+                lastScan={comboScannedAt}
                 durationMs={status?.lastScanDurationMs}
                 timeframe={timeframe}
                 typeSubFilter={typeSubFilter}
@@ -664,7 +693,7 @@ export default function ScannerPage() {
                 counts={counts}
                 scannedCount={results.length}
                 resolution={tfLabel}
-                lastScan={lastScan}
+                lastScan={comboScannedAt}
                 durationMs={status?.lastScanDurationMs}
                 timeframe={timeframe}
                 onRowClick={(symbol, mw) => openChart(symbol, timeframe, mw)}

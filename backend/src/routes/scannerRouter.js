@@ -12,7 +12,7 @@
  *                                                  filter combo (paginated) — see query
  *                                                  params on the route below
  * GET  /api/scanner/result/:strategyId/:symbol — single symbol result
- * POST /api/scanner/trigger                    — run scan now (body: { resolution?, assetClass? })
+ * POST /api/scanner/trigger                    — run scan now (body: { resolution?, assetClass?, instrumentType?, strategyId? })
  * POST /api/scanner/stop                       — abort running scan
  * GET  /api/scanner/symbols                    — current symbol list
  * POST /api/scanner/symbols                    — replace symbol list
@@ -138,7 +138,21 @@ router.get("/results/:strategyId", (req, res) => {
     perPage,
     results: slice,
     comboKey,
-    scanned: comboKey ? scanner.hasScannedCombo(comboKey) : true,
+    // NEW — both now scoped to this EXACT strategyId + comboKey (not just
+    // comboKey alone), via scannerRunner.js's strategy-aware
+    // hasScannedCombo/lastScanAtForCombo — see its own comment for why
+    // strategyId must be folded in (type-ref vs type-e/type-r/type-f each
+    // need their own bookkeeping even though selecting "Type E,R,F" runs
+    // all 4 together).
+    scanned: comboKey ? scanner.hasScannedCombo(comboKey, strategyId) : true,
+    // NEW — the actual last-scanned timestamp for this exact
+    // strategy+combo. Previously missing entirely; the frontend had no
+    // way to show a per-combo scan time and fell back to the single
+    // global status.lastScanAt, which didn't match whatever combo was
+    // actually on screen. Falls back to the global timestamp when this
+    // request isn't combo-scoped at all (legacy callers, e.g.
+    // StrategiesPage.js).
+    scannedAt: comboKey ? scanner.lastScanAtForCombo(comboKey, strategyId) : scanner.getStatus().lastScanAt,
   });
 });
 
@@ -156,6 +170,9 @@ router.get("/result/:strategyId/:symbol", (req, res) => {
 //   resolution: number,
 //   assetClass: "all"|"index"|"equity"|"commodity",
 //   instrumentType: "all"|"spot"|"fut"|"opt"   (NEW 2026-08-03)
+//   strategyId: one of the registered strategy ids (NEW) — scopes this
+//     scan pass to just that strategy family instead of all 7. Omitted →
+//     unscoped full scan, unchanged prior behavior.
 // }
 // NEW 2026-08-02 — assetClass scopes the scan to one category instead of
 // the full symbol list, without changing the persistent list any other
@@ -174,6 +191,22 @@ router.post("/trigger", async (req, res) => {
     const resolution = req.body?.resolution;
     const assetClass = (req.body?.assetClass || "all").toLowerCase();
     const instrumentTypeRaw = req.body?.instrumentType;
+
+    // NEW — strategyId scopes this scan to just the selected strategy
+    // family (see scannerRunner.js's resolveStrategiesToRun). Optional:
+    // omitted/null → unscoped full scan across every registered strategy,
+    // same as before this feature existed. When provided, validated
+    // against the registry the same way assetClass/instrumentType are
+    // validated below — reject unknown ids rather than silently no-op-ing.
+    const strategyIdRaw = req.body?.strategyId;
+    let strategyId = null;
+    if (strategyIdRaw != null && strategyIdRaw !== "") {
+      const knownIds = scanner.getStrategies().map((s) => s.id);
+      if (!knownIds.includes(strategyIdRaw)) {
+        return res.status(400).json({ error: `Unknown strategyId "${strategyIdRaw}" — expected one of: ${knownIds.join(", ")}` });
+      }
+      strategyId = strategyIdRaw;
+    }
 
     let scopedSymbols;
 
@@ -220,7 +253,7 @@ router.post("/trigger", async (req, res) => {
     // matches the default ASSET_TO_INSTRUMENT_TYPES value the frontend
     // would have shown for that assetClass anyway.
     const instrumentTypeForCombo = instrumentTypeRaw != null ? String(instrumentTypeRaw).toLowerCase() : "all";
-    const out = await scanner.triggerNow(resolution, scopedSymbols, assetClass, instrumentTypeForCombo);
+    const out = await scanner.triggerNow(resolution, scopedSymbols, assetClass, instrumentTypeForCombo, strategyId);
     res.json(out);
   } catch (err) {
     res.status(500).json({ error: err.message });

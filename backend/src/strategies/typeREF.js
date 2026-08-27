@@ -612,11 +612,16 @@ function scanForType(type, symbol, candles, context = {}) {
 }
 
 // ─── Combined type-ref — picks whichever of E/R/F most recently triggered ─────
-// Runs all three (independent Active Event Rule state per type, exactly as
-// the spec requires), then reports whichever type's latest event started
-// most recently for this symbol. If none has ever triggered, returns a
-// neutral "none" result (type: null).
-function scanCombined(symbol, candles, context) {
+// Computes E, R, and F ONCE and returns BOTH the combined pick AND each
+// individual type's own result in one pass. Exists so the Scanner UI's
+// "Type E,R,F" dropdown selection can populate all 4 result buckets
+// (type-ref + type-e + type-r + type-f) from a SINGLE computation instead
+// of computing E/R/F twice — once inside a plain type-ref.scan() call, and
+// again when type-e/type-r/type-f's own .scan() functions are called
+// separately just to fill their individual buckets for the R/E/F tabs. See
+// scannerRunner.js's special-case handling of `strategy.scanGroup` for
+// type-ref, which is the only caller of this function.
+function scanTypeGroup(symbol, candles, context) {
   const byType = {
     E: scanForType("E", symbol, candles, context),
     R: scanForType("R", symbol, candles, context),
@@ -624,18 +629,29 @@ function scanCombined(symbol, candles, context) {
   };
 
   const withEvents = Object.values(byType).filter(r => r.events.length > 0);
+  let combined;
   if (withEvents.length === 0) {
     // Neutral stub — same shape as scanForType(), just no type matched yet.
-    return { ...byType.E, type: null };
+    combined = { ...byType.E, type: null };
+  } else {
+    const sorted = [...withEvents].sort((a, b) => {
+      const la = a.events[a.events.length - 1];
+      const lb = b.events[b.events.length - 1];
+      return (lb.entryTime ?? 0) - (la.entryTime ?? 0);
+    });
+    combined = sorted[0];
   }
 
-  withEvents.sort((a, b) => {
-    const la = a.events[a.events.length - 1];
-    const lb = b.events[b.events.length - 1];
-    return (lb.entryTime ?? 0) - (la.entryTime ?? 0);
-  });
+  return { combined, byType };
+}
 
-  return withEvents[0];
+// Plain single-result wrapper — used by typeCombined.scan below so
+// type-ref still behaves exactly like every other strategy (one
+// symbol/candles/context in, one ScanResult out) for any caller that
+// invokes it directly rather than through scanGroup(). Unchanged external
+// behavior/shape from before this optimization.
+function scanCombined(symbol, candles, context) {
+  return scanTypeGroup(symbol, candles, context).combined;
 }
 
 // ─── The ONE combined strategy — shows in the Strategy dropdown ───────────────
@@ -646,6 +662,15 @@ const typeCombined = {
   variant: "combined",     // shown in the dropdown, flat, next to Motherwave
   description: "Shows whichever of Type E/R/F most recently triggered per symbol",
   scan: (symbol, candles, context) => scanCombined(symbol, candles, context),
+  // NEW — optional fast-path used ONLY by scannerRunner.js when all 4
+  // type-family strategies (type-ref, type-e, type-r, type-f) are being
+  // run together for the same symbol in the same pass (i.e. the "Type
+  // E,R,F" dropdown selection). Returns { combined, byType: {E,R,F} } so
+  // the caller can fill all 4 result buckets from one computation instead
+  // of four. Any caller that doesn't know about this (calls typeCombined
+  // via the plain .scan() above) still gets correct, unchanged behavior —
+  // this is purely an optional optimization, not a required interface.
+  scanGroup: (symbol, candles, context) => scanTypeGroup(symbol, candles, context),
 };
 
 // ─── The 3 individual strategies — tab-only, NOT in the dropdown ──────────────
