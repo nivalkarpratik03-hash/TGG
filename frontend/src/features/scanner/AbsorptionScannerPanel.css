@@ -312,6 +312,11 @@
   margin-left: 2px;
 }
 
+.af-dojitag {
+  color: var(--af-green);
+  border-color: var(--af-green);
+}
+
 .af-level {
   font-family: monospace;
   font-weight: 600;
