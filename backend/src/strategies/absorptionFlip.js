@@ -138,6 +138,118 @@ function isDoji(o, h, l, c) {
   return body <= dojiBodyRatio * range;
 }
 
+// ─── Retest-Entry engine (new layer, added on top of Doji-confirmed events) ─
+// Spec, locked by the user, nothing guessed beyond the one explicitly-flagged
+// assumption below:
+//
+//   Bull (Absorption R Broken or Flip UP):
+//     reference = the confirming Doji candle's HIGH
+//     price may dip to any depth (retest)
+//     if price closes back into/below the ORIGINAL zone before re-crossing
+//       the Doji high → INVALIDATED, no entry
+//     if price re-crosses back ABOVE the Doji high → ENTRY at that exact
+//       level; stop = lowest low of the whole retest dip; target = 1:1 R
+//
+//   Bear (Absorption S Broken or Flip DOWN): exact mirror — Doji LOW,
+//     highest high of the retest rise, close back into/above the original
+//     zone invalidates, re-cross BELOW the Doji low enters.
+//
+//   ASSUMPTION FLAGGED, NOT CONFIRMED BY USER: if a single candle's range
+//   touches BOTH the stop and the target after entry (only possible with
+//   daily-bar OHLC, no intrabar order), this engine resolves it as a STOP
+//   HIT first (conservative). This tie-break rule was an explicitly open
+//   question the user has not answered — search for "TIE-BREAK ASSUMPTION"
+//   below if this needs to change.
+//
+// `event` must be one of the dojiConfirmed events pushed above (needs
+// .direction, .dojiBarIndex, .zoneLevel). `candles` is the SAME array
+// passed into run() — oldest-first {time, open, high, low, close}.
+function computeRetestOutcome(event, candles) {
+  const n = candles.length;
+  const dojiIdx = event.dojiBarIndex;
+  const zoneLevel = event.zoneLevel;
+
+  if (dojiIdx == null || dojiIdx < 0 || dojiIdx >= n || zoneLevel == null) {
+    return { state: "watching", entryPrice: null, stopPrice: null, targetPrice: null };
+  }
+
+  const bull = event.direction === "up";
+  const refLevel = bull ? candles[dojiIdx].high : candles[dojiIdx].low;
+
+  let dipExtreme = null; // lowest low (bull) / highest high (bear) of the retest so far
+  let entryBarIndex = null, entryTime = null, entryPrice = null, stopPrice = null, targetPrice = null;
+
+  // ── Phase 1: watch the retest — invalidate or enter ──────────────────
+  for (let j = dojiIdx + 1; j < n; j++) {
+    const c = candles[j];
+    dipExtreme = bull
+      ? (dipExtreme == null ? c.low : Math.min(dipExtreme, c.low))
+      : (dipExtreme == null ? c.high : Math.max(dipExtreme, c.high));
+
+    // Invalidation check FIRST: price closing back into/below (bull) or
+    // into/above (bear) the ORIGINAL zone, before ever re-crossing the
+    // Doji high/low, cancels the setup.
+    const invalidated = bull ? c.close <= zoneLevel : c.close >= zoneLevel;
+    if (invalidated) {
+      return {
+        state: "invalidated", entryPrice: null, stopPrice: null, targetPrice: null,
+        retestExtreme: dipExtreme, invalidatedBarIndex: j, invalidatedTime: c.time,
+      };
+    }
+
+    // Entry check: re-cross back above the Doji high (bull) / below the
+    // Doji low (bear). Entry price is that exact level, per spec — not
+    // the crossing candle's close.
+    const crossed = bull ? c.high > refLevel : c.low < refLevel;
+    if (crossed) {
+      entryBarIndex = j; entryTime = c.time; entryPrice = refLevel; stopPrice = dipExtreme;
+      const risk = bull ? entryPrice - stopPrice : stopPrice - entryPrice;
+      if (!(risk > 0)) {
+        // Degenerate: dip extreme coincides exactly with the entry level.
+        // No valid stop distance to size a 1:1 target off of — flag it
+        // rather than silently emitting a garbage (zero-width) target.
+        return {
+          state: "invalid_zero_risk", entryPrice, stopPrice, targetPrice: null,
+          retestExtreme: dipExtreme, entryBarIndex, entryTime,
+        };
+      }
+      targetPrice = bull ? entryPrice + risk : entryPrice - risk;
+      break;
+    }
+  }
+
+  if (entryBarIndex == null) {
+    // Never invalidated, never re-crossed, by the end of available candles.
+    return { state: "watching", entryPrice: null, stopPrice: null, targetPrice: null, retestExtreme: dipExtreme };
+  }
+
+  // ── Phase 2: entry taken — walk forward to resolution ─────────────────
+  // Starts on the entry bar itself (not entryBarIndex+1): the entry bar's
+  // own low can equal the stop (if that bar itself sets the dip extreme),
+  // so the same-bar tie-break case is real and must be checked, not skipped.
+  let state = "entered_open", resolutionBarIndex = null, resolutionTime = null;
+  for (let k = entryBarIndex; k < n; k++) {
+    const c = candles[k];
+    const hitStop = bull ? c.low <= stopPrice : c.high >= stopPrice;
+    const hitTarget = bull ? c.high >= targetPrice : c.low <= targetPrice;
+    // TIE-BREAK ASSUMPTION (see header comment above computeRetestOutcome):
+    // if a candle's range touches both, stop wins. Order of this if/else
+    // is the entire implementation of that assumption.
+    if (hitStop) {
+      state = "entered_loss"; resolutionBarIndex = k; resolutionTime = c.time; break;
+    } else if (hitTarget) {
+      state = "entered_win"; resolutionBarIndex = k; resolutionTime = c.time; break;
+    }
+  }
+
+  return {
+    state, entryPrice, stopPrice, targetPrice, retestExtreme: dipExtreme,
+    entryBarIndex, entryTime, resolutionBarIndex, resolutionTime,
+    barsToEntry: entryBarIndex - dojiIdx,
+    barsToResolution: resolutionBarIndex != null ? resolutionBarIndex - entryBarIndex : null,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 //  ENGINE
 // ─────────────────────────────────────────────────────────────────────────
@@ -372,6 +484,9 @@ class AbsorptionFlipEngine {
             type: "flip_break", direction: "down", side: "support",
             level: prevRefSWL, time: T[i], price: close, barIndex: i,
             dojiConfirmed: true, dojiBarIndex: dojiBarDn, dojiTime: T[dojiBarDn],
+            // retest-engine invalidation boundary: for a flip there is no
+            // separate band, so the "original zone" IS the crossed level.
+            zoneLevel: prevRefSWL,
           });
         }
       } else if (this.regime === -1 && this.refSWH != null && close > this.refSWH) {
@@ -392,6 +507,7 @@ class AbsorptionFlipEngine {
             type: "flip_break", direction: "up", side: "resistance",
             level: prevRefSWH, time: T[i], price: close, barIndex: i,
             dojiConfirmed: true, dojiBarIndex: dojiBarUp, dojiTime: T[dojiBarUp],
+            zoneLevel: prevRefSWH,
           });
         }
       }
@@ -460,6 +576,11 @@ class AbsorptionFlipEngine {
                   type: "absorption_break", direction: "up", side: "resistance",
                   level: prevAbsHi, weak: b.weak, pokes: b.pokes, stepNo: b.stepNo, time: T[i], price: close, barIndex: i,
                   dojiConfirmed: true, dojiBarIndex: dojiBarAbsR, dojiTime: T[dojiBarAbsR],
+                  // retest-engine invalidation boundary: the band's own top
+                  // edge (not absHi, which is the poke-extreme `level` above)
+                  // — "back into the ORIGINAL absorption zone" means back
+                  // inside [b.bot, b.top], so b.top is the boundary to watch.
+                  zoneLevel: b.top,
                 });
               }
             }
@@ -470,6 +591,7 @@ class AbsorptionFlipEngine {
                   type: "absorption_break", direction: "down", side: "support",
                   level: prevAbsLo, weak: b.weak, pokes: b.pokes, stepNo: b.stepNo, time: T[i], price: close, barIndex: i,
                   dojiConfirmed: true, dojiBarIndex: dojiBarAbsS, dojiTime: T[dojiBarAbsS],
+                  zoneLevel: b.bot,
                 });
               }
             }
@@ -551,6 +673,18 @@ class AbsorptionFlipEngine {
       atr: lastAtr,
     };
 
+    // ── Retest-Entry pass — runs AFTER detection is fully done, over the
+    // same full candle history, so every Doji-confirmed event (of either
+    // type) gets its retest/entry/stop/target outcome attached. Does not
+    // affect detection in any way — pure post-processing, same as the
+    // Doji gate is pure post-filtering of an already-decided state.
+    for (let e = 0; e < this.events.length; e++) {
+      const ev = this.events[e];
+      if (ev.dojiConfirmed) {
+        ev.retest = computeRetestOutcome(ev, candles);
+      }
+    }
+
     return { events: this.events, finalState };
   }
 }
@@ -600,6 +734,27 @@ function scan(symbol, candles /*, context = {} */) {
       result.direction = last.direction;
       result.level = last.level;
     }
+
+    // ── per-symbol retest/entry backtest summary ─────────────────────
+    const backtest = {
+      wins: 0, losses: 0, open: 0, invalidated: 0, watching: 0, zeroRisk: 0,
+      totalR: 0, resolvedCount: 0, winRate: null,
+    };
+    for (let e = 0; e < events.length; e++) {
+      const r = events[e].retest;
+      if (!r) continue;
+      switch (r.state) {
+        case "entered_win": backtest.wins += 1; backtest.totalR += 1; backtest.resolvedCount += 1; break;
+        case "entered_loss": backtest.losses += 1; backtest.totalR -= 1; backtest.resolvedCount += 1; break;
+        case "entered_open": backtest.open += 1; break;
+        case "invalidated": backtest.invalidated += 1; break;
+        case "watching": backtest.watching += 1; break;
+        case "invalid_zero_risk": backtest.zeroRisk += 1; break;
+        default: break;
+      }
+    }
+    backtest.winRate = backtest.resolvedCount > 0 ? backtest.wins / backtest.resolvedCount : null;
+    result.backtest = backtest;
   } catch (err) {
     result.error = err.message;
   }
@@ -614,4 +769,5 @@ module.exports = {
   scan,
   // Also exported for direct/standalone use and testing.
   AbsorptionFlipEngine,
+  computeRetestOutcome,
 };
