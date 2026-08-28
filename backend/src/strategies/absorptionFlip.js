@@ -154,12 +154,16 @@ function isDoji(o, h, l, c) {
 //     highest high of the retest rise, close back into/above the original
 //     zone invalidates, re-cross BELOW the Doji low enters.
 //
-//   ASSUMPTION FLAGGED, NOT CONFIRMED BY USER: if a single candle's range
-//   touches BOTH the stop and the target after entry (only possible with
-//   daily-bar OHLC, no intrabar order), this engine resolves it as a STOP
-//   HIT first (conservative). This tie-break rule was an explicitly open
-//   question the user has not answered — search for "TIE-BREAK ASSUMPTION"
-//   below if this needs to change.
+//   CONFIRMED BY USER: the tie-break case only matters on the ENTRY candle
+//   itself — that's the one bar where "which happened first, stop or
+//   target" is genuinely unknowable from OHLC alone (no tick data). If the
+//   entry candle's own range contains BOTH the stop price and the target
+//   price (e.g. a small Doji followed by one big-range entry candle on a
+//   1D chart), this is NOT resolved as a win or a loss — it's tagged its
+//   own outcome, "big_candle", and left out of the win/loss tally. This
+//   does NOT apply to later candles after entry — those follow the normal
+//   stop-checked-before-target order, since by then it's a plain walk
+//   forward, not an ambiguous same-bar tie. Search "BIG CANDLE" below.
 //
 // `event` must be one of the dojiConfirmed events pushed above (needs
 // .direction, .dojiBarIndex, .zoneLevel). `candles` is the SAME array
@@ -232,9 +236,15 @@ function computeRetestOutcome(event, candles) {
     const c = candles[k];
     const hitStop = bull ? c.low <= stopPrice : c.high >= stopPrice;
     const hitTarget = bull ? c.high >= targetPrice : c.low <= targetPrice;
-    // TIE-BREAK ASSUMPTION (see header comment above computeRetestOutcome):
-    // if a candle's range touches both, stop wins. Order of this if/else
-    // is the entire implementation of that assumption.
+
+    // BIG CANDLE (user-confirmed rule): only on the entry bar itself, if
+    // that one candle's range already contains BOTH stop and target,
+    // there's no way to know which was touched first without tick data.
+    // Don't guess stop-first — tag it as its own outcome instead, and
+    // don't count it as a win or a loss anywhere downstream.
+    if (k === entryBarIndex && hitStop && hitTarget) {
+      state = "big_candle"; resolutionBarIndex = k; resolutionTime = c.time; break;
+    }
     if (hitStop) {
       state = "entered_loss"; resolutionBarIndex = k; resolutionTime = c.time; break;
     } else if (hitTarget) {
@@ -737,7 +747,7 @@ function scan(symbol, candles /*, context = {} */) {
 
     // ── per-symbol retest/entry backtest summary ─────────────────────
     const backtest = {
-      wins: 0, losses: 0, open: 0, invalidated: 0, watching: 0, zeroRisk: 0,
+      wins: 0, losses: 0, open: 0, invalidated: 0, watching: 0, zeroRisk: 0, bigCandle: 0,
       totalR: 0, resolvedCount: 0, winRate: null,
     };
     for (let e = 0; e < events.length; e++) {
@@ -750,6 +760,10 @@ function scan(symbol, candles /*, context = {} */) {
         case "invalidated": backtest.invalidated += 1; break;
         case "watching": backtest.watching += 1; break;
         case "invalid_zero_risk": backtest.zeroRisk += 1; break;
+        // "big_candle" is deliberately excluded from wins/losses/resolvedCount
+        // and from totalR — the entry-candle tie is unresolvable from OHLC,
+        // so it's tracked separately rather than forced into the win-rate math.
+        case "big_candle": backtest.bigCandle += 1; break;
         default: break;
       }
     }

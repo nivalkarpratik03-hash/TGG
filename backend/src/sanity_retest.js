@@ -159,7 +159,31 @@ const c = (t, o, h, l, cl) => ({ time: t, open: o, high: h, low: l, close: cl })
   ];
   const event = { direction: "up", dojiBarIndex: 2, zoneLevel: 95 };
   const r = computeRetestOutcome(event, candles);
-  check("T7 tie-break resolves to loss (stop-first assumption)", r.state, "entered_loss");
+  check("T7 tie on a POST-entry candle (not the entry bar) still resolves to loss", r.state, "entered_loss");
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// TEST 7b — BIG CANDLE (user-confirmed rule): the ENTRY bar itself is the
+// one that hits both stop and target in its own range (small Doji dip,
+// then one big-range candle re-crosses AND runs to target AND its own low
+// sets/undercuts the stop, all on that same candle — realistic on 1D bars).
+// Must NOT be scored as a win or a loss — its own outcome, "big_candle".
+// ─────────────────────────────────────────────────────────────────────────
+{
+  const candles = [
+    c(0, 108, 109, 107, 108),
+    c(1, 108, 109, 107, 108.5),
+    c(2, 109, 110, 108, 109.4), // doji, high=110 (ref)
+    c(3, 104, 107, 101, 104),   // dip
+    c(4, 100, 103, 98, 100),    // dip continues, low=98
+    c(5, 100, 135, 90, 132),    // entry bar: low=90 sets stop; high=135 crosses ref (110) AND clears target (130) same candle
+  ];
+  const event = { direction: "up", dojiBarIndex: 2, zoneLevel: 95 };
+  const r = computeRetestOutcome(event, candles);
+  check("T7b entry-bar tie resolves to big_candle, not win/loss", r.state, "big_candle");
+  check("T7b entryPrice", r.entryPrice, 110);
+  check("T7b stopPrice", r.stopPrice, 90);
+  check("T7b targetPrice", r.targetPrice, 130);
 }
 
 // ─────────────────────────────────────────────────────────────────────────

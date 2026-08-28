@@ -150,6 +150,8 @@ function OutcomeBadge({ state }) {
       return <span className="af-outcome af-outcome-watching">Watching</span>;
     case "invalid_zero_risk":
       return <span className="af-outcome af-outcome-invalidated" title="Retest dip/rise touched the entry level exactly — no valid stop distance">Zero-Risk</span>;
+    case "big_candle":
+      return <span className="af-outcome af-outcome-open" title="Entry candle's own range hit both stop and target — can't tell which came first without tick data">Big Candle</span>;
     default:
       return <Dash />;
   }
@@ -190,6 +192,7 @@ function outcomeLabelText(state) {
     case "invalidated": return "Invalidated";
     case "watching": return "Watching";
     case "invalid_zero_risk": return "Zero-Risk";
+    case "big_candle": return "Big Candle";
     default: return "";
   }
 }

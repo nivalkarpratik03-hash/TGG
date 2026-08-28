@@ -173,8 +173,11 @@ function buildUpcomingRows(scanResults) {
 // win is always exactly +1R and a resolved loss always exactly -1R — this
 // is a direct reflection of that fixed rule, not an independent
 // computation. Anything not yet resolved (open/invalidated/watching/
-// zero-risk) has no meaningful R yet, so it stays null and is rendered as
-// "—" by the panel rather than a fabricated number.
+// zero-risk), AND "big_candle" (entry candle's own range hit both stop
+// and target -- which came first is unknowable from OHLC, so it's
+// deliberately never scored as +1R or -1R), has no meaningful R, so it
+// stays null and is rendered as "—" by the panel rather than a
+// fabricated number.
 function rMultipleFor(retestState) {
   if (retestState === "entered_win") return 1;
   if (retestState === "entered_loss") return -1;
@@ -223,7 +226,7 @@ function buildResultsRows(scanResults) {
         dojiTime: e.dojiTime,
         dojiTimeLabel: formatShortDateTimeIST(e.dojiTime),
         // ── retest-entry outcome (Chunk 1's .retest, passed through as-is) ──
-        retestState: retest ? retest.state : null, // "entered_win" | "entered_loss" | "entered_open" | "invalidated" | "watching" | "invalid_zero_risk" | null
+        retestState: retest ? retest.state : null, // "entered_win" | "entered_loss" | "big_candle" | "entered_open" | "invalidated" | "watching" | "invalid_zero_risk" | null
         entryPrice: retest ? retest.entryPrice : null,
         stopPrice: retest ? retest.stopPrice : null,
         targetPrice: retest ? retest.targetPrice : null,
