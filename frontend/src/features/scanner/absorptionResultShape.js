@@ -17,20 +17,23 @@
 //                         stock, so plain % distance would misrank a mixed
 //                         watchlist. absorptionFlip.js's state.atr is the
 //                         CURRENT (most recent) ATR for that symbol.
-//   - Doji Breakthroughs — every flip_break event across every symbol, ANY
-//                         day (not just today — this is a standalone,
-//                         cross-day list, not a Results/History split).
-//                         absorptionFlip.js (backend) already only emits a
-//                         flip_break event when a Doji candle showed up
-//                         within 2 candles of the breakthrough candle — see
-//                         that file's `dojiWithinLookahead()` — so every
-//                         flip_break here is, by construction, Doji-
-//                         confirmed. This list just pulls those events out
-//                         on their own so "which symbols had a confirmed
-//                         Doji-breakthrough" doesn't have to be read out of
-//                         the mixed Results/History tables. Carries the
-//                         confirming Doji candle's own timestamp
-//                         (`dojiTime`) alongside the breakthrough candle's.
+//   - Doji Breakthroughs — every event (BOTH absorption_break AND
+//                         flip_break) across every symbol, ANY day (not
+//                         just today — this is a standalone, cross-day
+//                         list, not a Results/History split).
+//                         absorptionFlip.js (backend) already only emits
+//                         either event type when a Doji candle showed up
+//                         within 2 candles of the triggering candle — see
+//                         that file's `dojiWithinLookahead()`, called from
+//                         both the flip branches AND the absorption-break
+//                         branch — so every event that reaches this file at
+//                         all is, by construction, Doji-confirmed. This
+//                         list just pulls those events out on their own so
+//                         "which symbols had a confirmed Doji-breakthrough"
+//                         doesn't have to be read out of the mixed
+//                         Results/History tables. Carries the confirming
+//                         Doji candle's own timestamp (`dojiTime`)
+//                         alongside the triggering candle's.
 //
 // Today/History split reuses istUtils' toISTDate/getTodayIST AS-IS — same
 // functions t5ResultShape.js already uses for its own Results/History
@@ -71,8 +74,10 @@ function flattenEvents(scanResults) {
         time: e.time,
         timeMs: e.time ? new Date(e.time).getTime() : 0,
         timeLabel: formatShortDateTimeIST(e.time),
-        // Only flip_break events carry these (see absorptionFlip.js's
-        // dojiWithinLookahead() gate) — undefined on absorption_break.
+        // Both absorption_break and flip_break now carry these (see
+        // absorptionFlip.js's dojiWithinLookahead() gate, called from
+        // both event branches) — always true when the event exists at
+        // all, since an event is only pushed once the Doji check passes.
         dojiConfirmed: e.dojiConfirmed,
         dojiTime: e.dojiTime,
         dojiTimeLabel: e.dojiTime ? formatShortDateTimeIST(e.dojiTime) : null,
@@ -135,20 +140,23 @@ function buildUpcomingRows(scanResults) {
   return rows;
 }
 
-// ── Doji Breakthroughs — flip_break events, any day, on their own ──────
-// Every flip_break event absorptionFlip.js emits already passed the
+// ── Doji Breakthroughs — absorption_break AND flip_break events, any day,
+// on their own ───────────────────────────────────────────────────────────
+// Every event absorptionFlip.js emits (of either type) already passed the
 // backend's post-breakthrough Doji check (dojiConfirmed: true) — nothing
-// here re-derives that condition, it just pulls flip_break events out of
-// the raw per-symbol event logs into their own newest-first list, same
+// here re-derives that condition, it just pulls both event types out of
+// the raw per-symbol event logs into one combined newest-first list, same
 // shape as flattenEvents()'s rows plus the confirming Doji candle's own
-// time.
+// time. weak/pokes/stepNo are carried through too so an absorption row
+// here can still show its weak-test count, same as it does in
+// Results/History.
 function buildDojiBreakthroughRows(scanResults) {
   const rows = [];
 
   for (const r of scanResults || []) {
     if (!r || r.error || !Array.isArray(r.events) || r.events.length === 0) continue;
     for (const e of r.events) {
-      if (e.type !== "flip_break" || !e.dojiConfirmed) continue;
+      if (!e.dojiConfirmed) continue;
       rows.push({
         symbol: r.symbol,
         type: e.type,
@@ -156,9 +164,13 @@ function buildDojiBreakthroughRows(scanResults) {
         side: e.side,
         level: e.level,
         price: e.price,
+        weak: e.weak,
+        pokes: e.pokes,
+        stepNo: e.stepNo,
         time: e.time,
         timeMs: e.time ? new Date(e.time).getTime() : 0,
         timeLabel: formatShortDateTimeIST(e.time),
+        dojiConfirmed: e.dojiConfirmed,
         dojiTime: e.dojiTime,
         dojiTimeLabel: formatShortDateTimeIST(e.dojiTime),
       });

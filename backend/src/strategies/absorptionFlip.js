@@ -40,17 +40,22 @@
  * change which events fire on longer candle histories.
  *
  * ADDED FILTER — post-breakthrough Doji confirmation (not in the Pine
- * source, added on top of the port): a "TREND FLIPPED UP/DOWN" event (shown
- * to the user as "Breakthrough") is only emitted if a Doji candle appears
- * within the 2 candles immediately following the breakthrough candle. This
- * is a pure gate on whether the alert/event is surfaced — the underlying
- * regime flip, band creation, and legNo/refSWH/refSWL state machine still
- * advance exactly as before regardless of the Doji outcome, since later
- * absorption/flip detection depends on that state staying faithful to the
- * Pine port. Because scan() always runs over the full historical candle
- * array in one pass (see "Purity" note below), the 2-candle lookahead is
- * simply read from the same O/H/L/C arrays already in scope — no separate
- * buffering or incremental state is needed.
+ * source, added on top of the port): BOTH event types —
+ *   - "TREND FLIPPED UP/DOWN"        (shown as "Flip UP/DOWN")
+ *   - "Absorbing RESISTANCE/SUPPORT broken" (shown as "Absorption R/S Broken")
+ * are only emitted if a Doji candle appears within the 2 candles immediately
+ * following the triggering candle (the flip candle, or the absorption-break
+ * candle respectively). This is a pure gate on whether the alert/event is
+ * surfaced — the underlying regime flip / band absorb-break state (legNo,
+ * refSWH/refSWL, b.absorb, b.broken) still advances exactly as before
+ * regardless of the Doji outcome, since later absorption/flip detection
+ * depends on that state staying faithful to the Pine port. Because scan()
+ * always runs over the full historical candle array in one pass (see
+ * "Purity" note below), the 2-candle lookahead is simply read from the same
+ * O/H/L/C arrays already in scope — no separate buffering or incremental
+ * state is needed. The two event types check the lookahead independently
+ * (a resistance break and support break on the same bar, from different
+ * bands, each get their own dojiWithinLookahead() call).
  * ─────────────────────────────────────────────────────────────────
  */
 
@@ -441,18 +446,32 @@ class AbsorptionFlipEngine {
           // `weak` = the weak-test count that flagged ABSORBING (the amber
           // "ABSORBING R ×3" alert box), `pokes` = the band's own wick-through
           // count (the "POKED ×N" band-state label). Scanner UI shows both.
+          // Same Doji gate as flip_break (see dojiWithinLookahead above):
+          // the underlying absorb/absHi/absLo/broken state has already
+          // advanced above regardless — this only gates whether the event
+          // is surfaced. Checked once per candidate break so a resistance
+          // break and a support break (different bands, same bar) each get
+          // their own independent lookahead.
           if (wasAbsorb) {
             if (b.isRes && prevAbsHi != null && close > prevAbsHi) {
-              this.events.push({
-                type: "absorption_break", direction: "up", side: "resistance",
-                level: prevAbsHi, weak: b.weak, pokes: b.pokes, stepNo: b.stepNo, time: T[i], price: close, barIndex: i,
-              });
+              const dojiBarAbsR = dojiWithinLookahead(i);
+              if (dojiBarAbsR !== -1) {
+                this.events.push({
+                  type: "absorption_break", direction: "up", side: "resistance",
+                  level: prevAbsHi, weak: b.weak, pokes: b.pokes, stepNo: b.stepNo, time: T[i], price: close, barIndex: i,
+                  dojiConfirmed: true, dojiBarIndex: dojiBarAbsR, dojiTime: T[dojiBarAbsR],
+                });
+              }
             }
             if (!b.isRes && prevAbsLo != null && close < prevAbsLo) {
-              this.events.push({
-                type: "absorption_break", direction: "down", side: "support",
-                level: prevAbsLo, weak: b.weak, pokes: b.pokes, stepNo: b.stepNo, time: T[i], price: close, barIndex: i,
-              });
+              const dojiBarAbsS = dojiWithinLookahead(i);
+              if (dojiBarAbsS !== -1) {
+                this.events.push({
+                  type: "absorption_break", direction: "down", side: "support",
+                  level: prevAbsLo, weak: b.weak, pokes: b.pokes, stepNo: b.stepNo, time: T[i], price: close, barIndex: i,
+                  dojiConfirmed: true, dojiBarIndex: dojiBarAbsS, dojiTime: T[dojiBarAbsS],
+                });
+              }
             }
           }
 
@@ -591,7 +610,7 @@ function scan(symbol, candles /*, context = {} */) {
 module.exports = {
   id: "absorption-flip",
   name: "9EMA Absorption / Flip Break",
-  description: "Direct Pine port of the 9EMA Pivot S/R Bands' ABSORPTION watch-state + trend-flip step-line — flags every symbol where an absorbing band's extreme got closed through, or the regime's refSWL/refSWH flip level broke, across the full candle history. Breakthrough (flip) signals additionally require a Doji candle within 2 candles after the breakthrough candle.",
+  description: "Direct Pine port of the 9EMA Pivot S/R Bands' ABSORPTION watch-state + trend-flip step-line — flags every symbol where an absorbing band's extreme got closed through, or the regime's refSWL/refSWH flip level broke, across the full candle history. Both absorption-break and flip signals additionally require a Doji candle within 2 candles after the triggering candle.",
   scan,
   // Also exported for direct/standalone use and testing.
   AbsorptionFlipEngine,

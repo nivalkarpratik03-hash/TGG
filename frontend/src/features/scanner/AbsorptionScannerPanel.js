@@ -11,15 +11,15 @@
 // table layout — made data-driven and re-themed onto the app's real
 // theme tokens (see AbsorptionScannerPanel.css), same as T5's CSS does.
 //
-// Doji Breakthroughs tab — every flip_break ("Breakthrough") signal that
-// reaches this panel has ALREADY passed the backend's post-breakthrough
-// Doji check (absorptionFlip.js only emits a flip_break event once a Doji
-// candle shows up within 2 candles of the breakthrough candle — no event
-// is emitted at all otherwise, so there's nothing to filter client-side).
-// This tab exists purely so those confirmed breakthroughs are easy to find
-// on their own instead of scanning them out of the mixed Results/History
-// tables, and shows the confirming Doji candle's own timestamp alongside
-// the breakthrough candle's.
+// Doji Breakthroughs tab — every signal that reaches this panel, of EITHER
+// type (absorption_break or flip_break), has ALREADY passed the backend's
+// post-breakthrough Doji check (absorptionFlip.js only emits an event once
+// a Doji candle shows up within 2 candles of the triggering candle — no
+// event is emitted at all otherwise, so there's nothing to filter
+// client-side). This tab exists purely so those confirmed breakthroughs
+// are easy to find on their own instead of scanning them out of the mixed
+// Results/History tables, and shows the confirming Doji candle's own
+// timestamp alongside the triggering candle's.
 //
 // Symbol search — own state, own input, filters whichever tab is active
 // (Results/Doji Breakthroughs/Upcoming/History independently). Download
@@ -68,7 +68,17 @@ function SearchGlyph() {
 }
 
 // ── "What Broke" / "Watching" badge — mirrors the mockup's colored pills ──
-function BreakBadge({ type, direction, side, stepNo }) {
+// Both event types (absorption_break and flip_break) now pass through the
+// same backend Doji gate (see absorptionFlip.js's dojiWithinLookahead(),
+// called from both the flip branches and the absorption-break branch), so
+// every row reaching this component already has dojiConfirmed truthy. The
+// tag below is shown from the row's own `dojiConfirmed` field rather than
+// hardcoded per-type, so it stays correct even if that ever changes.
+function BreakBadge({ type, direction, side, stepNo, dojiConfirmed }) {
+  const dojiTag = dojiConfirmed ? (
+    <span className="af-sidetag af-dojitag" title="Doji candle confirmed within 2 candles of the breakthrough">Doji ✓</span>
+  ) : null;
+
   if (type === "absorption_break") {
     const up = direction === "up";
     const sideLabel = side === "resistance" ? "R" : "S";
@@ -76,18 +86,17 @@ function BreakBadge({ type, direction, side, stepNo }) {
       <span className={`af-broke ${up ? "abs-up" : "abs-dn"}`}>
         {up ? "\u25B2" : "\u25BC"} Absorption {sideLabel} Broken
         {stepNo != null && <span className="af-sidetag">{sideLabel}{stepNo}</span>}
+        {dojiTag}
       </span>
     );
   }
-  // flip_break — every one of these already passed the backend's
-  // post-breakthrough Doji check (see absorptionFlip.js), so the tag here
-  // is just a visual confirmation, not a filter.
+  // flip_break
   const up = direction === "up";
   return (
     <span className={`af-broke ${up ? "flip-up" : "flip-dn"}`}>
       {up ? "\u25B2 Flip UP" : "\u25BC Flip DOWN"}
       <span className="af-sidetag">{side === "resistance" ? "Resistance" : "Support"}</span>
-      <span className="af-sidetag af-dojitag" title="Doji candle confirmed within 2 candles of the breakthrough">Doji ✓</span>
+      {dojiTag}
     </span>
   );
 }
@@ -130,6 +139,10 @@ function breakLabelText(r) {
 
 function dojiBreakthroughLabelText(r) {
   const up = r.direction === "up";
+  if (r.type === "absorption_break") {
+    const sideLabel = r.side === "resistance" ? "R" : "S";
+    return `${up ? "Absorption UP" : "Absorption DOWN"} - ${sideLabel} Broken${r.stepNo != null ? ` (${sideLabel}${r.stepNo})` : ""} - Doji confirmed`;
+  }
   return `${up ? "Flip UP" : "Flip DOWN"} (${r.side === "resistance" ? "Resistance" : "Support"}) - Doji confirmed`;
 }
 
@@ -176,7 +189,7 @@ function EventTable({ rows, emptyLabel, onRowClick }) {
               <td className="af-sr">{i + 1}</td>
               <td><SymbolCell symbol={r.symbol} /></td>
               <td>
-                <BreakBadge type={r.type} direction={r.direction} side={r.side} stepNo={r.stepNo} />
+                <BreakBadge type={r.type} direction={r.direction} side={r.side} stepNo={r.stepNo} dojiConfirmed={r.dojiConfirmed} />
               </td>
               <td className="af-level num">{fmt(r.level)}</td>
               <td className="af-poked num">{r.weak != null ? `\u00D7${r.weak}` : <Dash />}</td>
@@ -190,8 +203,9 @@ function EventTable({ rows, emptyLabel, onRowClick }) {
   );
 }
 
-// ── Doji Breakthrough table — flip_break events, Doji-confirmed by the
-// backend, shown with their own confirming Doji candle's time. ─────────
+// ── Doji Breakthrough table — both absorption_break and flip_break
+// events, Doji-confirmed by the backend, shown with their own confirming
+// Doji candle's time. ───────────────────────────────────────────────────
 function DojiBreakthroughTable({ rows, emptyLabel, onRowClick }) {
   if (rows.length === 0) {
     return <div className="af-empty">{emptyLabel}</div>;
@@ -215,7 +229,7 @@ function DojiBreakthroughTable({ rows, emptyLabel, onRowClick }) {
               <td className="af-sr">{i + 1}</td>
               <td><SymbolCell symbol={r.symbol} /></td>
               <td>
-                <BreakBadge type={r.type} direction={r.direction} side={r.side} />
+                <BreakBadge type={r.type} direction={r.direction} side={r.side} stepNo={r.stepNo} dojiConfirmed={r.dojiConfirmed} />
               </td>
               <td className="af-level num">{fmt(r.level)}</td>
               <td className="af-time">{r.timeLabel}</td>
@@ -336,6 +350,8 @@ export default function AbsorptionScannerPanel({
       "Exchange": exchangeOf(r.symbol),
       "Breakthrough": dojiBreakthroughLabelText(r),
       "Level": r.level ?? "",
+      "Weak": r.weak != null ? r.weak : "",
+      "Poked": r.pokes != null ? r.pokes : "",
       "Breakthrough Time": r.timeLabel || "",
       "Doji Candle Time": r.dojiTimeLabel || "",
     }));
@@ -515,11 +531,12 @@ export default function AbsorptionScannerPanel({
         <b>Weak &times;N</b> is the weak-test count (&ge;3 by default) that flagged it ABSORBING &mdash; matches the
         chart's own amber "ABSORBING R &times;3" alert. <b>Poked &times;N</b> is a separate number &mdash; the band's
         own wick-through count, matching the chart's "POKED &times;N" band-state label.<br />
-        <b>Flip UP</b> / <b>Flip DOWN</b> &mdash; the regime's own refSWH/refSWL step-line broke; no Weak/Poked count
-        applies (a flip is a single close-through, not a tested band). Every Flip UP/DOWN signal shown anywhere in
-        this panel already required a <b>Doji</b> candle within the 2 candles right after the breakthrough candle
-        &mdash; if no Doji showed up, the breakthrough is never surfaced at all. The <b>Doji Breakthroughs</b> tab
-        pulls just those confirmed signals out on their own, alongside the exact Doji candle's timestamp.<br />
+        <b>Flip UP</b> / <b>Flip DOWN</b> &mdash; the regime's own refSWH/refSWL step-line broke (a single
+        close-through, not a tested band, so no Weak/Poked count applies).<br />
+        Every signal shown anywhere in this panel &mdash; <b>both</b> Absorption R/S Broken <b>and</b> Flip UP/DOWN
+        &mdash; already required a <b>Doji</b> candle within the 2 candles right after the triggering candle;
+        if no Doji showed up, the event is never surfaced at all. The <b>Doji Breakthroughs</b> tab pulls just
+        those confirmed signals (of either type) out on their own, alongside the exact Doji candle's timestamp.<br />
         <b>Upcoming</b> shows what hasn't broken yet: bands still in the ABSORBING watch-state, and the current
         flip-watch level, sorted by how close price is to breaking each one (in ATRs, not raw price &mdash; keeps a
         &#8377;40-ATR stock and a &#8377;3-ATR stock fairly ranked against each other).
