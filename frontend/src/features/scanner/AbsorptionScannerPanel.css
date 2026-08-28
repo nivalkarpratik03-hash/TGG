@@ -317,6 +317,45 @@
   border-color: var(--af-green);
 }
 
+/* ── retest-entry Outcome badge (Chunk 2) — same pill shape as
+   af-sidetag, colored per event.retest.state ── */
+.af-outcome {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  border: 1px solid var(--af-border);
+  background: var(--af-panel);
+  color: var(--af-mut);
+}
+
+.af-outcome-win {
+  color: var(--af-green);
+  border-color: var(--af-green);
+}
+
+.af-outcome-loss {
+  color: var(--af-red);
+  border-color: var(--af-red);
+}
+
+.af-outcome-open {
+  color: var(--af-accent);
+  border-color: var(--af-accent);
+}
+
+.af-outcome-watching {
+  color: var(--af-amber);
+  border-color: var(--af-amber);
+}
+
+.af-outcome-invalidated {
+  color: var(--af-mut);
+  border-color: var(--af-border);
+}
+
 .af-level {
   font-family: monospace;
   font-weight: 600;
