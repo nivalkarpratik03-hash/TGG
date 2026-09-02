@@ -4,7 +4,7 @@
 // No test framework dependency — plain assert, exits non-zero on any failure.
 
 const assert = require("assert");
-const { computeRetestOutcome } = require("./strategies/absorptionFlip.js");
+const { computeRetestOutcome, isLastCandleForming, detectSpacingMs, scan } = require("./strategies/absorptionFlip.js");
 
 let passed = 0;
 function check(label, actual, expected) {
@@ -234,6 +234,132 @@ const c = (t, o, h, l, cl) => ({ time: t, open: o, high: h, low: l, close: cl })
   const event = { direction: "up", dojiBarIndex: 5, zoneLevel: 95 };
   const r = computeRetestOutcome(event, candles);
   check("T10 state (out-of-range dojiBarIndex)", r.state, "watching");
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// TESTS 11+ — Forming-candle guard (FIX — 2026-09-02)
+// Doji must never fire off a candle that hasn't closed yet. Covers
+// detectSpacingMs() + isLastCandleForming() directly across several real
+// timeframes, then scan() end-to-end to confirm the guard is actually wired
+// in and doesn't crash the strategy.
+// ─────────────────────────────────────────────────────────────────────────
+const now = Date.now();
+
+// Build N candles ending at `lastTime`, spaced `spacingMs` apart, oldest
+// first — plain, non-doji-shaped OHLC (irrelevant to these tests; only
+// timing matters here).
+function buildSpacedCandles(count, spacingMs, lastTime) {
+  const out = [];
+  const start = lastTime - spacingMs * (count - 1);
+  for (let i = 0; i < count; i++) {
+    const t = start + i * spacingMs;
+    const base = 100 + (i % 5);
+    out.push(c(t, base, base + 2, base - 2, base + 0.5));
+  }
+  return out;
+}
+
+// ── TEST 11 — detectSpacingMs: uniform 1-minute spacing ────────────────
+{
+  const candles = buildSpacedCandles(10, 60 * 1000, now);
+  check("T11 detectSpacingMs 1m", detectSpacingMs(candles), 60 * 1000);
+}
+
+// ── TEST 12 — detectSpacingMs: uniform 5-minute spacing ────────────────
+{
+  const candles = buildSpacedCandles(10, 5 * 60 * 1000, now);
+  check("T12 detectSpacingMs 5m", detectSpacingMs(candles), 5 * 60 * 1000);
+}
+
+// ── TEST 13 — detectSpacingMs: one irregular gap (holiday/session break)
+// among otherwise-regular 15m bars — majority spacing must still win.
+// ─────────────────────────────────────────────────────────────────────────
+{
+  const candles = buildSpacedCandles(12, 15 * 60 * 1000, now);
+  // Blow out one gap in the middle (simulates an overnight/holiday jump) —
+  // shift every candle from index 6 onward forward by 3 hours.
+  for (let i = 6; i < candles.length; i++) candles[i].time += 3 * 60 * 60 * 1000;
+  check("T13 detectSpacingMs ignores one outlier gap", detectSpacingMs(candles), 15 * 60 * 1000);
+}
+
+// ── TEST 14 — isLastCandleForming: 1m candle that closed 4 minutes ago
+// (fully historical) -> NOT forming.
+// ─────────────────────────────────────────────────────────────────────────
+{
+  const candles = buildSpacedCandles(10, 60 * 1000, now - 5 * 60 * 1000);
+  check("T14 1m closed candle -> not forming", isLastCandleForming(candles), false);
+}
+
+// ── TEST 15 — isLastCandleForming: 1m candle that started 30s ago (its
+// own 60s period hasn't elapsed yet) -> IS forming. This is the exact bug
+// the user flagged: a live candle still running, mid-bar.
+// ─────────────────────────────────────────────────────────────────────────
+{
+  const candles = buildSpacedCandles(10, 60 * 1000, now - 30 * 1000);
+  check("T15 1m live mid-bar candle -> forming", isLastCandleForming(candles), true);
+}
+
+// ── TEST 16 — isLastCandleForming: daily (1D) bar for TODAY, started 2
+// hours ago, market still open — the whole-day period (~24h) hasn't
+// elapsed -> IS forming. Confirms the guard also protects D/W/M timeframes,
+// not just intraday.
+// ─────────────────────────────────────────────────────────────────────────
+{
+  const candles = buildSpacedCandles(10, 24 * 60 * 60 * 1000, now - 2 * 60 * 60 * 1000);
+  check("T16 daily bar still within today -> forming", isLastCandleForming(candles), true);
+}
+
+// ── TEST 17 — isLastCandleForming: daily bar from 3 days ago (fully
+// closed, e.g. running scan() on old/historical data) -> NOT forming.
+// Confirms the guard doesn't wrongly trim genuinely historical data.
+// ─────────────────────────────────────────────────────────────────────────
+{
+  const candles = buildSpacedCandles(10, 24 * 60 * 60 * 1000, now - 3 * 24 * 60 * 60 * 1000);
+  check("T17 old daily bar -> not forming", isLastCandleForming(candles), false);
+}
+
+// ── TEST 18 — isLastCandleForming: too little history to infer spacing
+// (<3 candles) -> safe default false, never crashes.
+// ─────────────────────────────────────────────────────────────────────────
+{
+  check("T18 1 candle -> safe false", isLastCandleForming([c(now, 100, 101, 99, 100)]), false);
+  check("T18 2 candles -> safe false", isLastCandleForming(buildSpacedCandles(2, 60000, now)), false);
+  check("T18 empty array -> safe false", isLastCandleForming([]), false);
+}
+
+// ── TEST 19 — scan() end-to-end: 40 clean 5m candles, last one still
+// forming (started 1 minute ago, well inside its own 5m period). Detection
+// must run on the 39 closed candles only, flag formingCandleExcluded=true,
+// and must not crash.
+// ─────────────────────────────────────────────────────────────────────────
+{
+  const candles = buildSpacedCandles(40, 5 * 60 * 1000, now - 60 * 1000);
+  const result = scan("TEST:FORMING5M", candles);
+  check("T19 no crash (error null)", result.error, null);
+  check("T19 formingCandleExcluded flag set", result.formingCandleExcluded, true);
+  check("T19 lastCandle still the RAW last (live) candle", result.lastCandle.time, candles[candles.length - 1].time);
+}
+
+// ── TEST 20 — scan() end-to-end: exactly 30 candles, last one forming.
+// After exclusion only 29 remain (< 30 minimum) -> must degrade to
+// insufficient_data cleanly, not crash, not silently run on too little data.
+// ─────────────────────────────────────────────────────────────────────────
+{
+  const candles = buildSpacedCandles(30, 60 * 1000, now - 20 * 1000);
+  const result = scan("TEST:FORMING_BOUNDARY", candles);
+  check("T20 formingCandleExcluded flag set", result.formingCandleExcluded, true);
+  check("T20 degrades to insufficient_data", result.error, "insufficient_data");
+}
+
+// ── TEST 21 — scan() end-to-end: 40 fully-closed 15m candles (old
+// historical data, e.g. after market close or a genuine backtest window) ->
+// formingCandleExcluded must stay false, unchanged behavior.
+// ─────────────────────────────────────────────────────────────────────────
+{
+  const candles = buildSpacedCandles(40, 15 * 60 * 1000, now - 60 * 60 * 1000);
+  const result = scan("TEST:ALLCLOSED15M", candles);
+  check("T21 no crash (error null)", result.error, null);
+  check("T21 formingCandleExcluded stays false on closed data", result.formingCandleExcluded, false);
 }
 
 console.log(`\n${passed} assertions passed.`);

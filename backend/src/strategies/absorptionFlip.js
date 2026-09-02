@@ -138,6 +138,58 @@ function isDoji(o, h, l, c) {
   return body <= dojiBodyRatio * range;
 }
 
+// ─── Forming-candle guard (FIX — flag raised 2026-09-02) ──────────────────
+// BUG: Doji is a close-quality read ("this bar finished, and it finished
+// indecisive"). But candles fed into scan() can end with a candle that
+// hasn't closed yet — live intraday ticks still updating its O/H/L/C, or a
+// today's-bar on a daily/weekly resolution before the session has ended.
+// Reading isDoji() off that bar means the "Doji" can appear, disappear, and
+// reappear tick-by-tick as the still-forming candle's body wobbles — a
+// signal that isn't real yet, on every timeframe this strategy scans.
+//
+// FIX: never evaluate Doji (or feed the engine at all) using a last candle
+// that hasn't actually closed. Whether a candle has closed is worked out
+// from the candle data itself — the spacing between consecutive bar-start
+// timestamps, measured ONLY across candles BEFORE the last one (so a
+// genuinely-forming last bar can never pollute its own spacing estimate).
+// This makes the guard self-adjusting to whatever resolution scan() was
+// called with (1m, 3m, 5m, 15m, 1D, 1W, ...) with nothing hardcoded and no
+// resolution parameter required from the caller.
+//
+// Safe-by-default: if there isn't enough history to confidently measure
+// spacing, this returns "not forming" (old behavior) rather than guess.
+
+// Most common gap (ms) between consecutive candle timestamps, using only
+// candles[0..n-2] — i.e. every gap EXCEPT the one ending at the last candle.
+function detectSpacingMs(candles) {
+  const n = candles.length;
+  if (n < 3) return null;
+  const counts = new Map();
+  for (let i = 1; i < n - 1; i++) {
+    const gap = candles[i].time - candles[i - 1].time;
+    if (gap > 0) counts.set(gap, (counts.get(gap) || 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  let bestGap = null, bestCount = -1;
+  for (const [gap, count] of counts) {
+    if (count > bestCount) { bestCount = count; bestGap = gap; }
+  }
+  return bestGap;
+}
+
+// True only if the LAST candle's own period hasn't elapsed yet as of right
+// now — i.e. it is still live/forming, not actually closed.
+function isLastCandleForming(candles) {
+  const n = candles.length;
+  if (n < 3) return false;
+  const spacingMs = detectSpacingMs(candles);
+  if (!spacingMs) return false;
+  const last = candles[n - 1];
+  const expectedCloseMs = last.time + spacingMs;
+  const BUFFER_MS = 2000; // clock-skew / scan-just-missed-the-close tolerance
+  return Date.now() < (expectedCloseMs - BUFFER_MS);
+}
+
 // ─── Retest-Entry engine (new layer, added on top of Doji-confirmed events) ─
 // Spec, locked by the user, nothing guessed beyond the one explicitly-flagged
 // assumption below:
@@ -717,8 +769,12 @@ function scan(symbol, candles /*, context = {} */) {
     events: [],              // full chronological history — every absorption_break / flip_break
     results: [],              // same events, MOST-RECENT-FIRST — for a scanner table
     state: null,               // final regime / flip level / live-absorbing snapshot
+    // lastCandle stays the RAW last candle (even if still forming) — this
+    // is what the UI shows as "current price/bar", and that's supposed to
+    // move live. Only the DETECTION path below excludes a forming candle.
     lastCandle: candles && candles.length ? candles[candles.length - 1] : null,
     candleCount: candles ? candles.length : 0,
+    formingCandleExcluded: false,
     scannedAt: new Date().toISOString(),
     error: null,
   };
@@ -729,8 +785,23 @@ function scan(symbol, candles /*, context = {} */) {
       return result;
     }
 
+    // ── Forming-candle guard ───────────────────────────────────────────
+    // Detection (Doji + everything downstream of it) must only ever see
+    // CLOSED candles. If the last candle hasn't closed yet, drop it before
+    // handing the array to the engine — same array shape/order otherwise,
+    // so nothing else about the engine's logic changes.
+    let detectionCandles = candles;
+    if (isLastCandleForming(candles)) {
+      detectionCandles = candles.slice(0, -1);
+      result.formingCandleExcluded = true;
+      if (detectionCandles.length < 30) {
+        result.error = "insufficient_data";
+        return result;
+      }
+    }
+
     const engine = new AbsorptionFlipEngine();
-    const { events, finalState } = engine.run(candles);
+    const { events, finalState } = engine.run(detectionCandles);
 
     result.events = events;
     result.results = events.slice().reverse();
@@ -784,4 +855,6 @@ module.exports = {
   // Also exported for direct/standalone use and testing.
   AbsorptionFlipEngine,
   computeRetestOutcome,
+  isLastCandleForming,
+  detectSpacingMs,
 };
