@@ -56,7 +56,19 @@ const INSTRUMENT_TYPES = [
   { value: "spot", label: "Spot" },
   { value: "futures", label: "Futures" },
 ];
-const RESOLUTIONS = [5, 15, 60, 1440];
+// 10080 = 1 Week, 43200 = 1 Month — same internal resolution convention
+// backend/src/services/candleBuilder.js and fyers/client.js already use
+// (confirmed there, not invented here). Weekly/monthly aggregate from
+// daily candles internally on the backend side — this dropdown just needs
+// to offer the value, nothing else to wire.
+const RESOLUTIONS = [
+  { value: 5, label: "5m" },
+  { value: 15, label: "15m" },
+  { value: 60, label: "60m" },
+  { value: 1440, label: "1D" },
+  { value: 10080, label: "1W" },
+  { value: 43200, label: "1M" },
+];
 const DOW_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const HOLD_EDGES = [2, 5, 10, 20];
 const HOLD_LABELS = ["0-2", "2-5", "5-10", "10-20", "20+"];
@@ -333,7 +345,7 @@ export default function AnalyticsPage() {
             <div className="an-field">
               <label>Resolution</label>
               <select value={resolution} onChange={(e) => setResolution(Number(e.target.value))}>
-                {RESOLUTIONS.map((r) => <option key={r} value={r}>{r >= 1440 ? `${r / 1440}D` : `${r}m`}</option>)}
+                {RESOLUTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
               </select>
             </div>
           </div>

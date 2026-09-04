@@ -56,23 +56,15 @@
 "use strict";
 
 const EventEmitter = require("events");
-const { fetchCandles } = require("../fyers/client");
 const strategies = require("../strategies/strategyRegistry");
 const { detectMotherWaveForAPI, calcTrapZone, classifyZone } = require("./motherwave");
 
-// ─── DB (optional) ────────────────────────────────────────────────────────────
-let db = null;
-let dbEnabled = false;
-try {
-  db = require("../../../database/src/index");
-  dbEnabled = true;
-} catch { /* DB optional — runs Fyers-only if not available */ }
-
-const { deriveTimeframe } = require("./candleBuilder");
-
-// ─── Config ───────────────────────────────────────────────────────────────────
-const CONCURRENCY = parseInt(process.env.SCANNER_CONCURRENCY || "3");
-const BATCH_DELAY_MS = parseInt(process.env.SCANNER_BATCH_DELAY_MS || "1000");
+// ─── Candle fetching (shared with Analytics — see candleFetch.js) ─────────────
+// DB-first-then-Fyers-fallback used to live inline here. It's now the ONE
+// shared implementation in candleFetch.js, used by both this file and
+// analyticsRouter.js — see candleFetch.js's own header comment and
+// sanity_candleFetch.js for proof the extraction is byte-equivalent.
+const { fetchCandlesDbFirst, CONCURRENCY, BATCH_DELAY_MS } = require("./candleFetch");
 const DEFAULT_RESOLUTION = parseInt(process.env.SCANNER_RESOLUTION || "15");
 const RETRY_LIMIT = 5;
 
@@ -408,29 +400,9 @@ class ScannerRunner extends EventEmitter {
     const effectiveComboKey = comboKey || buildComboKey(resolution, "all", "all");
     const retryQueue = retryTarget || this._retryQueue;
     try {
-      // ── DB-first: read from Postgres, fall back to Fyers if empty ─────────
-      let candles = null;
-
-      if (dbEnabled && db) {
-        try {
-          const windowMs = 90 * 24 * 60 * 60 * 1000;
-          const oneMin = await db.loadCandles(symbol, 1, {
-            from: new Date(Date.now() - windowMs),
-            to: new Date(),
-            limit: 50000,
-          });
-          if (oneMin && oneMin.length > 0) {
-            candles = resolution === 1 ? oneMin : deriveTimeframe(oneMin, resolution);
-            if (!candles || candles.length === 0) candles = null;
-          }
-        } catch (dbErr) {
-          console.warn(`[Scanner] DB read failed for ${symbol}: ${dbErr.message} — trying Fyers`);
-        }
-      }
-
-      if (!candles) {
-        candles = await fetchCandles(symbol, resolution, 5000);
-      }
+      // DB-first-then-Fyers-fallback — see candleFetch.js. logPrefix kept
+      // as "[Scanner]" so existing log output reads exactly as before.
+      let candles = await fetchCandlesDbFirst(symbol, resolution, { logPrefix: "[Scanner]" });
 
       this._errors.delete(symbol);
 

@@ -25,10 +25,14 @@ const router = express.Router();
 const strategies = require("../strategies/strategyRegistry");
 const { runAnalytics } = require("../analytics/runAnalytics");
 const { wiredStrategyIds } = require("../analytics/triggerAdapters");
-const { fetchCandles } = require("../fyers/client");
 const { resolveInstrumentSymbols } = require("../services/instrumentTypeResolver");
 const cache = require("../analytics/cache");
 const { toBuffer } = require("../analytics/etlExport");
+// Same shared DB-first-then-Fyers-fallback + throttled batching Scanner
+// uses — see candleFetch.js. This replaces the earlier version of this
+// file, which called Fyers directly per symbol with no DB check and no
+// throttle, causing the real rate-limit storm seen in production logs.
+const { fetchCandlesBatched } = require("../services/candleFetch");
 // Reusing the SAME closed-candle guard already proven in the forming-candle
 // fix (see absorptionFlip.js) rather than re-deriving it here. Historical
 // analytics needs this exactly as much as live scanning does — a still-
@@ -85,26 +89,28 @@ router.get("/run", async (req, res) => {
     // invented for Analytics.
     const symbols = await resolveInstrumentSymbols(assetClass, instrumentType);
 
+    // Same DB-first-then-Fyers-fallback + CONCURRENCY/BATCH_DELAY_MS
+    // throttle Scanner uses (candleFetch.js) — no longer a direct
+    // per-symbol Fyers loop. A symbol that genuinely fails (DB empty AND
+    // Fyers error) is isolated in `fetchErrors`, not thrown — the run
+    // still completes with whatever symbols succeeded.
+    const { candlesBySymbol: rawCandlesBySymbol, errors: fetchErrors } =
+      await fetchCandlesBatched(symbols, resolution, { logPrefix: "[Analytics]" });
+
+    // Bug caught reviewing an earlier draft: candle data (whether from DB
+    // or Fyers) can end with a still-forming last candle exactly like the
+    // live scanner path can (see absorptionFlip.js's isLastCandleForming
+    // doc comment) — a historical run must never let that unclosed candle
+    // become a trigger or an entry bar either.
     const candlesBySymbol = {};
-    for (const symbol of symbols) {
-      // Same fetch scannerRunner.js already uses for the live scanner.
-      // fetchCandles(symbol, resolution, ...) asks Fyers for that exact
-      // resolution directly — no separate local aggregation step needed
-      // here (that's only needed when building a higher timeframe out of
-      // locally-stored 1-min candles, which this router doesn't do).
-      let raw = await fetchCandles(symbol, resolution, 5000);
-      // Bug caught reviewing this draft: fetchCandles can hand back a
-      // still-forming last candle exactly like the live scanner path can
-      // (see absorptionFlip.js's isLastCandleForming doc comment) — a
-      // historical run must never let that unclosed candle become a
-      // trigger or an entry bar either.
-      if (raw && raw.length && isLastCandleForming(raw)) {
-        raw = raw.slice(0, -1);
-      }
-      candlesBySymbol[symbol] = raw;
+    for (const [symbol, raw] of Object.entries(rawCandlesBySymbol)) {
+      candlesBySymbol[symbol] = raw && raw.length && isLastCandleForming(raw) ? raw.slice(0, -1) : raw;
     }
 
     const result = runAnalytics({ strategy, candlesBySymbol, params, filters });
+    if (Object.keys(fetchErrors).length > 0) {
+      result.fetchErrors = fetchErrors; // surfaced, not hidden — some symbols may be missing from the run
+    }
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: "analytics_run_failed", message: e.message });
