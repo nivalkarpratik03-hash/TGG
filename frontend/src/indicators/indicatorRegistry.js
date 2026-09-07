@@ -44,6 +44,11 @@ export const INDICATOR_REGISTRY = [
     label: "9EMA Pivot S/R Bands",
     color: "#2962ff",
   },
+  {
+    id: "ceilingRetest",
+    label: "Ceiling Break & Retest",
+    color: "#2962ff",
+  },
 ];
 
 export function buildDefaultIndicators() {
@@ -54,6 +59,7 @@ export function buildDefaultIndicators() {
     srZones: false,
     t5: false,
     ema9pivot: false,
+    ceilingRetest: false,
     bubbleGap: 4,    // shared param for consolidation
   };
 }
