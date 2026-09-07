@@ -3,13 +3,13 @@
 //   1. Header — back / title / theme / status
 //   2. Control bar — asset class, strategy, instrument type, timeframe, scan now
 //   3. TWO SECTIONS:
-//      A) RESULTS/UPCOMING — exactly ONE of 4 fully self-contained panels
+//      A) RESULTS/UPCOMING — exactly ONE of 5 fully self-contained panels
 //         renders here depending on the active strategy family, each with
 //         its OWN stats row, tabs, and symbol search box baked in:
 //         S1S2S3ScannerPanel | TypeScannerPanel | T5ScannerPanel |
-//         AbsorptionScannerPanel. There is no shared stats bar or shared
-//         tabs bar anymore — ScannerPage.js's only job here is picking
-//         which one to render.
+//         AbsorptionScannerPanel | CeilingBreakScannerPanel. There is no
+//         shared stats bar or shared tabs bar anymore — ScannerPage.js's
+//         only job here is picking which one to render.
 //      B) MOTHERWAVE DASHBOARD — latest wave per symbol, sorted by wave size
 //         (uptrend | downtrend columns, then Zone Segregation trays) —
 //         unrelated to the strategy panels above, always shown.
@@ -33,6 +33,8 @@ import { buildScannerRows } from "./t5ResultShape";
 import T5ScannerPanel from "./T5ScannerPanel";
 import AbsorptionScannerPanel from "./AbsorptionScannerPanel";
 import { buildAbsorptionRows } from "./absorptionResultShape";
+import CeilingBreakScannerPanel from "./CeilingBreakScannerPanel";
+import { buildCeilingBreakRows } from "./ceilingBreakResultShape";
 import S1S2S3ScannerPanel from "./S1S2S3ScannerPanel";
 import TypeScannerPanel from "./TypeScannerPanel";
 import "./ScannerPage.css";
@@ -99,6 +101,15 @@ function openAbsorptionChart(symbol, timeframe) {
   // chart flag needed — buildChartUrl already handles mw=null cleanly
   // (see mwScanHelpers.js), same as openT5Chart's pattern minus the
   // t5-specific opts flag.
+  window.open(buildChartUrl(symbol, timeframe, null), "_blank");
+}
+
+function openCeilingBreakChart(symbol, timeframe) {
+  // Same non-motherwave pattern as openAbsorptionChart — no mw object,
+  // no special chart flag (that's Chunk 8/9's job once the indicator
+  // draw layer exists). Kept separate rather than reusing
+  // openAbsorptionChart directly so a future ceiling-specific chart flag
+  // (mirroring T5's `{ t5: true }`) has an obvious home later.
   window.open(buildChartUrl(symbol, timeframe, null), "_blank");
 }
 
@@ -326,6 +337,15 @@ export default function ScannerPage() {
   // strategyRegistry.js), no group field needed for this check.
   const isAbsorption = activeStrategy === "absorption-flip";
 
+  // Ceiling Break & Retest — same self-contained-panel treatment as T5/
+  // Absorption above: its own state/events shape (see
+  // ceilingBreakResultShape.js's header), not s1s2s3's or type's
+  // patternStage vocabulary, so it gets its own branch to its own panel
+  // (CeilingBreakScannerPanel). Matched by id directly, same as isT5/
+  // isAbsorption — ceilingBreakRetest.js exports id: "ceiling-break-retest"
+  // (see strategyRegistry.js), no group field needed for this check.
+  const isCeilingBreak = activeStrategy === "ceiling-break-retest";
+
   // Dropdown-eligible strategies only — excludes variant:"single" entries
   // (type-e/type-r/type-f), which are tab-only, reachable via the R/E/F
   // buttons next to Results/Upcoming instead. Previously the dropdown
@@ -519,6 +539,15 @@ export default function ScannerPage() {
     [results, isAbsorption]
   );
 
+  // Ceiling Break & Retest — reshape raw scan() results (events[]/state)
+  // into Results/Upcoming/History for CeilingBreakScannerPanel. No-op
+  // (empty arrays) whenever isCeilingBreak is false, same guard pattern
+  // as absorptionRows above.
+  const ceilingBreakRows = useMemo(
+    () => (isCeilingBreak ? buildCeilingBreakRows(results) : { results: [], upcoming: [], history: [] }),
+    [results, isCeilingBreak]
+  );
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="scanner-page">
@@ -673,6 +702,15 @@ export default function ScannerPage() {
                 lastScan={comboScannedAt}
                 durationMs={status?.lastScanDurationMs}
                 onRowClick={(symbol) => openAbsorptionChart(symbol, timeframe)}
+              />
+            ) : isCeilingBreak ? (
+              <CeilingBreakScannerPanel
+                rows={ceilingBreakRows}
+                scannedCount={results.length}
+                resolution={tfLabel}
+                lastScan={comboScannedAt}
+                durationMs={status?.lastScanDurationMs}
+                onRowClick={(symbol) => openCeilingBreakChart(symbol, timeframe)}
               />
             ) : isTypeGroup ? (
               <TypeScannerPanel
