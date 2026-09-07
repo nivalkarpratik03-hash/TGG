@@ -9,6 +9,7 @@ const { isLiveMarket, isTradingDay, isAnyMarketLive } = require("./fyers/tickStr
 const symbolsRouter = require("./routes/symbolsRouter");
 const scannerRouter = require("./routes/scannerRouter");
 const backtestRouter = require("./routes/backtestRouter");
+const analyticsRouter = require("./routes/analyticsRouter");
 const { detectMotherWaveForAPI } = require("./services/motherwave");
 const createChartRouter = require("./routes/chartRouter");
 const corsMiddleware = require("./middleware/cors");
@@ -99,6 +100,7 @@ app.use(createChartRouter({
 app.use("/api/symbols", symbolsRouter);
 app.use("/api/scanner", scannerRouter);
 app.use("/api/backtest", backtestRouter);
+app.use("/api/analytics", analyticsRouter);
 
 // ─── Serve React Frontend ─────────────────────────────────────────────────────
 const FRONTEND_BUILD = path.join(__dirname, "../../frontend/build");

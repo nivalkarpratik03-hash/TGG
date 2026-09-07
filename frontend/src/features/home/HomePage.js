@@ -79,6 +79,21 @@ const NAV_ITEMS = [
     tagColor: "orange",
     stats: ["HOT zone 0.618", "NEAR zone 0.382", "EMA9L confirmation"],
   },
+  {
+    id: "analytics",
+    path: "/analytics",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <rect x="3" y="12" width="4" height="8" />
+        <rect x="10" y="7" width="4" height="13" />
+        <rect x="17" y="3" width="4" height="17" />
+      </svg>
+    ),
+    label: "Analytics",
+    description: "Win rate, expectancy, MFE/MAE — historical strategy performance breakdown",
+    tagColor: "green",
+    stats: ["Win rate & expectancy", "MFE / MAE excursion", "Excel export"],
+  },
 ];
 
 export default function HomePage() {

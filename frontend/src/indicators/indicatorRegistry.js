@@ -45,9 +45,9 @@ export const INDICATOR_REGISTRY = [
     color: "#2962ff",
   },
   {
-    id: "ceilingRetest",
+    id: "ceilingBreak",
     label: "Ceiling Break & Retest",
-    color: "#2962ff",
+    color: "#ff9d3d",
   },
 ];
 
@@ -59,7 +59,7 @@ export function buildDefaultIndicators() {
     srZones: false,
     t5: false,
     ema9pivot: false,
-    ceilingRetest: false,
+    ceilingBreak: false,
     bubbleGap: 4,    // shared param for consolidation
   };
 }

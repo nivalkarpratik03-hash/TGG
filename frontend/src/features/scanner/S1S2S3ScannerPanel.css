@@ -1,0 +1,21 @@
+/* S1S2S3ScannerPanel.css
+ * Own container card — same treatment as T5ScannerPanel's .t5-wrap /
+ * AbsorptionScannerPanel's .af-wrap, so this panel sits inside
+ * ScannerPage's .scanner-section the same visual way those two do.
+ * Internal table/tabs/stats markup reuses the existing
+ * .scanner-signals-* / .stat-chip / .scanner-search classes already
+ * defined in ScannerPage.css (imported alongside this file) — those
+ * are shared with TypeScannerPanel.js, which has the identical table
+ * shape minus the R/E/F sub-filter row.
+ */
+.s3-wrap {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  box-sizing: border-box;
+}
+
+.s3-wrap * {
+  box-sizing: border-box;
+}

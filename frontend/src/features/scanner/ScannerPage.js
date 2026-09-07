@@ -1,12 +1,18 @@
 // ScannerPage.js
 // Layout (top→bottom):
-//   1. Header — timeframe selector, search, view toggle, scan button
-//   2. Stats bar
-//   3. TWO PANELS (tabs):
-//      A) MOTHERWAVE DASHBOARD — latest wave per symbol, sorted by wave size
-//         (uptrend | downtrend columns, then Zone Segregation trays)
-//      B) STRATEGIES PANEL — per-strategy tab, TABLE VIEW ONLY
-//         (stage filters, table rows — clicking opens chart in new tab with fib drawn)
+//   1. Header — back / title / theme / status
+//   2. Control bar — asset class, strategy, instrument type, timeframe, scan now
+//   3. TWO SECTIONS:
+//      A) RESULTS/UPCOMING — exactly ONE of 5 fully self-contained panels
+//         renders here depending on the active strategy family, each with
+//         its OWN stats row, tabs, and symbol search box baked in:
+//         S1S2S3ScannerPanel | TypeScannerPanel | T5ScannerPanel |
+//         AbsorptionScannerPanel | CeilingBreakScannerPanel. There is no
+//         shared stats bar or shared tabs bar anymore — ScannerPage.js's
+//         only job here is picking which one to render.
+//      B) MOTHERWAVE DASHBOARD — latest wave per symbol, sorted by wave size
+//         (uptrend | downtrend columns, then Zone Segregation trays) —
+//         unrelated to the strategy panels above, always shown.
 //   Clicking any stock card/row opens chart in new tab with fib retracement drawn
 //
 // r.motherwave is now the full { wave, fibLevels, invalidation } shape from
@@ -15,19 +21,22 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { createBackendSocket } from "../../utils/backendSocket";
-import { formatDateTimeIST } from "../../utils/istUtils";
 import { BACKEND } from "../../config";
 import { useTheme } from "../../App";
 import { fmt } from "../../utils/format";
 import { tickerOf, exchangeOf } from "../../utils/symbolMeta";
 import { TIMEFRAMES } from "../../utils/formatResolution";
 import {
-  fmtTime, stageLabel, mwWave, isMWBull, waveSize, getZoneTray, buildChartUrl,
+  mwWave, isMWBull, waveSize, getZoneTray, buildChartUrl,
 } from "./mwScanHelpers";
 import { buildScannerRows } from "./t5ResultShape";
 import T5ScannerPanel from "./T5ScannerPanel";
 import AbsorptionScannerPanel from "./AbsorptionScannerPanel";
 import { buildAbsorptionRows } from "./absorptionResultShape";
+import CeilingBreakScannerPanel from "./CeilingBreakScannerPanel";
+import { buildCeilingBreakRows } from "./ceilingBreakResultShape";
+import S1S2S3ScannerPanel from "./S1S2S3ScannerPanel";
+import TypeScannerPanel from "./TypeScannerPanel";
 import "./ScannerPage.css";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -79,11 +88,6 @@ const ASSET_TO_INSTRUMENT_TYPES = {
 // candle closed. mwTime uses the wave's toTime — the bar where the
 // motherwave tip landed (same reference point buildChartUrl already uses).
 // (This block is Scanner-only — not part of the shared cluster below.)
-function s1Time(r) { return r.s1?.time || null; }
-function s2Time(r) { return r.s2?.time || null; }
-function s3Time(r) { return r.s3?.time || null; }
-function mwTime(r) { return mwWave(r)?.toTime || null; }
-
 function openChart(symbol, timeframe, mw) {
   window.open(buildChartUrl(symbol, timeframe, mw), "_blank");
 }
@@ -97,6 +101,15 @@ function openAbsorptionChart(symbol, timeframe) {
   // chart flag needed — buildChartUrl already handles mw=null cleanly
   // (see mwScanHelpers.js), same as openT5Chart's pattern minus the
   // t5-specific opts flag.
+  window.open(buildChartUrl(symbol, timeframe, null), "_blank");
+}
+
+function openCeilingBreakChart(symbol, timeframe) {
+  // Same non-motherwave pattern as openAbsorptionChart — no mw object,
+  // no special chart flag (that's Chunk 8/9's job once the indicator
+  // draw layer exists). Kept separate rather than reusing
+  // openAbsorptionChart directly so a future ceiling-specific chart flag
+  // (mirroring T5's `{ t5: true }`) has an obvious home later.
   window.open(buildChartUrl(symbol, timeframe, null), "_blank");
 }
 
@@ -172,169 +185,6 @@ function ZoneTray({ label, subLabel, items, colorClass, timeframe }) {
   );
 }
 
-// ─── SignalsTable — shared by Results (S3 shown) and Upcoming (S3 omitted) ────
-function SignalsTable({ title, sub, rows, showS3, emptyLabel, timeframe }) {
-  return (
-    <div className="scanner-signals-col">
-      <div className="scanner-signals-col-header">
-        <span className="scanner-signals-col-title">{title}</span>
-        <span className="scanner-signals-col-sub">{sub}</span>
-      </div>
-      {rows.length === 0 ? (
-        <div className="scanner-signals-empty">{emptyLabel}</div>
-      ) : (
-        <div className="scanner-signals-table-wrap">
-          <table className="scanner-signals-table">
-            <thead>
-              <tr>
-                <th>Sr.No</th>
-                <th>Symbol</th>
-                <th>S1</th>
-                <th>S2</th>
-                {showS3 && <th>S3</th>}
-                <th>MW</th>
-                <th>Timestamp</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r, i) => {
-                const bull = isMWBull(r);
-                return (
-                  <tr
-                    key={r.symbol}
-                    className="scanner-signals-row"
-                    onClick={() => openChart(r.symbol, timeframe, r.motherwave)}
-                    title="Open chart with Fib drawn"
-                  >
-                    <td>{i + 1}</td>
-                    <td className="scanner-signals-sym">{tickerOf(r.symbol)}</td>
-                    <td className={`scanner-signals-flag ${r.s1 ? "on" : ""}`}>
-                      {r.s1 ? (
-                        <div className="scanner-signals-stage">
-                          <span className="scanner-signals-stage-check">✓</span>
-                          <span className="scanner-signals-stage-ts">{formatDateTimeIST(s1Time(r))}</span>
-                        </div>
-                      ) : "—"}
-                    </td>
-                    <td className={`scanner-signals-flag ${r.s2 ? "on" : ""}`}>
-                      {r.s2 ? (
-                        <div className="scanner-signals-stage">
-                          <span className="scanner-signals-stage-check">✓</span>
-                          <span className="scanner-signals-stage-ts">{formatDateTimeIST(s2Time(r))}</span>
-                        </div>
-                      ) : "—"}
-                    </td>
-                    {showS3 && (
-                      <td className={`scanner-signals-flag ${r.s3 ? "on" : ""}`}>
-                        {r.s3 ? (
-                          <div className="scanner-signals-stage">
-                            <span className="scanner-signals-stage-check">✓</span>
-                            <span className="scanner-signals-stage-ts">{formatDateTimeIST(s3Time(r))}</span>
-                          </div>
-                        ) : "—"}
-                      </td>
-                    )}
-                    <td>
-                      <span className={`scanner-signals-mw ${bull ? "bull" : "bear"}`}>
-                        {bull ? "▲ Bull" : "▼ Bear"}
-                      </span>
-                    </td>
-                    <td className="scanner-signals-ts">{formatDateTimeIST(mwTime(r) || r.scannedAt)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── TypeSignalsTable — for the "type" strategy family (E/R/F) ────────────────
-// typeREF.js's scanForType() shapes results totally differently from
-// s1s2s3: no r.s1/r.s2/r.s3 candle objects, no "s3_complete"/"s2" stages.
-// Instead: r.type ("R"|"E"|"F"|null for the combined view), r.entry/r.exit
-// prices, r.mw/r.mwTime/r.dw/r.dwTime (reference wave direction + time),
-// and r.patternStage is "completed" | "active" | "none". This table reads
-// that shape directly instead of forcing it through SignalsTable's s1/s2/s3
-// columns, which don't exist here.
-function TypeSignalsTable({ title, sub, rows, showExit, emptyLabel, timeframe }) {
-  return (
-    <div className="scanner-signals-col">
-      <div className="scanner-signals-col-header">
-        <span className="scanner-signals-col-title">{title}</span>
-        <span className="scanner-signals-col-sub">{sub}</span>
-      </div>
-      {rows.length === 0 ? (
-        <div className="scanner-signals-empty">{emptyLabel}</div>
-      ) : (
-        <div className="scanner-signals-table-wrap">
-          <table className="scanner-signals-table">
-            <thead>
-              <tr>
-                <th>Sr.No</th>
-                <th>Symbol</th>
-                <th>Type</th>
-                <th>Entry</th>
-                {showExit && <th>Exit</th>}
-                <th>DW</th>
-                <th>Timestamp</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r, i) => {
-                const dwBull = r.dw === "bullish" || r.dw === "up" || r.dw === true;
-                const latest = r.events && r.events.length ? r.events[r.events.length - 1] : null;
-                const entryTime = latest?.entryTime ?? null;
-                const exitTime = latest?.exited ? latest?.exitTime : null;
-                return (
-                  <tr
-                    key={r.symbol}
-                    className="scanner-signals-row"
-                    onClick={() => openChart(r.symbol, timeframe, r.motherwave)}
-                    title="Open chart with Fib drawn"
-                  >
-                    <td>{i + 1}</td>
-                    <td className="scanner-signals-sym">{tickerOf(r.symbol)}</td>
-                    <td>{r.type || "—"}</td>
-                    <td className={`scanner-signals-flag ${r.entry != null ? "on" : ""}`}>
-                      {r.entry != null ? (
-                        <div className="scanner-signals-stage">
-                          <span className="scanner-signals-stage-check">✓</span>
-                          <span className="scanner-signals-stage-ts">{fmt(r.entry)}{entryTime ? ` · ${formatDateTimeIST(entryTime)}` : ""}</span>
-                        </div>
-                      ) : "—"}
-                    </td>
-                    {showExit && (
-                      <td className={`scanner-signals-flag ${r.exit != null ? "on" : ""}`}>
-                        {r.exit != null ? (
-                          <div className="scanner-signals-stage">
-                            <span className="scanner-signals-stage-check">✓</span>
-                            <span className="scanner-signals-stage-ts">{fmt(r.exit)}{exitTime ? ` · ${formatDateTimeIST(exitTime)}` : ""}</span>
-                          </div>
-                        ) : "—"}
-                      </td>
-                    )}
-                    <td>
-                      {r.dw ? (
-                        <span className={`scanner-signals-mw ${dwBull ? "bull" : "bear"}`}>
-                          {dwBull ? "▲ Bull" : "▼ Bear"}
-                        </span>
-                      ) : "—"}
-                    </td>
-                    <td className="scanner-signals-ts">{formatDateTimeIST(r.dwTime || r.scannedAt)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function ScannerPage() {
   const navigate = useNavigate();
@@ -349,6 +199,18 @@ export default function ScannerPage() {
   const [progress, setProgress] = useState(null);
   const [loading, setLoading] = useState(false);
   const [lastScan, setLastScan] = useState(null);
+  // NEW — per-combo, per-strategy last-scanned timestamp, read from
+  // /api/scanner/results/:strategyId's new `scannedAt` field (see
+  // scannerRouter.js). Replaces the global `lastScan` (status.lastScanAt)
+  // as what's actually shown in each panel's "Last scan" display — `lastScan`
+  // itself is still tracked (see fetchStatus/socket handlers below) purely
+  // as a refetch trigger: "some scan somewhere just completed, go refetch",
+  // not as a value ever rendered directly anymore. Without this split, the
+  // Scanner UI would show the timestamp of whatever was scanned MOST
+  // RECENTLY ANYWHERE, even if that was a completely different
+  // strategy+timeframe+assetClass+instrumentType combo than the one
+  // currently on screen.
+  const [comboScannedAt, setComboScannedAt] = useState(null);
   const [timeframe, setTimeframe] = useState(() => {
     try { const v = localStorage.getItem("tgg_scanner_tf"); return v ? JSON.parse(v) : 15; }
     catch { return 15; }
@@ -368,18 +230,6 @@ export default function ScannerPage() {
     try { const v = localStorage.getItem("tgg_scanner_instrumenttype"); return v || "all"; }
     catch { return "all"; }
   });
-  // NEW — Results/Upcoming tab switch. Previously both tables rendered
-  // side-by-side at half width each, which crowded the S1/S2/S3/MW/
-  // Timestamp columns (especially once per-stage date+time was added).
-  // Now only one renders at a time, at full section width.
-  const [signalsTab, setSignalsTab] = useState(() => {
-    try { const v = localStorage.getItem("tgg_scanner_signalstab"); return v || "results"; }
-    catch { return "results"; }
-  });
-  function handleSignalsTabChange(val) {
-    setSignalsTab(val);
-    localStorage.setItem("tgg_scanner_signalstab", val);
-  }
   // NEW — R/E/F sub-filter, only meaningful when the combined "Type E,R,F"
   // strategy is active. "all" = the combined view (type-ref: whichever of
   // E/R/F most recently triggered per symbol). "R"/"E"/"F" switch the data
@@ -430,6 +280,11 @@ export default function ScannerPage() {
       });
       const r = await fetch(`${BACKEND}/api/scanner/results/${stratId}?${params.toString()}`).then(r => r.json());
       setResults(r.results || []);
+      // NEW — per-combo, per-strategy scan time straight from this exact
+      // request's response (see scannerRouter.js's new `scannedAt` field),
+      // not the global status.lastScanAt. See comboScannedAt's own
+      // declaration comment above for why this split matters.
+      setComboScannedAt(r.scannedAt || null);
     } catch { }
   }, []);
 
@@ -456,10 +311,12 @@ export default function ScannerPage() {
   }, [fetchStatus]);
 
   // Active strategy's family — different strategy families use different
-  // patternStage vocabularies (see TypeSignalsTable comment above), so
-  // stats + tables below branch on this instead of assuming s1s2s3's
+  // patternStage vocabularies (see TypeScannerPanel.js's header comment),
+  // so stats + tables below branch on this instead of assuming s1s2s3's
   // "s1"/"s2"/"s3_complete" everywhere. `group` comes from
-  // scannerRunner.js's getStrategies().
+  // scannerRunner.js's getStrategies(). This drives which of the 4
+  // self-contained panels (S1S2S3ScannerPanel / TypeScannerPanel /
+  // T5ScannerPanel / AbsorptionScannerPanel) renders below.
   const activeStrategyMeta = useMemo(
     () => strategies.find(s => s.id === activeStrategy) || null,
     [strategies, activeStrategy]
@@ -468,18 +325,26 @@ export default function ScannerPage() {
 
   // TG T5 — own row shapes entirely (P1–P6 timeline, live/confirmed/
   // cancelled status), nothing like s1s2s3's or type's patternStage
-  // vocabulary, so it gets its own branch + its own self-contained panel
-  // (T5ScannerPanel) instead of going through SignalsTable/TypeSignalsTable.
+  // vocabulary, so it gets its own branch to its own self-contained
+  // panel (T5ScannerPanel).
   const isT5 = activeStrategy === "tg-t5";
 
   // 9EMA Absorption / Flip Break — same self-contained-panel treatment as
   // T5 above: its own event/state shape (events[]/results[]/state), not
   // s1s2s3's or type's patternStage vocabulary, so it gets its own branch
-  // + its own panel (AbsorptionScannerPanel) instead of SignalsTable.
-  // Matched by id directly, same as isT5 — absorptionFlip.js exports
-  // id: "absorption-flip" (see strategyRegistry.js), no group field
-  // needed for this check.
+  // to its own panel (AbsorptionScannerPanel). Matched by id directly,
+  // same as isT5 — absorptionFlip.js exports id: "absorption-flip" (see
+  // strategyRegistry.js), no group field needed for this check.
   const isAbsorption = activeStrategy === "absorption-flip";
+
+  // Ceiling Break & Retest — same self-contained-panel treatment as T5/
+  // Absorption above: its own state/events shape (see
+  // ceilingBreakResultShape.js's header), not s1s2s3's or type's
+  // patternStage vocabulary, so it gets its own branch to its own panel
+  // (CeilingBreakScannerPanel). Matched by id directly, same as isT5/
+  // isAbsorption — ceilingBreakRetest.js exports id: "ceiling-break-retest"
+  // (see strategyRegistry.js), no group field needed for this check.
+  const isCeilingBreak = activeStrategy === "ceiling-break-retest";
 
   // Dropdown-eligible strategies only — excludes variant:"single" entries
   // (type-e/type-r/type-f), which are tab-only, reachable via the R/E/F
@@ -512,6 +377,10 @@ export default function ScannerPage() {
   // instead of another strategy's incompatible data.
   useEffect(() => {
     setResults([]);
+    // NEW — same reasoning as the setResults([]) fix above: without this,
+    // switching strategies could briefly show the PREVIOUS strategy's
+    // comboScannedAt next to the new (empty) results for one tick.
+    setComboScannedAt(null);
   }, [effectiveStrategyId]);
 
   // FIX (2026-08-18) — previously only depended on [effectiveStrategyId,
@@ -570,7 +439,15 @@ export default function ScannerPage() {
       await fetch(`${BACKEND}/api/scanner/trigger`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resolution: timeframe, assetClass, instrumentType }),
+        // NEW — strategyId scopes this scan to just the dropdown's
+        // selected strategy family (see scannerRunner.js's
+        // resolveStrategiesToRun). Sends `activeStrategy` (the actual
+        // dropdown selection, e.g. "type-ref"), NOT `effectiveStrategyId`
+        // — if an R/E/F tab is active, effectiveStrategyId would be e.g.
+        // "type-e" alone, which would scan ONLY Type E and leave type-r/
+        // type-f/type-ref stale. The dropdown's strategy is always the
+        // right scope for what "Scan Now" should run.
+        body: JSON.stringify({ resolution: timeframe, assetClass, instrumentType, strategyId: activeStrategy }),
       });
       setProgress({ total: status?.symbolCount || 0, done: 0 });
     } catch { }
@@ -601,8 +478,6 @@ export default function ScannerPage() {
   );
   const mwUptrend = useMemo(() => withMW.filter(r => isMWBull(r)), [withMW]);
   const mwDowntrend = useMemo(() => withMW.filter(r => !isMWBull(r)), [withMW]);
-  const noValidMW = useMemo(() => results.filter(r => !mwWave(r)), [results]);
-
   // Zone trays — downtrend stocks
   const downWithZone = useMemo(() => mwDowntrend.filter(r => r.trapZone), [mwDowntrend]);
   const trapZoneItems = useMemo(() => downWithZone.filter(r => getZoneTray(r) === "trap"), [downWithZone]);
@@ -664,6 +539,15 @@ export default function ScannerPage() {
     [results, isAbsorption]
   );
 
+  // Ceiling Break & Retest — reshape raw scan() results (events[]/state)
+  // into Results/Upcoming/History for CeilingBreakScannerPanel. No-op
+  // (empty arrays) whenever isCeilingBreak is false, same guard pattern
+  // as absorptionRows above.
+  const ceilingBreakRows = useMemo(
+    () => (isCeilingBreak ? buildCeilingBreakRows(results) : { results: [], upcoming: [], history: [] }),
+    [results, isCeilingBreak]
+  );
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="scanner-page">
@@ -688,27 +572,24 @@ export default function ScannerPage() {
           <div className={`scanner-status-dot ${isRunning ? "running" : "idle"}`} />
           {isRunning
             ? `${progress?.done || 0} / ${progress?.total || status?.symbolCount || "?"}`
-            : `${status?.symbolCount || 0} symbols · ${strategies.length} strategies`}
+            // NEW — symbolCount was the full boot-time universe across every
+            // asset class + all generated futures contracts (e.g. 826),
+            // nothing to do with what's currently selected. lastScopedSymbolCount
+            // is the last completed scan's actual scoped size (e.g. 202 for
+            // Equity/Spot) — matches the "Scanned" stat chip. Falls back to
+            // symbolCount only if no scan has completed yet this session.
+            // strategies.length also used to count all 7 registry entries,
+            // including type-e/type-r/type-f — 3 hidden variants that exist
+            // only to power the R/E/F sub-filter buttons, not real dropdown
+            // choices. dropdownStrategies (below) already excludes those,
+            // giving the true count of 4 selectable strategy families.
+            : `${status?.lastScopedSymbolCount ?? status?.symbolCount ?? 0} symbols · ${dropdownStrategies.length} strategies`}
         </div>
       </div>
 
       {/* Progress bar */}
       <div className="scanner-progress-bar-wrap">
         <div className="scanner-progress-bar" style={{ width: isRunning ? `${pct}%` : "0%" }} />
-      </div>
-
-      {/* ══ STATS BAR ═══════════════════════════════════════════════════════ */}
-      <div className="scanner-stats-bar">
-        <div className="stat-chip"><span className="stat-chip-label">Scanned</span>    <span className="stat-chip-val accent">{results.length}</span></div>
-        <div className="stat-chip"><span className="stat-chip-label">Full Signals</span><span className="stat-chip-val green">{counts.signals}</span></div>
-        <div className="stat-chip"><span className="stat-chip-label">{isTypeGroup ? "Active" : "Watching (S2)"}</span><span className="stat-chip-val orange">{counts.partial}</span></div>
-        <div className="stat-chip"><span className="stat-chip-label">{isTypeGroup ? "Ever Triggered" : "S1 Formed"}</span>  <span className="stat-chip-val">{counts.s1}</span></div>
-        <div className="stat-chip"><span className="stat-chip-label">Uptrend</span>    <span className="stat-chip-val green">{mwUptrend.length}</span></div>
-        <div className="stat-chip"><span className="stat-chip-label">Downtrend</span>  <span className="stat-chip-val red">{mwDowntrend.length}</span></div>
-        <div className="stat-chip"><span className="stat-chip-label">No Valid MW</span><span className="stat-chip-val" style={{ color: "#888" }}>{noValidMW.length}</span></div>
-        <div className="stat-chip"><span className="stat-chip-label">Resolution</span> <span className="stat-chip-val accent">{tfLabel}</span></div>
-        <div className="stat-chip"><span className="stat-chip-label">Last Scan</span>  <span className="stat-chip-val" style={{ fontSize: 11 }}>{lastScan ? fmtTime(lastScan) : "—"}</span></div>
-        <div className="stat-chip"><span className="stat-chip-label">Duration</span>   <span className="stat-chip-val">{status?.lastScanDurationMs ? `${(status.lastScanDurationMs / 1000).toFixed(0)}s` : "—"}</span></div>
       </div>
 
       {/* ══ CONTROL BAR ═══════════════════════════════════════════════════════ */}
@@ -799,105 +680,62 @@ export default function ScannerPage() {
         <div className="scanner-body">
 
           {/* ── RESULTS / UPCOMING ──────────────────────────────────────────── */}
+          {/* No shared stats bar / tabs bar left here at all — every
+              strategy family renders its own fully self-contained panel
+              (own stats row, own tabs, own search box). ScannerPage.js's
+              only job here is picking which ONE of the 4 to render. */}
           <div className="scanner-section scanner-signals-section">
             {isT5 ? (
-              // T5ScannerPanel is fully self-contained — its own Results/
-              // Upcoming tabs, stats row, and Scan Now button — so it
-              // replaces the tabs bar + SignalsTable/TypeSignalsTable
-              // branch below entirely rather than plugging into either.
               <T5ScannerPanel
                 rows={t5Rows}
                 scannedCount={results.length}
                 resolution={tfLabel}
+                lastScan={comboScannedAt}
+                durationMs={status?.lastScanDurationMs}
                 onRowClick={(symbol) => openT5Chart(symbol, timeframe)}
               />
             ) : isAbsorption ? (
-              // Same self-contained treatment as T5 above — its own
-              // Results/Upcoming/History tabs and stats row, replacing the
-              // tabs bar + SignalsTable/TypeSignalsTable branch entirely.
               <AbsorptionScannerPanel
                 rows={absorptionRows}
                 scannedCount={results.length}
                 resolution={tfLabel}
+                lastScan={comboScannedAt}
+                durationMs={status?.lastScanDurationMs}
                 onRowClick={(symbol) => openAbsorptionChart(symbol, timeframe)}
               />
+            ) : isCeilingBreak ? (
+              <CeilingBreakScannerPanel
+                rows={ceilingBreakRows}
+                scannedCount={results.length}
+                resolution={tfLabel}
+                lastScan={comboScannedAt}
+                durationMs={status?.lastScanDurationMs}
+                onRowClick={(symbol) => openCeilingBreakChart(symbol, timeframe)}
+              />
+            ) : isTypeGroup ? (
+              <TypeScannerPanel
+                rows={{ results: resultsTable, upcoming: upcomingTable }}
+                counts={counts}
+                scannedCount={results.length}
+                resolution={tfLabel}
+                lastScan={comboScannedAt}
+                durationMs={status?.lastScanDurationMs}
+                timeframe={timeframe}
+                typeSubFilter={typeSubFilter}
+                onTypeSubFilterChange={setTypeSubFilter}
+                onRowClick={(symbol, mw) => openChart(symbol, timeframe, mw)}
+              />
             ) : (
-              <>
-                <div className="scanner-signals-tabs">
-                  <button
-                    className={`scanner-signals-tab ${signalsTab === "results" ? "active" : ""}`}
-                    onClick={() => handleSignalsTabChange("results")}
-                  >
-                    Results
-                  </button>
-                  <button
-                    className={`scanner-signals-tab ${signalsTab === "upcoming" ? "active" : ""}`}
-                    onClick={() => handleSignalsTabChange("upcoming")}
-                  >
-                    Upcoming
-                  </button>
-
-                  {/* R/E/F sub-filter — only meaningful within "Type E,R,F",
-                      so only rendered when that strategy is active. Switches
-                      effectiveStrategyId (see above) between the combined
-                      type-ref view and each individual type's own full result
-                      set. */}
-                  {isTypeGroup && (
-                    <div className="scanner-signals-typefilter">
-                      {["all", "R", "E", "F"].map(t => (
-                        <button
-                          key={t}
-                          className={`scanner-signals-typefilter-btn ${typeSubFilter === t ? "active" : ""}`}
-                          onClick={() => setTypeSubFilter(t)}
-                          title={t === "all" ? "Combined — whichever of E/R/F most recently triggered" : `Type ${t} only`}
-                        >
-                          {t === "all" ? "All" : t}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {isTypeGroup ? (
-                  signalsTab === "results" ? (
-                    <TypeSignalsTable
-                      title="Results"
-                      sub="Entry → exit confirmed — all, scroll for more"
-                      rows={resultsTable}
-                      showExit={true}
-                      emptyLabel="No completed signals yet"
-                      timeframe={timeframe}
-                    />
-                  ) : (
-                    <TypeSignalsTable
-                      title="Upcoming"
-                      sub="Entry fired, still active — all, scroll for more"
-                      rows={upcomingTable}
-                      showExit={false}
-                      emptyLabel="No active signals yet"
-                      timeframe={timeframe}
-                    />
-                  )
-                ) : signalsTab === "results" ? (
-                  <SignalsTable
-                    title="Results"
-                    sub="S1 → S2 → S3 confirmed — all, scroll for more"
-                    rows={resultsTable}
-                    showS3={true}
-                    emptyLabel="No completed signals yet"
-                    timeframe={timeframe}
-                  />
-                ) : (
-                  <SignalsTable
-                    title="Upcoming"
-                    sub="S1 → S2 confirmed, S3 pending — all, scroll for more"
-                    rows={upcomingTable}
-                    showS3={false}
-                    emptyLabel="No forming signals yet"
-                    timeframe={timeframe}
-                  />
-                )}
-              </>
+              <S1S2S3ScannerPanel
+                rows={{ results: resultsTable, upcoming: upcomingTable }}
+                counts={counts}
+                scannedCount={results.length}
+                resolution={tfLabel}
+                lastScan={comboScannedAt}
+                durationMs={status?.lastScanDurationMs}
+                timeframe={timeframe}
+                onRowClick={(symbol, mw) => openChart(symbol, timeframe, mw)}
+              />
             )}
           </div>
 

@@ -31,9 +31,15 @@
  * backward compat with StrategiesPage.js, which has no scope filters.
  *
  * Manual-only scan control:
- *   scanner.triggerNow(resolution?, scanSymbols?, assetClass?, instrumentType?)
+ *   scanner.triggerNow(resolution?, scanSymbols?, assetClass?, instrumentType?, strategyId?)
  *   scanner.stop()                   — abort any running scan
  *   No auto-start. No periodic timer. You control when it runs.
+ *
+ * Strategy scoping (NEW):
+ *   `strategyId` scopes a scan pass to ONE strategy family (or the
+ *   type-ref + type-e/type-r/type-f group as one unit) instead of running
+ *   all 7 registered strategies against every symbol on every trigger —
+ *   see resolveStrategiesToRun() below for the id→subset mapping.
  *
  * Symbol filtering:
  *   MCX continuous contract symbols (ending in -I or -I suffix pattern)
@@ -50,23 +56,15 @@
 "use strict";
 
 const EventEmitter = require("events");
-const { fetchCandles } = require("../fyers/client");
 const strategies = require("../strategies/strategyRegistry");
 const { detectMotherWaveForAPI, calcTrapZone, classifyZone } = require("./motherwave");
 
-// ─── DB (optional) ────────────────────────────────────────────────────────────
-let db = null;
-let dbEnabled = false;
-try {
-  db = require("../../../database/src/index");
-  dbEnabled = true;
-} catch { /* DB optional — runs Fyers-only if not available */ }
-
-const { deriveTimeframe } = require("./candleBuilder");
-
-// ─── Config ───────────────────────────────────────────────────────────────────
-const CONCURRENCY = parseInt(process.env.SCANNER_CONCURRENCY || "3");
-const BATCH_DELAY_MS = parseInt(process.env.SCANNER_BATCH_DELAY_MS || "1000");
+// ─── Candle fetching (shared with Analytics — see candleFetch.js) ─────────────
+// DB-first-then-Fyers-fallback used to live inline here. It's now the ONE
+// shared implementation in candleFetch.js, used by both this file and
+// analyticsRouter.js — see candleFetch.js's own header comment and
+// sanity_candleFetch.js for proof the extraction is byte-equivalent.
+const { fetchCandlesDbFirst, CONCURRENCY, BATCH_DELAY_MS } = require("./candleFetch");
 const DEFAULT_RESOLUTION = parseInt(process.env.SCANNER_RESOLUTION || "15");
 const RETRY_LIMIT = 5;
 
@@ -90,6 +88,47 @@ function buildComboKey(resolution, assetClass, instrumentType) {
   return `${res}|${ac}|${it}`;
 }
 
+// ─── Strategy scoping ───────────────────────────────────────────────────────
+// NEW — Scanner UI's Strategy dropdown only ever wants ONE strategy family
+// scanned per trigger, not all 7 registered strategy entries. This maps a
+// dropdown strategyId to the actual list of strategy objects that must run
+// this pass:
+//   s1s2s3          → just that one entry
+//   tg-t5           → just that one entry
+//   absorption-flip → just that one entry
+//   type-ref        → ALL FOUR "type" entries (type-ref, type-e, type-r,
+//                      type-f). type-ref DOES have its own .scan() (see
+//                      typeREF.js's scanCombined) which internally computes
+//                      E/R/F itself — but that call only ever writes into
+//                      the type-ref result bucket. The Scanner UI's R/E/F
+//                      tab buttons read from type-e/type-r/type-f's OWN
+//                      separate result buckets (ScannerPage.js's
+//                      effectiveStrategyId), which only get populated if
+//                      those 3 entries' own .scan() functions are ALSO
+//                      called directly. So selecting "Type E,R,F" must run
+//                      all 4 registry entries, not 3 and not 1 — verified
+//                      against typeREF.js before writing this.
+//   unrecognized/omitted → every registered strategy (full scan), same as
+//                      pre-scoping behavior — used when no strategyId is
+//                      supplied at all (back-compat for any caller that
+//                      doesn't send one).
+function resolveStrategiesToRun(strategyId) {
+  if (!strategyId || strategyId === "all") return strategies;
+  if (strategyId === "type-ref") return strategies.filter((s) => s.group === "type");
+  const match = strategies.find((s) => s.id === strategyId);
+  return match ? [match] : [];
+}
+
+// Per-(strategy, combo) scan-bookkeeping key. Folding strategyId in means
+// scanning "Type E,R,F" and scanning "TG T5" for the SAME comboKey (e.g.
+// "15|equity|spot") no longer stomp on one shared "last scanned" timestamp
+// — each strategy's own last-scan time for that combo is tracked
+// separately, and the Scanner UI's "Last scan" display always matches
+// whichever strategy+combo is actually on screen.
+function buildScanKey(strategyId, comboKey) {
+  return `${strategyId || "all"}|${comboKey}`;
+}
+
 // ─── ScannerRunner ────────────────────────────────────────────────────────────
 class ScannerRunner extends EventEmitter {
   constructor() {
@@ -110,6 +149,14 @@ class ScannerRunner extends EventEmitter {
     // UI) tell "never scanned" apart from "scanned, zero results".
     this._lastScanAtByCombo = new Map();
     this._lastComboKey = null;
+    // NEW — tracks how many symbols the MOST RECENTLY COMPLETED scan
+    // actually covered (the scoped count for that combo, e.g. 202 for
+    // Equity/Spot), separate from this._symbolList.length (the full
+    // boot-time universe across every asset class + all generated
+    // futures contracts, e.g. 826). getStatus() exposes both — see its
+    // own comment for which the frontend header should show.
+    this._lastScopedSymbolCount = null;
+    this._lastScopedComboKey = null;
 
     for (const s of strategies) {
       // Inner value is now Map<comboKey, Map<symbol, ScanResult>> instead
@@ -157,7 +204,13 @@ class ScannerRunner extends EventEmitter {
   // per-strategy result bucket this scan's results get written into. This
   // is what makes results per-filter-combo instead of one giant shared pile
   // — see file header FIX note.
-  async triggerNow(resolution, scanSymbols, assetClass = "all", instrumentType = "all") {
+  // NEW — optional `strategyId` (from the Scanner UI's Strategy dropdown).
+  // When provided, scopes this scan pass to just that strategy family (or
+  // the type-e/type-r/type-f trio + type-ref itself, when "type-ref" is
+  // selected) via resolveStrategiesToRun() above, instead of running all 7
+  // registered strategies against every symbol. Omitted → full scan across
+  // every registered strategy, unchanged prior behavior.
+  async triggerNow(resolution, scanSymbols, assetClass = "all", instrumentType = "all", strategyId = null) {
     if (this._running) return { status: "already_running", progress: this._progress };
     if (resolution != null) this._resolution = parseInt(resolution) || DEFAULT_RESOLUTION;
     this._aborted = false;
@@ -174,7 +227,7 @@ class ScannerRunner extends EventEmitter {
     const comboKey = buildComboKey(this._resolution, assetClass, instrumentType);
     this._lastComboKey = comboKey;
 
-    await this._runScan(scopedSymbols, comboKey);
+    await this._runScan(scopedSymbols, comboKey, strategyId);
     return {
       status: "triggered",
       symbols: (scopedSymbols || this._symbolList).length,
@@ -182,6 +235,7 @@ class ScannerRunner extends EventEmitter {
       resolution: this._resolution,
       assetClass,
       instrumentType,
+      strategyId: strategyId || null,
       comboKey,
     };
   }
@@ -197,15 +251,25 @@ class ScannerRunner extends EventEmitter {
   }
 
   // ── Core scan loop ────────────────────────────────────────────────────────────
-  async _runScan(scopedSymbols = null, comboKey = null) {
+  async _runScan(scopedSymbols = null, comboKey = null, strategyId = null) {
     // Legacy/internal callers that don't pass a comboKey (there are none
     // left in this codebase, but stay defensive) fall back to the
     // resolution-only "all|all" bucket rather than throwing.
     const effectiveComboKey = comboKey || buildComboKey(this._resolution, "all", "all");
+    // The actual subset of strategy objects this pass will run — see
+    // resolveStrategiesToRun()'s header comment for the id→subset mapping.
+    const strategiesToRun = resolveStrategiesToRun(strategyId);
     if (this._running) return;
     const isScoped = !!scopedSymbols;
     const baseList = isScoped ? scopedSymbols : this._symbolList;
     if (baseList.length === 0) { console.log("[Scanner] No symbols — skipping"); return; }
+
+    // Record BEFORE the running/aborted early-return guards below, so a
+    // scan that starts (even if aborted partway through) still updates
+    // "what was this combo's most recent target size" rather than only
+    // ever reflecting a fully-completed run.
+    this._lastScopedSymbolCount = baseList.length;
+    this._lastScopedComboKey = effectiveComboKey;
 
     this._running = true;
     this._aborted = false;
@@ -224,14 +288,17 @@ class ScannerRunner extends EventEmitter {
     if (!isScoped) this._retryQueue = [];
     this._progress = { total: toScan.length, done: 0, found: 0 };
 
-    console.log(`[Scanner #${scanId}] ${toScan.length} symbols × ${strategies.length} strategies @ res=${resolution}m${isScoped ? " (scoped)" : ""} combo=${effectiveComboKey}`);
+    console.log(`[Scanner #${scanId}] ${toScan.length} symbols × ${strategiesToRun.length} strategies @ res=${resolution}m${isScoped ? " (scoped)" : ""} combo=${effectiveComboKey}${strategyId ? ` strategyId=${strategyId}` : ""}`);
     this.emit("scan_start", {
       scanId,
       total: toScan.length,
       resolution,
       scoped: isScoped,
       comboKey: effectiveComboKey,
-      strategies: strategies.map(s => ({ id: s.id, name: s.name })),
+      strategyId: strategyId || null,
+      // Trimmed to the strategies actually running this pass, not the
+      // full registry — see resolveStrategiesToRun().
+      strategies: strategiesToRun.map(s => ({ id: s.id, name: s.name })),
     });
 
     for (let i = 0; i < toScan.length; i += CONCURRENCY) {
@@ -240,7 +307,7 @@ class ScannerRunner extends EventEmitter {
         break;
       }
       const batch = toScan.slice(i, i + CONCURRENCY);
-      await Promise.allSettled(batch.map((sym) => this._processSymbol(sym, false, resolution, retryTarget, effectiveComboKey)));
+      await Promise.allSettled(batch.map((sym) => this._processSymbol(sym, false, resolution, retryTarget, effectiveComboKey, strategiesToRun)));
       this._progress.done = Math.min(i + CONCURRENCY, toScan.length);
       this.emit("scan_progress", { ...this._progress, scanId });
       if (i + CONCURRENCY < toScan.length) await delay(BATCH_DELAY_MS);
@@ -253,7 +320,7 @@ class ScannerRunner extends EventEmitter {
       console.log(`[Scanner #${scanId}] Retrying ${retries.length} symbols...`);
       for (const sym of retries) {
         if (this._aborted) break;
-        await this._processSymbol(sym, true, resolution, retryTarget, effectiveComboKey);
+        await this._processSymbol(sym, true, resolution, retryTarget, effectiveComboKey, strategiesToRun);
         await delay(600);
       }
     }
@@ -261,7 +328,16 @@ class ScannerRunner extends EventEmitter {
     const durationMs = Date.now() - startMs;
     this._lastScanAt = new Date().toISOString();
     this._lastScanDurationMs = durationMs;
-    this._lastScanAtByCombo.set(effectiveComboKey, this._lastScanAt);
+    // Record this combo's "last scanned" time under EVERY strategy id that
+    // actually ran this pass — not just the top-level requested strategyId.
+    // This matters for "type-ref": selecting it runs 4 registry entries
+    // (type-ref, type-e, type-r, type-f), and the Scanner UI's R/E/F tab
+    // buttons query type-e/type-r/type-f's OWN scannedAt directly (see
+    // ScannerPage.js's effectiveStrategyId) — so each of those 4 ids needs
+    // its own up-to-date bookkeeping entry, not just "type-ref"'s.
+    for (const s of strategiesToRun) {
+      this._lastScanAtByCombo.set(buildScanKey(s.id, effectiveComboKey), this._lastScanAt);
+    }
     this._running = false;
     this._aborted = false;
 
@@ -284,34 +360,49 @@ class ScannerRunner extends EventEmitter {
     });
   }
 
+  // ── Store one strategy's result + emit found/partial events ────────────────
+  // Extracted out of the old inline per-strategy loop so both the plain
+  // per-strategy path AND the type-group optimization below (which
+  // computes a result WITHOUT calling strategy.scan() directly) can share
+  // the exact same storage/emit logic.
+  _storeStrategyResult(strategy, symbol, effectiveComboKey, result) {
+    this._bucket(strategy.id, effectiveComboKey).set(symbol, result);
+    if (result.found) {
+      this._progress.found++;
+      this.emit("signal_found", { ...result, strategyId: strategy.id, strategyName: strategy.name });
+      console.log(`[Scanner] ✅ ${strategy.id} | ${symbol} — SIGNAL (${result.patternStage})`);
+    } else if (result.patternStage === "s2") {
+      this.emit("signal_partial", { ...result, strategyId: strategy.id, strategyName: strategy.name });
+    }
+  }
+
+  // Runs ONE strategy's own .scan() and stores/handles its result — the
+  // generic per-strategy path (everything except the type-group
+  // optimization, which computes all 4 type results in one call instead).
+  _runOneStrategy(strategy, symbol, candles, context, effectiveComboKey) {
+    try {
+      const result = strategy.scan(symbol, candles, context);
+      this._storeStrategyResult(strategy, symbol, effectiveComboKey, result);
+    } catch (stratErr) {
+      console.error(`[Scanner] Strategy ${strategy.id} error on ${symbol}: ${stratErr.message}`);
+      this._bucket(strategy.id, effectiveComboKey).set(symbol, {
+        symbol, found: false, patternStage: "none",
+        error: stratErr.message, scannedAt: new Date().toISOString(),
+      });
+    }
+  }
+
   // ── Process one symbol — fetch candles ONCE, run all strategies ───────────────
-  async _processSymbol(symbol, isRetry = false, resolution = DEFAULT_RESOLUTION, retryTarget = null, comboKey = null) {
+  // `strategiesToRun` — the resolved subset for this scan pass (see
+  // resolveStrategiesToRun()). Defaults to the full registry for any
+  // internal/legacy caller that doesn't pass it, unchanged prior behavior.
+  async _processSymbol(symbol, isRetry = false, resolution = DEFAULT_RESOLUTION, retryTarget = null, comboKey = null, strategiesToRun = strategies) {
     const effectiveComboKey = comboKey || buildComboKey(resolution, "all", "all");
     const retryQueue = retryTarget || this._retryQueue;
     try {
-      // ── DB-first: read from Postgres, fall back to Fyers if empty ─────────
-      let candles = null;
-
-      if (dbEnabled && db) {
-        try {
-          const windowMs = 90 * 24 * 60 * 60 * 1000;
-          const oneMin = await db.loadCandles(symbol, 1, {
-            from: new Date(Date.now() - windowMs),
-            to: new Date(),
-            limit: 50000,
-          });
-          if (oneMin && oneMin.length > 0) {
-            candles = resolution === 1 ? oneMin : deriveTimeframe(oneMin, resolution);
-            if (!candles || candles.length === 0) candles = null;
-          }
-        } catch (dbErr) {
-          console.warn(`[Scanner] DB read failed for ${symbol}: ${dbErr.message} — trying Fyers`);
-        }
-      }
-
-      if (!candles) {
-        candles = await fetchCandles(symbol, resolution, 5000);
-      }
+      // DB-first-then-Fyers-fallback — see candleFetch.js. logPrefix kept
+      // as "[Scanner]" so existing log output reads exactly as before.
+      let candles = await fetchCandlesDbFirst(symbol, resolution, { logPrefix: "[Scanner]" });
 
       this._errors.delete(symbol);
 
@@ -335,25 +426,51 @@ class ScannerRunner extends EventEmitter {
         lastCandle,
       };
 
-      for (const strategy of strategies) {
-        try {
-          const result = strategy.scan(symbol, candles, context);
-          this._bucket(strategy.id, effectiveComboKey).set(symbol, result);
+      // ── Type-family optimization ─────────────────────────────────────────
+      // When all 4 type-family strategies (type-ref, type-e, type-r,
+      // type-f) are in this pass together — i.e. the Scanner UI's "Type
+      // E,R,F" dropdown selection — compute E/R/F ONCE via type-ref's
+      // scanGroup() instead of running 4 separate .scan() calls (which
+      // would recompute E/R/F twice: once inside type-ref.scan() for its
+      // own bucket, again across type-e/type-r/type-f's own .scan() calls
+      // for theirs). Falls back to the plain per-strategy loop for any
+      // other combination — e.g. a lone type-e reached directly, which
+      // resolveStrategiesToRun() supports defensively even though the
+      // dropdown never actually sends it alone.
+      const typeGroupStrategies = strategiesToRun.filter((s) => s.group === "type");
+      const otherStrategies = strategiesToRun.filter((s) => s.group !== "type");
+      const typeRefEntry = typeGroupStrategies.find((s) => s.id === "type-ref" && typeof s.scanGroup === "function");
+      const useGroupOptimization = !!typeRefEntry && typeGroupStrategies.length === 4;
 
-          if (result.found) {
-            this._progress.found++;
-            this.emit("signal_found", { ...result, strategyId: strategy.id, strategyName: strategy.name });
-            console.log(`[Scanner] ✅ ${strategy.id} | ${symbol} — SIGNAL (${result.patternStage})`);
-          } else if (result.patternStage === "s2") {
-            this.emit("signal_partial", { ...result, strategyId: strategy.id, strategyName: strategy.name });
+      if (useGroupOptimization) {
+        try {
+          const { combined, byType } = typeRefEntry.scanGroup(symbol, candles, context);
+          const resultById = {
+            "type-ref": combined,
+            "type-e": byType.E,
+            "type-r": byType.R,
+            "type-f": byType.F,
+          };
+          for (const strategy of typeGroupStrategies) {
+            this._storeStrategyResult(strategy, symbol, effectiveComboKey, resultById[strategy.id]);
           }
         } catch (stratErr) {
-          console.error(`[Scanner] Strategy ${strategy.id} error on ${symbol}: ${stratErr.message}`);
-          this._bucket(strategy.id, effectiveComboKey).set(symbol, {
-            symbol, found: false, patternStage: "none",
-            error: stratErr.message, scannedAt: new Date().toISOString(),
-          });
+          console.error(`[Scanner] Type-group strategy error on ${symbol}: ${stratErr.message}`);
+          for (const strategy of typeGroupStrategies) {
+            this._bucket(strategy.id, effectiveComboKey).set(symbol, {
+              symbol, found: false, patternStage: "none",
+              error: stratErr.message, scannedAt: new Date().toISOString(),
+            });
+          }
         }
+      } else {
+        for (const strategy of typeGroupStrategies) {
+          this._runOneStrategy(strategy, symbol, candles, context, effectiveComboKey);
+        }
+      }
+
+      for (const strategy of otherStrategies) {
+        this._runOneStrategy(strategy, symbol, candles, context, effectiveComboKey);
       }
     } catch (err) {
       const prev = this._errors.get(symbol) || { count: 0, lastError: "" };
@@ -366,7 +483,7 @@ class ScannerRunner extends EventEmitter {
         console.warn(`[Scanner] ⚠ ${symbol} fetch failed (retry): ${err.message}`);
       } else {
         console.error(`[Scanner] ✗ ${symbol} permanently failed: ${err.message}`);
-        for (const strategy of strategies) {
+        for (const strategy of strategiesToRun) {
           this._bucket(strategy.id, effectiveComboKey).set(symbol, {
             symbol, found: false, patternStage: "none",
             error: err.message, scannedAt: new Date().toISOString(),
@@ -442,14 +559,17 @@ class ScannerRunner extends EventEmitter {
     return out;
   }
 
-  // Whether this exact combo has ever completed a scan — lets a caller
-  // distinguish "never scanned" from "scanned, zero matches" if needed.
-  hasScannedCombo(comboKey) {
-    return this._lastScanAtByCombo.has(comboKey);
+  // Whether this exact strategy+combo has ever completed a scan — lets a
+  // caller distinguish "never scanned" from "scanned, zero matches" if
+  // needed. `strategyId` is now REQUIRED for accurate per-strategy
+  // bookkeeping (see buildScanKey) — omitted, it falls back to the "all"
+  // bucket, which is only populated by unscoped/full scans.
+  hasScannedCombo(comboKey, strategyId = null) {
+    return this._lastScanAtByCombo.has(buildScanKey(strategyId, comboKey));
   }
 
-  lastScanAtForCombo(comboKey) {
-    return this._lastScanAtByCombo.get(comboKey) || null;
+  lastScanAtForCombo(comboKey, strategyId = null) {
+    return this._lastScanAtByCombo.get(buildScanKey(strategyId, comboKey)) || null;
   }
 
   // group/variant are needed by the Scanner UI to pick the right stats/
@@ -469,7 +589,19 @@ class ScannerRunner extends EventEmitter {
   getStatus() {
     return {
       running: this._running,
+      // Full boot-time universe across ALL asset classes plus every
+      // generated futures contract (e.g. 826) — NOT scoped to whatever
+      // is currently selected in the Scanner UI's dropdowns. Kept for
+      // back-compat / anyone relying on "total known symbols".
       symbolCount: this._symbolList.length,
+      // NEW — how many symbols the last COMPLETED (or in-progress) scan
+      // actually targeted for its specific assetClass+instrumentType
+      // combo (e.g. 202 for Equity/Spot). This is what the Scanner UI's
+      // header should show as "N symbols" — it matches the "Scanned"
+      // stat chip instead of the unrelated full-universe count above.
+      // null until the very first scan of this process completes.
+      lastScopedSymbolCount: this._lastScopedSymbolCount,
+      lastScopedComboKey: this._lastScopedComboKey,
       resolution: this._resolution,
       lastScanAt: this._lastScanAt,
       lastScanDurationMs: this._lastScanDurationMs,
@@ -488,4 +620,4 @@ function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 // ─── Singleton ────────────────────────────────────────────────────────────────
 const scanner = new ScannerRunner();
-module.exports = { scanner, ScannerRunner, buildComboKey };
+module.exports = { scanner, ScannerRunner, buildComboKey, resolveStrategiesToRun, buildScanKey };

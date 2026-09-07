@@ -295,7 +295,7 @@ const ChartPanel = memo(function ChartPanel({
   const srZonesOn = !!indicators.srZones;
   const t5On = !!indicators.t5;
   const ema9PivotOn = !!indicators.ema9pivot;
-  const ceilingRetestOn = !!indicators.ceilingRetest;
+  const ceilingBreakOn = !!indicators.ceilingBreak;
   const bubbleGap = typeof indicators.bubbleGap === "number" ? indicators.bubbleGap : 4;
 
   // Wave/consolidation callbacks — CandleChart calls these to output processed data.
@@ -700,7 +700,7 @@ const ChartPanel = memo(function ChartPanel({
               showSRZones={srZonesOn}
               showT5={t5On}
               showEMA9Pivot={ema9PivotOn}
-              showCeilingRetest={ceilingRetestOn}
+              showCeilingBreak={ceilingBreakOn}
               onResetViewReady={handleResetViewReady}
               reloadToken={reloadToken}
               onIntentionalReloadAck={handleIntentionalReloadAck}

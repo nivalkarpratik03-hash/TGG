@@ -33,10 +33,10 @@ import {
   removeEMA9PivotSRIndicator,
 } from "../../indicators/EMA9PivotSRIndicator";
 import {
-  createCeilingRetestIndicator,
-  updateCeilingRetestIndicator,
-  removeCeilingRetestIndicator,
-} from "../../indicators/CeilingRetestIndicator";
+  createCeilingBreakIndicator,
+  updateCeilingBreakIndicator,
+  removeCeilingBreakIndicator,
+} from "../../indicators/CeilingBreakIndicator";
 import {
   buildBubbleMarkers,
   setMarkersIfChanged,
@@ -348,9 +348,9 @@ export default function CandleChart({
   showSRZones = false,
   srStrongTouches = 3,
   srLookbackBars = 300,
-  showCeilingRetest = false,
   showT5 = false,
   showEMA9Pivot = false,
+  showCeilingBreak = false,
   onResetViewReady,
   reloadToken = 0,
   onIntentionalReloadAck,
@@ -429,9 +429,9 @@ export default function CandleChart({
   const showSRZonesRef = useRef(showSRZones);
   const srStrongTouchesRef = useRef(srStrongTouches);
   const srLookbackBarsRef = useRef(srLookbackBars);
-  const showCeilingRetestRef = useRef(showCeilingRetest);
   const showT5Ref = useRef(showT5);
   const showEMA9PivotRef = useRef(showEMA9Pivot);
+  const showCeilingBreakRef = useRef(showCeilingBreak);
   const onIntentionalReloadAckRef = useRef(onIntentionalReloadAck);
   const waveTargetRef = useRef(waveTarget);
   const selectedToolRef = useRef(selectedTool);
@@ -452,9 +452,9 @@ export default function CandleChart({
   showSRZonesRef.current = showSRZones;
   srStrongTouchesRef.current = srStrongTouches;
   srLookbackBarsRef.current = srLookbackBars;
-  showCeilingRetestRef.current = showCeilingRetest;
   showT5Ref.current = showT5;
   showEMA9PivotRef.current = showEMA9Pivot;
+  showCeilingBreakRef.current = showCeilingBreak;
   onIntentionalReloadAckRef.current = onIntentionalReloadAck;
   waveTargetRef.current = waveTarget;
   selectedToolRef.current = selectedTool;
@@ -634,7 +634,7 @@ export default function CandleChart({
       candleSeries
     );
 
-    createCeilingRetestIndicator(
+    createCeilingBreakIndicator(
       chart,
       containerRef.current,
       candleSeries
@@ -688,7 +688,7 @@ export default function CandleChart({
       removeSRZonesIndicator(true, chart);
       removeT5Indicator(true, chart);
       removeEMA9PivotSRIndicator(true, chart);
-      removeCeilingRetestIndicator(true, chart);
+      removeCeilingBreakIndicator(true, chart);
       // Null refs before deferred remove so any queued RAF paint callbacks bail cleanly
       chartRef.current = null;
       candleRef.current = null;
@@ -797,7 +797,7 @@ export default function CandleChart({
           if (showSRZonesRef.current) updateSRZonesIndicator(candles, emaH, emaL, chartRef.current, srStrongTouchesRef.current, srLookbackBarsRef.current);
           if (showT5Ref.current) updateT5Indicator(candles, chartRef.current);
           if (showEMA9PivotRef.current) updateEMA9PivotSRIndicator(candles, emaH, emaL, chartRef.current);
-          if (showCeilingRetestRef.current) updateCeilingRetestIndicator(candles, chartRef.current);
+          if (showCeilingBreakRef.current) updateCeilingBreakIndicator(candles, chartRef.current);
 
           prevCountRef.current = candles.length;
           prevLastCandleKeyRef.current = lastKey;
@@ -881,8 +881,8 @@ export default function CandleChart({
     if (showEMA9PivotRef.current) updateEMA9PivotSRIndicator(candles, emaH, emaL, chartRef.current);
     else removeEMA9PivotSRIndicator(false, chartRef.current);
 
-    if (showCeilingRetestRef.current) updateCeilingRetestIndicator(candles, chartRef.current);
-    else removeCeilingRetestIndicator(false, chartRef.current);
+    if (showCeilingBreakRef.current) updateCeilingBreakIndicator(candles, chartRef.current);
+    else removeCeilingBreakIndicator(false, chartRef.current);
 
     // After setData, markers need a full refresh (series was rebuilt)
     // Reset the key so setMarkersIfChanged always fires after setData
@@ -1065,19 +1065,6 @@ export default function CandleChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showSRZones, srStrongTouches, srLookbackBars]);
 
-  // ── Ceiling Break & Retest toggle ────────────────────────────────────────
-  useEffect(() => {
-    if (!chartRef.current) return;
-    if (showCeilingRetest) {
-      if (candlesRef.current?.length)
-        updateCeilingRetestIndicator(candlesRef.current, chartRef.current);
-    } else {
-      removeCeilingRetestIndicator(false, chartRef.current);
-    }
-    // candlesRef/chartRef are stable refs — not deps.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showCeilingRetest]);
-
   // ── T5 (Double Top/Bottom) toggle ───────────────────────────────────────
   useEffect(() => {
     if (!chartRef.current) return;
@@ -1105,6 +1092,19 @@ export default function CandleChart({
     // candlesRef/emaHighsRef/emaLowsRef/chartRef are stable refs — not deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showEMA9Pivot]);
+
+  // ── Ceiling Break & Retest toggle ─────────────────────────────────────────
+  useEffect(() => {
+    if (!chartRef.current) return;
+    if (showCeilingBreak) {
+      if (candlesRef.current?.length)
+        updateCeilingBreakIndicator(candlesRef.current, chartRef.current);
+    } else {
+      removeCeilingBreakIndicator(false, chartRef.current);
+    }
+    // candlesRef/chartRef are stable refs — not deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showCeilingBreak]);
 
   // ── Candle countdown timer — pixel-tracked to last price ──────────────────
   // timerInfo: { price, secsLeft, isBull, yPx }

@@ -37,7 +37,29 @@
 // ─────────────────────────────────────────────────────────────────
 
 import React, { useState, useMemo, useEffect, useRef } from "react";
+import { tickerOf } from "../../utils/symbolMeta";
+import { fmtTime } from "./mwScanHelpers";
 import "./T5ScannerPanel.css";
+
+// Symbol search — matches against the raw symbol string and its clean
+// ticker (e.g. "RELIANCE" matches "NSE:RELIANCE-EQ").
+function matchesSymbol(symbol, query) {
+  if (!query) return true;
+  const q = query.toLowerCase();
+  return (
+    (symbol || "").toLowerCase().includes(q) ||
+    tickerOf(symbol).toLowerCase().includes(q)
+  );
+}
+
+function SearchGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 20 20" fill="none" className="t5-search-icon">
+      <circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M13.5 13.5L17 17" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────
 // ColumnFilter — Excel-style checkbox filter for a table column.
@@ -255,9 +277,16 @@ export default function T5ScannerPanel({
   rows = { results: [], upcoming: [], history: [] },
   scannedCount = 0,
   resolution = "15m",
+  lastScan = null,
+  durationMs = null,
   onRowClick = () => { },
 }) {
   const [tab, setTab] = useState("results");
+
+  // Symbol search — own state, own input, filters whichever tab is
+  // active (Results/Upcoming/History independently), applied on top of
+  // the existing Tag/status column filter below, not instead of it.
+  const [query, setQuery] = useState("");
 
   // Excel-style Tag/status column filters — null means "no filter,
   // show everything"; a Set means only rows whose tag (or status, for
@@ -279,22 +308,27 @@ export default function T5ScannerPanel({
     return { fired, watching, forming };
   }, [rows]);
 
-  const results = rows.results || [];
-  const upcoming = rows.upcoming || [];
-  const history = rows.history || [];
+  const results = useMemo(() => rows.results || [], [rows.results]);
+  const upcoming = useMemo(() => rows.upcoming || [], [rows.upcoming]);
+  const history = useMemo(() => rows.history || [], [rows.history]);
 
   const resultsTagOptions = useMemo(() => tagStatusOptions(results), [results]);
   const historyTagOptions = useMemo(() => tagStatusOptions(history), [history]);
 
   const filteredResults = useMemo(() => {
-    if (!resultsTagFilter) return results;
-    return results.filter((r) => resultsTagFilter.has(r.tag || r.status));
-  }, [results, resultsTagFilter]);
+    let out = resultsTagFilter ? results.filter((r) => resultsTagFilter.has(r.tag || r.status)) : results;
+    return out.filter((r) => matchesSymbol(r.symbol, query));
+  }, [results, resultsTagFilter, query]);
+
+  const filteredUpcoming = useMemo(
+    () => upcoming.filter((r) => matchesSymbol(r.symbol, query)),
+    [upcoming, query]
+  );
 
   const filteredHistory = useMemo(() => {
-    if (!historyTagFilter) return history;
-    return history.filter((r) => historyTagFilter.has(r.tag || r.status));
-  }, [history, historyTagFilter]);
+    let out = historyTagFilter ? history.filter((r) => historyTagFilter.has(r.tag || r.status)) : history;
+    return out.filter((r) => matchesSymbol(r.symbol, query));
+  }, [history, historyTagFilter, query]);
 
   return (
     <div className="t5-wrap">
@@ -319,6 +353,14 @@ export default function T5ScannerPanel({
           <div className="t5-lbl">Resolution</div>
           <div className="t5-val purple">{resolution}</div>
         </div>
+        <div className="t5-stat">
+          <div className="t5-lbl">Last Scan</div>
+          <div className="t5-val" style={{ fontSize: 12 }}>{lastScan ? fmtTime(lastScan) : "—"}</div>
+        </div>
+        <div className="t5-stat">
+          <div className="t5-lbl">Duration</div>
+          <div className="t5-val">{durationMs ? `${(durationMs / 1000).toFixed(0)}s` : "—"}</div>
+        </div>
       </div>
 
       <div className="t5-tabs">
@@ -340,6 +382,23 @@ export default function T5ScannerPanel({
         >
           History <span className="t5-count">({history.length})</span>
         </button>
+
+        <div className="t5-tabs-right">
+          <div className={`t5-search ${query ? "has-val" : ""}`}>
+            <SearchGlyph />
+            <input
+              type="text"
+              placeholder="Search symbol…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            {query && (
+              <button className="t5-search-clear" onClick={() => setQuery("")} title="Clear search">
+                &times;
+              </button>
+            )}
+          </div>
+        </div>
       </div>
 
       {tab === "results" && (
@@ -404,7 +463,7 @@ export default function T5ScannerPanel({
                 <tr><th>Sr</th><th>Symbol</th><th>Side</th><th>Stage</th><th>Flip watch</th><th>Time</th></tr>
               </thead>
               <tbody>
-                {upcoming.map((r, i) => (
+                {filteredUpcoming.map((r, i) => (
                   <tr key={r.symbol + i} className={r.flip ? "t5-flip-row" : ""} onClick={() => onRowClick(r.symbol)}>
                     <td>{i + 1}</td>
                     <td className="t5-sym">{r.symbol}</td>
@@ -414,6 +473,9 @@ export default function T5ScannerPanel({
                     <td className="t5-time">{r.time}</td>
                   </tr>
                 ))}
+                {filteredUpcoming.length === 0 && upcoming.length > 0 && (
+                  <tr><td colSpan={6} className="t5-empty">No rows match this filter.</td></tr>
+                )}
                 {upcoming.length === 0 && (
                   <tr><td colSpan={6} className="t5-empty">Nothing forming right now.</td></tr>
                 )}

@@ -1,0 +1,369 @@
+/* AnalyticsPage.css — uses the app's real design tokens (styles/index.css),
+   same as every other feature page, so this respects the existing
+   light/dark theme toggle automatically. No colors invented here that
+   aren't already part of the app's design system. */
+
+.an-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
+.an-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.an-back-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text2);
+  cursor: pointer;
+}
+
+.an-back-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.an-header h1 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.an-header-sub {
+  font-size: 12px;
+  color: var(--text3);
+  margin-left: auto;
+}
+
+.an-body {
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 20px 20px 60px;
+}
+
+/* ── filters ─────────────────────────────────────────────────────── */
+.an-filters {
+  padding: 16px 18px;
+}
+
+.an-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+
+.an-field label {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-bottom: 6px;
+}
+
+.an-field select {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  outline: none;
+}
+
+.an-field select:focus {
+  border-color: var(--accent);
+}
+
+.an-filter-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.an-error-text {
+  color: var(--red);
+  font-size: 12.5px;
+}
+
+/* ── status indicator (matches ScannerPage.css's scanner-status-dot
+   convention — same dot size, same var(--text3) neutral, green for the
+   shared/live state) ────────────────────────────────────────────────── */
+.an-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text3);
+}
+
+.an-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text3);
+  flex-shrink: 0;
+}
+
+.an-status-dot.cached {
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green);
+}
+
+.an-status-dot.fresh {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+
+.an-btn {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 9px 18px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.an-btn:hover {
+  border-color: var(--border2);
+  background: var(--bg3);
+}
+
+.an-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.an-btn-primary:hover {
+  opacity: .9;
+}
+
+.an-btn:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.an-empty-state {
+  text-align: center;
+  color: var(--text3);
+  padding: 60px 0;
+  font-size: 13.5px;
+}
+
+/* ── panel / block ───────────────────────────────────────────────── */
+.an-panel {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius2);
+  padding: 16px 18px;
+}
+
+.an-block {
+  margin-top: 22px;
+}
+
+.an-block-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.an-block-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.an-block-sub {
+  font-size: 12px;
+  color: var(--text3);
+}
+
+.an-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 22px;
+}
+
+.an-two-col .an-block {
+  margin-top: 0;
+}
+
+/* ── KPI grid ────────────────────────────────────────────────────── */
+.an-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-top: 18px;
+}
+
+.an-kpi-grid-5 {
+  grid-template-columns: repeat(5, 1fr);
+  margin-top: 14px;
+}
+
+.an-kpi {
+  background: var(--bg2);
+  padding: 12px 14px;
+}
+
+.an-kpi-label {
+  font-size: 10.5px;
+  color: var(--text3);
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.an-kpi-val {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.an-pos {
+  color: var(--green);
+}
+
+.an-neg {
+  color: var(--red);
+}
+
+/* ── charts ──────────────────────────────────────────────────────── */
+.an-chart-wrap {
+  position: relative;
+  height: 220px;
+}
+
+.an-chart-wrap.tall {
+  height: 280px;
+}
+
+/* ── condition chips ─────────────────────────────────────────────── */
+.an-chip-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.an-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.an-chip-label {
+  font-size: 11.5px;
+  color: var(--text2);
+  margin-right: 4px;
+  min-width: 70px;
+}
+
+.an-chip {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text2);
+  cursor: pointer;
+}
+
+.an-chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+/* ── custom chart builder ────────────────────────────────────────── */
+.an-builder-controls {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.an-builder-controls .an-field {
+  width: 180px;
+}
+
+/* ── table ───────────────────────────────────────────────────────── */
+.an-table-wrap {
+  overflow-x: auto;
+}
+
+.an-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.an-table th {
+  text-align: left;
+  font-size: 10px;
+  color: var(--text3);
+  text-transform: uppercase;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--border);
+}
+
+.an-table td {
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text2);
+}
+
+.an-table-note {
+  font-size: 11.5px;
+  color: var(--text3);
+  padding: 8px 4px;
+}
+
+@media (max-width: 900px) {
+  .an-filter-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .an-kpi-grid,
+  .an-kpi-grid-5 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .an-two-col {
+    grid-template-columns: 1fr;
+  }
+}

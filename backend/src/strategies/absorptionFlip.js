@@ -40,17 +40,22 @@
  * change which events fire on longer candle histories.
  *
  * ADDED FILTER — post-breakthrough Doji confirmation (not in the Pine
- * source, added on top of the port): a "TREND FLIPPED UP/DOWN" event (shown
- * to the user as "Breakthrough") is only emitted if a Doji candle appears
- * within the 2 candles immediately following the breakthrough candle. This
- * is a pure gate on whether the alert/event is surfaced — the underlying
- * regime flip, band creation, and legNo/refSWH/refSWL state machine still
- * advance exactly as before regardless of the Doji outcome, since later
- * absorption/flip detection depends on that state staying faithful to the
- * Pine port. Because scan() always runs over the full historical candle
- * array in one pass (see "Purity" note below), the 2-candle lookahead is
- * simply read from the same O/H/L/C arrays already in scope — no separate
- * buffering or incremental state is needed.
+ * source, added on top of the port): BOTH event types —
+ *   - "TREND FLIPPED UP/DOWN"        (shown as "Flip UP/DOWN")
+ *   - "Absorbing RESISTANCE/SUPPORT broken" (shown as "Absorption R/S Broken")
+ * are only emitted if a Doji candle appears within the 2 candles immediately
+ * following the triggering candle (the flip candle, or the absorption-break
+ * candle respectively). This is a pure gate on whether the alert/event is
+ * surfaced — the underlying regime flip / band absorb-break state (legNo,
+ * refSWH/refSWL, b.absorb, b.broken) still advances exactly as before
+ * regardless of the Doji outcome, since later absorption/flip detection
+ * depends on that state staying faithful to the Pine port. Because scan()
+ * always runs over the full historical candle array in one pass (see
+ * "Purity" note below), the 2-candle lookahead is simply read from the same
+ * O/H/L/C arrays already in scope — no separate buffering or incremental
+ * state is needed. The two event types check the lookahead independently
+ * (a resistance break and support break on the same bar, from different
+ * bands, each get their own dojiWithinLookahead() call).
  * ─────────────────────────────────────────────────────────────────
  */
 
@@ -131,6 +136,180 @@ function isDoji(o, h, l, c) {
   if (!(range > 0)) return false;
   const body = Math.abs(c - o);
   return body <= dojiBodyRatio * range;
+}
+
+// ─── Forming-candle guard (FIX — flag raised 2026-09-02) ──────────────────
+// BUG: Doji is a close-quality read ("this bar finished, and it finished
+// indecisive"). But candles fed into scan() can end with a candle that
+// hasn't closed yet — live intraday ticks still updating its O/H/L/C, or a
+// today's-bar on a daily/weekly resolution before the session has ended.
+// Reading isDoji() off that bar means the "Doji" can appear, disappear, and
+// reappear tick-by-tick as the still-forming candle's body wobbles — a
+// signal that isn't real yet, on every timeframe this strategy scans.
+//
+// FIX: never evaluate Doji (or feed the engine at all) using a last candle
+// that hasn't actually closed. Whether a candle has closed is worked out
+// from the candle data itself — the spacing between consecutive bar-start
+// timestamps, measured ONLY across candles BEFORE the last one (so a
+// genuinely-forming last bar can never pollute its own spacing estimate).
+// This makes the guard self-adjusting to whatever resolution scan() was
+// called with (1m, 3m, 5m, 15m, 1D, 1W, ...) with nothing hardcoded and no
+// resolution parameter required from the caller.
+//
+// Safe-by-default: if there isn't enough history to confidently measure
+// spacing, this returns "not forming" (old behavior) rather than guess.
+
+// Most common gap (ms) between consecutive candle timestamps, using only
+// candles[0..n-2] — i.e. every gap EXCEPT the one ending at the last candle.
+function detectSpacingMs(candles) {
+  const n = candles.length;
+  if (n < 3) return null;
+  const counts = new Map();
+  for (let i = 1; i < n - 1; i++) {
+    const gap = candles[i].time - candles[i - 1].time;
+    if (gap > 0) counts.set(gap, (counts.get(gap) || 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  let bestGap = null, bestCount = -1;
+  for (const [gap, count] of counts) {
+    if (count > bestCount) { bestCount = count; bestGap = gap; }
+  }
+  return bestGap;
+}
+
+// True only if the LAST candle's own period hasn't elapsed yet as of right
+// now — i.e. it is still live/forming, not actually closed.
+function isLastCandleForming(candles) {
+  const n = candles.length;
+  if (n < 3) return false;
+  const spacingMs = detectSpacingMs(candles);
+  if (!spacingMs) return false;
+  const last = candles[n - 1];
+  const expectedCloseMs = last.time + spacingMs;
+  const BUFFER_MS = 2000; // clock-skew / scan-just-missed-the-close tolerance
+  return Date.now() < (expectedCloseMs - BUFFER_MS);
+}
+
+// ─── Retest-Entry engine (new layer, added on top of Doji-confirmed events) ─
+// Spec, locked by the user, nothing guessed beyond the one explicitly-flagged
+// assumption below:
+//
+//   Bull (Absorption R Broken or Flip UP):
+//     reference = the confirming Doji candle's HIGH
+//     price may dip to any depth (retest)
+//     if price closes back into/below the ORIGINAL zone before re-crossing
+//       the Doji high → INVALIDATED, no entry
+//     if price re-crosses back ABOVE the Doji high → ENTRY at that exact
+//       level; stop = lowest low of the whole retest dip; target = 1:1 R
+//
+//   Bear (Absorption S Broken or Flip DOWN): exact mirror — Doji LOW,
+//     highest high of the retest rise, close back into/above the original
+//     zone invalidates, re-cross BELOW the Doji low enters.
+//
+//   CONFIRMED BY USER: the tie-break case only matters on the ENTRY candle
+//   itself — that's the one bar where "which happened first, stop or
+//   target" is genuinely unknowable from OHLC alone (no tick data). If the
+//   entry candle's own range contains BOTH the stop price and the target
+//   price (e.g. a small Doji followed by one big-range entry candle on a
+//   1D chart), this is NOT resolved as a win or a loss — it's tagged its
+//   own outcome, "big_candle", and left out of the win/loss tally. This
+//   does NOT apply to later candles after entry — those follow the normal
+//   stop-checked-before-target order, since by then it's a plain walk
+//   forward, not an ambiguous same-bar tie. Search "BIG CANDLE" below.
+//
+// `event` must be one of the dojiConfirmed events pushed above (needs
+// .direction, .dojiBarIndex, .zoneLevel). `candles` is the SAME array
+// passed into run() — oldest-first {time, open, high, low, close}.
+function computeRetestOutcome(event, candles) {
+  const n = candles.length;
+  const dojiIdx = event.dojiBarIndex;
+  const zoneLevel = event.zoneLevel;
+
+  if (dojiIdx == null || dojiIdx < 0 || dojiIdx >= n || zoneLevel == null) {
+    return { state: "watching", entryPrice: null, stopPrice: null, targetPrice: null };
+  }
+
+  const bull = event.direction === "up";
+  const refLevel = bull ? candles[dojiIdx].high : candles[dojiIdx].low;
+
+  let dipExtreme = null; // lowest low (bull) / highest high (bear) of the retest so far
+  let entryBarIndex = null, entryTime = null, entryPrice = null, stopPrice = null, targetPrice = null;
+
+  // ── Phase 1: watch the retest — invalidate or enter ──────────────────
+  for (let j = dojiIdx + 1; j < n; j++) {
+    const c = candles[j];
+    dipExtreme = bull
+      ? (dipExtreme == null ? c.low : Math.min(dipExtreme, c.low))
+      : (dipExtreme == null ? c.high : Math.max(dipExtreme, c.high));
+
+    // Invalidation check FIRST: price closing back into/below (bull) or
+    // into/above (bear) the ORIGINAL zone, before ever re-crossing the
+    // Doji high/low, cancels the setup.
+    const invalidated = bull ? c.close <= zoneLevel : c.close >= zoneLevel;
+    if (invalidated) {
+      return {
+        state: "invalidated", entryPrice: null, stopPrice: null, targetPrice: null,
+        retestExtreme: dipExtreme, invalidatedBarIndex: j, invalidatedTime: c.time,
+      };
+    }
+
+    // Entry check: re-cross back above the Doji high (bull) / below the
+    // Doji low (bear). Entry price is that exact level, per spec — not
+    // the crossing candle's close.
+    const crossed = bull ? c.high > refLevel : c.low < refLevel;
+    if (crossed) {
+      entryBarIndex = j; entryTime = c.time; entryPrice = refLevel; stopPrice = dipExtreme;
+      const risk = bull ? entryPrice - stopPrice : stopPrice - entryPrice;
+      if (!(risk > 0)) {
+        // Degenerate: dip extreme coincides exactly with the entry level.
+        // No valid stop distance to size a 1:1 target off of — flag it
+        // rather than silently emitting a garbage (zero-width) target.
+        return {
+          state: "invalid_zero_risk", entryPrice, stopPrice, targetPrice: null,
+          retestExtreme: dipExtreme, entryBarIndex, entryTime,
+        };
+      }
+      targetPrice = bull ? entryPrice + risk : entryPrice - risk;
+      break;
+    }
+  }
+
+  if (entryBarIndex == null) {
+    // Never invalidated, never re-crossed, by the end of available candles.
+    return { state: "watching", entryPrice: null, stopPrice: null, targetPrice: null, retestExtreme: dipExtreme };
+  }
+
+  // ── Phase 2: entry taken — walk forward to resolution ─────────────────
+  // Starts on the entry bar itself (not entryBarIndex+1): the entry bar's
+  // own low can equal the stop (if that bar itself sets the dip extreme),
+  // so the same-bar tie-break case is real and must be checked, not skipped.
+  let state = "entered_open", resolutionBarIndex = null, resolutionTime = null;
+  for (let k = entryBarIndex; k < n; k++) {
+    const c = candles[k];
+    const hitStop = bull ? c.low <= stopPrice : c.high >= stopPrice;
+    const hitTarget = bull ? c.high >= targetPrice : c.low <= targetPrice;
+
+    // BIG CANDLE (user-confirmed rule): only on the entry bar itself, if
+    // that one candle's range already contains BOTH stop and target,
+    // there's no way to know which was touched first without tick data.
+    // Don't guess stop-first — tag it as its own outcome instead, and
+    // don't count it as a win or a loss anywhere downstream.
+    if (k === entryBarIndex && hitStop && hitTarget) {
+      state = "big_candle"; resolutionBarIndex = k; resolutionTime = c.time; break;
+    }
+    if (hitStop) {
+      state = "entered_loss"; resolutionBarIndex = k; resolutionTime = c.time; break;
+    } else if (hitTarget) {
+      state = "entered_win"; resolutionBarIndex = k; resolutionTime = c.time; break;
+    }
+  }
+
+  return {
+    state, entryPrice, stopPrice, targetPrice, retestExtreme: dipExtreme,
+    entryBarIndex, entryTime, resolutionBarIndex, resolutionTime,
+    barsToEntry: entryBarIndex - dojiIdx,
+    barsToResolution: resolutionBarIndex != null ? resolutionBarIndex - entryBarIndex : null,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -367,6 +546,9 @@ class AbsorptionFlipEngine {
             type: "flip_break", direction: "down", side: "support",
             level: prevRefSWL, time: T[i], price: close, barIndex: i,
             dojiConfirmed: true, dojiBarIndex: dojiBarDn, dojiTime: T[dojiBarDn],
+            // retest-engine invalidation boundary: for a flip there is no
+            // separate band, so the "original zone" IS the crossed level.
+            zoneLevel: prevRefSWL,
           });
         }
       } else if (this.regime === -1 && this.refSWH != null && close > this.refSWH) {
@@ -387,6 +569,7 @@ class AbsorptionFlipEngine {
             type: "flip_break", direction: "up", side: "resistance",
             level: prevRefSWH, time: T[i], price: close, barIndex: i,
             dojiConfirmed: true, dojiBarIndex: dojiBarUp, dojiTime: T[dojiBarUp],
+            zoneLevel: prevRefSWH,
           });
         }
       }
@@ -441,18 +624,38 @@ class AbsorptionFlipEngine {
           // `weak` = the weak-test count that flagged ABSORBING (the amber
           // "ABSORBING R ×3" alert box), `pokes` = the band's own wick-through
           // count (the "POKED ×N" band-state label). Scanner UI shows both.
+          // Same Doji gate as flip_break (see dojiWithinLookahead above):
+          // the underlying absorb/absHi/absLo/broken state has already
+          // advanced above regardless — this only gates whether the event
+          // is surfaced. Checked once per candidate break so a resistance
+          // break and a support break (different bands, same bar) each get
+          // their own independent lookahead.
           if (wasAbsorb) {
             if (b.isRes && prevAbsHi != null && close > prevAbsHi) {
-              this.events.push({
-                type: "absorption_break", direction: "up", side: "resistance",
-                level: prevAbsHi, weak: b.weak, pokes: b.pokes, stepNo: b.stepNo, time: T[i], price: close, barIndex: i,
-              });
+              const dojiBarAbsR = dojiWithinLookahead(i);
+              if (dojiBarAbsR !== -1) {
+                this.events.push({
+                  type: "absorption_break", direction: "up", side: "resistance",
+                  level: prevAbsHi, weak: b.weak, pokes: b.pokes, stepNo: b.stepNo, time: T[i], price: close, barIndex: i,
+                  dojiConfirmed: true, dojiBarIndex: dojiBarAbsR, dojiTime: T[dojiBarAbsR],
+                  // retest-engine invalidation boundary: the band's own top
+                  // edge (not absHi, which is the poke-extreme `level` above)
+                  // — "back into the ORIGINAL absorption zone" means back
+                  // inside [b.bot, b.top], so b.top is the boundary to watch.
+                  zoneLevel: b.top,
+                });
+              }
             }
             if (!b.isRes && prevAbsLo != null && close < prevAbsLo) {
-              this.events.push({
-                type: "absorption_break", direction: "down", side: "support",
-                level: prevAbsLo, weak: b.weak, pokes: b.pokes, stepNo: b.stepNo, time: T[i], price: close, barIndex: i,
-              });
+              const dojiBarAbsS = dojiWithinLookahead(i);
+              if (dojiBarAbsS !== -1) {
+                this.events.push({
+                  type: "absorption_break", direction: "down", side: "support",
+                  level: prevAbsLo, weak: b.weak, pokes: b.pokes, stepNo: b.stepNo, time: T[i], price: close, barIndex: i,
+                  dojiConfirmed: true, dojiBarIndex: dojiBarAbsS, dojiTime: T[dojiBarAbsS],
+                  zoneLevel: b.bot,
+                });
+              }
             }
           }
 
@@ -532,6 +735,18 @@ class AbsorptionFlipEngine {
       atr: lastAtr,
     };
 
+    // ── Retest-Entry pass — runs AFTER detection is fully done, over the
+    // same full candle history, so every Doji-confirmed event (of either
+    // type) gets its retest/entry/stop/target outcome attached. Does not
+    // affect detection in any way — pure post-processing, same as the
+    // Doji gate is pure post-filtering of an already-decided state.
+    for (let e = 0; e < this.events.length; e++) {
+      const ev = this.events[e];
+      if (ev.dojiConfirmed) {
+        ev.retest = computeRetestOutcome(ev, candles);
+      }
+    }
+
     return { events: this.events, finalState };
   }
 }
@@ -554,8 +769,12 @@ function scan(symbol, candles /*, context = {} */) {
     events: [],              // full chronological history — every absorption_break / flip_break
     results: [],              // same events, MOST-RECENT-FIRST — for a scanner table
     state: null,               // final regime / flip level / live-absorbing snapshot
+    // lastCandle stays the RAW last candle (even if still forming) — this
+    // is what the UI shows as "current price/bar", and that's supposed to
+    // move live. Only the DETECTION path below excludes a forming candle.
     lastCandle: candles && candles.length ? candles[candles.length - 1] : null,
     candleCount: candles ? candles.length : 0,
+    formingCandleExcluded: false,
     scannedAt: new Date().toISOString(),
     error: null,
   };
@@ -566,8 +785,23 @@ function scan(symbol, candles /*, context = {} */) {
       return result;
     }
 
+    // ── Forming-candle guard ───────────────────────────────────────────
+    // Detection (Doji + everything downstream of it) must only ever see
+    // CLOSED candles. If the last candle hasn't closed yet, drop it before
+    // handing the array to the engine — same array shape/order otherwise,
+    // so nothing else about the engine's logic changes.
+    let detectionCandles = candles;
+    if (isLastCandleForming(candles)) {
+      detectionCandles = candles.slice(0, -1);
+      result.formingCandleExcluded = true;
+      if (detectionCandles.length < 30) {
+        result.error = "insufficient_data";
+        return result;
+      }
+    }
+
     const engine = new AbsorptionFlipEngine();
-    const { events, finalState } = engine.run(candles);
+    const { events, finalState } = engine.run(detectionCandles);
 
     result.events = events;
     result.results = events.slice().reverse();
@@ -581,6 +815,31 @@ function scan(symbol, candles /*, context = {} */) {
       result.direction = last.direction;
       result.level = last.level;
     }
+
+    // ── per-symbol retest/entry backtest summary ─────────────────────
+    const backtest = {
+      wins: 0, losses: 0, open: 0, invalidated: 0, watching: 0, zeroRisk: 0, bigCandle: 0,
+      totalR: 0, resolvedCount: 0, winRate: null,
+    };
+    for (let e = 0; e < events.length; e++) {
+      const r = events[e].retest;
+      if (!r) continue;
+      switch (r.state) {
+        case "entered_win": backtest.wins += 1; backtest.totalR += 1; backtest.resolvedCount += 1; break;
+        case "entered_loss": backtest.losses += 1; backtest.totalR -= 1; backtest.resolvedCount += 1; break;
+        case "entered_open": backtest.open += 1; break;
+        case "invalidated": backtest.invalidated += 1; break;
+        case "watching": backtest.watching += 1; break;
+        case "invalid_zero_risk": backtest.zeroRisk += 1; break;
+        // "big_candle" is deliberately excluded from wins/losses/resolvedCount
+        // and from totalR — the entry-candle tie is unresolvable from OHLC,
+        // so it's tracked separately rather than forced into the win-rate math.
+        case "big_candle": backtest.bigCandle += 1; break;
+        default: break;
+      }
+    }
+    backtest.winRate = backtest.resolvedCount > 0 ? backtest.wins / backtest.resolvedCount : null;
+    result.backtest = backtest;
   } catch (err) {
     result.error = err.message;
   }
@@ -591,8 +850,11 @@ function scan(symbol, candles /*, context = {} */) {
 module.exports = {
   id: "absorption-flip",
   name: "9EMA Absorption / Flip Break",
-  description: "Direct Pine port of the 9EMA Pivot S/R Bands' ABSORPTION watch-state + trend-flip step-line — flags every symbol where an absorbing band's extreme got closed through, or the regime's refSWL/refSWH flip level broke, across the full candle history. Breakthrough (flip) signals additionally require a Doji candle within 2 candles after the breakthrough candle.",
+  description: "Direct Pine port of the 9EMA Pivot S/R Bands' ABSORPTION watch-state + trend-flip step-line — flags every symbol where an absorbing band's extreme got closed through, or the regime's refSWL/refSWH flip level broke, across the full candle history. Both absorption-break and flip signals additionally require a Doji candle within 2 candles after the triggering candle.",
   scan,
   // Also exported for direct/standalone use and testing.
   AbsorptionFlipEngine,
+  computeRetestOutcome,
+  isLastCandleForming,
+  detectSpacingMs,
 };

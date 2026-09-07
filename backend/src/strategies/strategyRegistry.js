@@ -51,13 +51,12 @@ const strategies = [
   // "TREND FLIPPED UP/DOWN" — and returns them as a symbol's events/results.
   require("./absorptionFlip"),
 
-  // ── Ceiling Break & Retest v4 — direct Pine port ────────────────────────
-  // Single self-contained file, same pattern as absorptionFlip.js / tgT5.js:
-  // clusters confirmed pivot highs into a ceiling, watches a breakout, and
-  // classifies the follow-through (Retest / Failed Retest / No Retest /
-  // Higher Low). Bullish-continuation only — found=true only on HIGHER_LOW
-  // (the source script's own "Entry Point"). Frontend indicator counterpart:
-  // indicators/CeilingRetestIndicator.js (engine copy: indicators/ceilingBreakRetestEngine.js).
+  // ── Ceiling Break & Retest — direct Node port of Pine v5 indicator ──────
+  // Single self-contained file, same pattern as scannerS1.S2.S3.js /
+  // typeREF.js / tgT5.js / absorptionFlip.js: the ceiling-clustering,
+  // breakout, and RETEST/FAILED_RETEST/NO_RETEST/HIGHER_LOW state machine
+  // is ported and inlined in ceilingBreakRetest.js itself — no separate
+  // engine file. HIGHER_LOW is the entry signal (see that file's header).
   require("./ceilingBreakRetest"),
 
   // ── Add new strategies below ──────────────────────────────────
