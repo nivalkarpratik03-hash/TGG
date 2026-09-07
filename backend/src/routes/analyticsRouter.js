@@ -154,4 +154,36 @@ router.get("/export", (req, res) => {
   }
 });
 
+// GET /api/analytics/cached
+// Read-only — same role as Scanner's GET /results/:strategyId (see
+// ScannerPage.js's fetchResults/comboScannedAt): NEVER triggers a compute.
+// If this exact strategy/params/filters combo has already been run by ANY
+// client (shared in-memory cache.js, same sharing mechanism as Scanner's
+// _results Map — one backend process, one Map, every client sees the
+// same thing), returns it instantly. If not, returns { cached: false } —
+// the frontend then knows an explicit GET /run is needed (that's what
+// "Apply / Run analysis" does, same role as Scanner's "Scan Now").
+router.get("/cached", (req, res) => {
+  try {
+    const { strategyId } = req.query;
+    if (!strategyId) {
+      return res.status(400).json({ error: "missing_strategyId" });
+    }
+    const assetClass = req.query.assetClass || "index";
+    const instrumentType = req.query.instrumentType || "spot";
+    const resolution = Number(req.query.resolution) || 5;
+    const params = req.query.params ? JSON.parse(req.query.params) : {};
+    const filters = { assetClass, instrumentType, resolution };
+
+    const key = cache.buildCacheKey(strategyId, params, filters);
+    const cached = cache.get(key);
+    if (!cached) {
+      return res.json({ cached: false });
+    }
+    res.json({ cached: true, ...cached, fromCache: true });
+  } catch (e) {
+    res.status(500).json({ error: "analytics_cached_check_failed", message: e.message });
+  }
+});
+
 module.exports = router;

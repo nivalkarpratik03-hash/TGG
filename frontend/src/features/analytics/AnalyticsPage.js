@@ -99,6 +99,10 @@ export default function AnalyticsPage() {
   const [error, setError] = useState(null);
   const [activeCondKey, setActiveCondKey] = useState(null);
   const [activeCondVal, setActiveCondVal] = useState(null);
+  // NEW — mirrors ScannerPage.js's comboScannedAt: was the currently-shown
+  // result already sitting in the shared cache (any client could have put
+  // it there), or did THIS click just compute it fresh? Purely informational.
+  const [wasAlreadyCached, setWasAlreadyCached] = useState(false);
 
   useEffect(() => {
     fetch(`${BACKEND}/api/analytics/strategies`)
@@ -110,6 +114,41 @@ export default function AnalyticsPage() {
       })
       .catch((e) => setError(`Could not load strategy list: ${e.message}`));
   }, []);
+
+  // ── Auto-check the shared cache on mount AND whenever strategy/filters
+  // change — SAME mechanism as ScannerPage.js's fetchResults effect (see
+  // its own comment: "switching filters to a combo that was already
+  // scanned shows that combo's cached results instantly; switching to a
+  // combo never scanned shows the empty state until the user hits Scan
+  // Now"). This NEVER computes anything — GET /cached only ever reads the
+  // shared in-memory cache (cache.js), same one every other client's
+  // "Apply / Run analysis" click also writes to. If someone else already
+  // ran this exact strategy+filters combo, it just shows up here with no
+  // button press needed, same as Scanner. ───────────────────────────────
+  useEffect(() => {
+    if (!strategyId) return;
+    let cancelled = false;
+    const params = new URLSearchParams({ strategyId, assetClass, instrumentType, resolution: String(resolution) });
+    fetch(`${BACKEND}/api/analytics/cached?${params.toString()}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        if (data.cached) {
+          setResult(data);
+          setWasAlreadyCached(true);
+          setError(null);
+        } else {
+          // Never scanned/run for this exact combo yet — same as Scanner's
+          // empty state, waiting on an explicit "Apply / Run analysis".
+          setResult(null);
+          setWasAlreadyCached(false);
+        }
+        setActiveCondKey(null);
+        setActiveCondVal(null);
+      })
+      .catch(() => { /* silent — this is a passive background check, the explicit Apply button surfaces real errors */ });
+    return () => { cancelled = true; };
+  }, [strategyId, assetClass, instrumentType, resolution]);
 
   const runAnalysis = useCallback(() => {
     if (!strategyId) return;
@@ -124,6 +163,7 @@ export default function AnalyticsPage() {
           setResult(null);
         } else {
           setResult(data);
+          setWasAlreadyCached(!!data.fromCache);
           setActiveCondKey(null);
           setActiveCondVal(null);
         }
@@ -350,15 +390,22 @@ export default function AnalyticsPage() {
             </div>
           </div>
           <div className="an-filter-actions">
+            {result && !error && (
+              <span className="an-status">
+                <span className={`an-status-dot ${wasAlreadyCached ? "cached" : "fresh"}`} />
+                {wasAlreadyCached ? "Already computed — shared result" : "Just computed"}
+                {result.computedAt && ` · ${new Date(result.computedAt).toLocaleTimeString()}`}
+              </span>
+            )}
             {error && <span className="an-error-text">{error}</span>}
             <button className="an-btn an-btn-primary" disabled={loading || !strategyId} onClick={runAnalysis}>
-              {loading ? "Running…" : "Apply / Run analysis"}
+              {loading ? "Running…" : wasAlreadyCached ? "Re-run analysis" : "Apply / Run analysis"}
             </button>
           </div>
         </div>
 
         {!result && !loading && !error && (
-          <div className="an-empty-state">Pick a strategy and run analysis to see results.</div>
+          <div className="an-empty-state">Not run yet for this exact strategy/filters combo — pick a strategy and hit Apply, or wait for someone else to run it (shared across everyone, same as Scanner).</div>
         )}
 
         {summary && (
