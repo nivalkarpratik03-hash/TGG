@@ -1,0 +1,358 @@
+/* CeilingBreakScannerPanel.css
+ * Same theme-token mapping (--bg/--bg2/--text/--accent/... from
+ * styles/index.css) and same layout skeleton as AbsorptionScannerPanel.css
+ * / T5ScannerPanel.css, re-namespaced to cbr- so this panel's classes never
+ * collide with the others (each existing panel keeps its own CSS file with
+ * its own prefix — af- for Absorption, t5- for T5 — same precedent here).
+ */
+.cbr-wrap {
+  --cbr-bg: var(--bg);
+  --cbr-panel: var(--bg2);
+  --cbr-card: var(--bg3);
+  --cbr-border: var(--border);
+  --cbr-ink: var(--text);
+  --cbr-mut: var(--text2);
+  --cbr-mut2: var(--text3);
+  --cbr-accent: var(--accent);
+  --cbr-amber: var(--yellow);
+  --cbr-green: var(--green);
+  --cbr-red: var(--red);
+
+  background: var(--cbr-panel);
+  border: 1px solid var(--cbr-border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  color: var(--cbr-ink);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  box-sizing: border-box;
+}
+
+.cbr-wrap * {
+  box-sizing: border-box;
+}
+
+/* ── Stats ────────────────────────────────────────────────────────── */
+.cbr-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.cbr-stat {
+  background: var(--cbr-card);
+  border: 1px solid var(--cbr-border);
+  border-radius: 9px;
+  padding: 11px 14px;
+}
+
+.cbr-lbl {
+  font-size: 10px;
+  color: var(--cbr-mut2);
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+
+.cbr-val {
+  font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 17px;
+  font-weight: 600;
+  margin-top: 3px;
+}
+
+.cbr-val.purple { color: var(--cbr-accent); }
+.cbr-val.amber { color: var(--cbr-amber); }
+.cbr-val.blue { color: var(--cbr-accent); }
+.cbr-val.green { color: var(--cbr-green); }
+
+/* ── Tabs ─────────────────────────────────────────────────────────── */
+.cbr-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid var(--cbr-border);
+  margin-bottom: 0;
+}
+
+.cbr-tabs-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.cbr-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--cbr-card);
+  border: 1px solid var(--cbr-border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  width: 200px;
+}
+
+.cbr-search-icon {
+  flex-shrink: 0;
+  color: var(--cbr-mut2);
+}
+
+.cbr-search input {
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--cbr-ink);
+  font-family: inherit;
+  font-size: 12px;
+  width: 100%;
+}
+
+.cbr-search input::placeholder {
+  color: var(--cbr-mut2);
+}
+
+.cbr-search-clear {
+  background: none;
+  border: none;
+  color: var(--cbr-mut2);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.cbr-search-clear:hover {
+  color: var(--cbr-ink);
+}
+
+/* ── Download ─────────────────────────────────────────────────────── */
+.cbr-download-btn {
+  align-self: center;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--cbr-border);
+  border-radius: 5px;
+  background: var(--cbr-card);
+  color: var(--cbr-mut);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.cbr-download-btn:hover:not(:disabled) {
+  background: var(--cbr-bg);
+  color: var(--cbr-ink);
+  border-color: var(--cbr-accent);
+}
+
+.cbr-download-btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.cbr-tab {
+  background: none;
+  border: none;
+  color: var(--cbr-mut);
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 10px 16px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  font-family: inherit;
+}
+
+.cbr-tab.active {
+  color: var(--cbr-ink);
+  border-bottom-color: var(--cbr-accent);
+}
+
+.cbr-count {
+  color: var(--cbr-mut2);
+  font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  margin-left: 5px;
+  font-size: 12px;
+}
+
+.cbr-tab.active .cbr-count {
+  color: var(--cbr-accent);
+}
+
+.cbr-panel {
+  display: none;
+}
+
+.cbr-panel.active {
+  display: block;
+}
+
+.cbr-subrow {
+  padding: 10px 2px 8px;
+}
+
+.cbr-sub {
+  color: var(--cbr-mut);
+  font-size: 12.5px;
+}
+
+/* ── Table ────────────────────────────────────────────────────────── */
+.cbr-table-wrap {
+  max-height: 460px;
+  overflow-y: auto;
+}
+
+.cbr-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.cbr-table thead th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--cbr-mut2);
+  font-weight: 600;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--cbr-border);
+  background: var(--cbr-panel);
+  position: sticky;
+  top: 0;
+}
+
+.cbr-table thead th.num,
+.cbr-table tbody td.num {
+  text-align: right;
+}
+
+.cbr-table tbody td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--cbr-border);
+  font-size: 13px;
+  vertical-align: middle;
+}
+
+.cbr-table tbody tr {
+  cursor: pointer;
+}
+
+.cbr-table tbody tr:hover {
+  background: var(--cbr-card);
+}
+
+.cbr-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.cbr-sr {
+  color: var(--cbr-mut2);
+  font-family: monospace;
+  font-size: 12px;
+  width: 32px;
+}
+
+.cbr-symbol {
+  font-weight: 600;
+  letter-spacing: .2px;
+}
+
+.cbr-exch {
+  color: var(--cbr-mut2);
+  font-weight: 400;
+  font-size: 10.5px;
+  margin-left: 5px;
+}
+
+/* ── Signal / event-type badges ──────────────────────────────────────
+ * One color family per engine event type (see ceilingBreakRetest.js):
+ *   CEILING_BROKEN — accent (breakout just started, neutral-informational)
+ *   RETEST         — amber (pullback in progress, watch it)
+ *   FAILED_RETEST  — red (ceiling gave way)
+ *   NO_RETEST      — mut/gray (frictionless move, nothing to enter on)
+ *   HIGHER_LOW     — green (the entry signal)
+ * Plus a separate pair for the LIVE per-symbol state (watching/retested),
+ * which is not an event type but the symbol's current sequence status.
+ */
+.cbr-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.cbr-badge.cbr-broken { color: var(--cbr-accent); }
+.cbr-badge.cbr-retest { color: var(--cbr-amber); }
+.cbr-badge.cbr-failed { color: var(--cbr-red); }
+.cbr-badge.cbr-noretest { color: var(--cbr-mut); }
+.cbr-badge.cbr-higherlow { color: var(--cbr-green); }
+
+.cbr-badge.cbr-watching { color: var(--cbr-amber); }
+.cbr-badge.cbr-retested { color: var(--cbr-accent); }
+
+.cbr-entrytag {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--cbr-green);
+  background: var(--cbr-panel);
+  border: 1px solid var(--cbr-green);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-left: 2px;
+}
+
+.cbr-level {
+  font-family: monospace;
+  font-weight: 600;
+}
+
+.cbr-zone {
+  font-family: monospace;
+  color: var(--cbr-mut);
+  font-size: 12px;
+}
+
+.cbr-reason {
+  color: var(--cbr-mut);
+  font-size: 12.5px;
+}
+
+.cbr-dist {
+  font-family: monospace;
+  color: var(--cbr-mut);
+}
+
+.cbr-dash {
+  color: var(--cbr-mut2);
+}
+
+.cbr-time {
+  color: var(--cbr-mut);
+  font-family: monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.cbr-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--cbr-mut2);
+  font-size: 13px;
+}
+
+/* ── Legend ───────────────────────────────────────────────────────── */
+.cbr-legend {
+  margin-top: 18px;
+  padding: 14px 16px;
+  background: var(--cbr-card);
+  border: 1px solid var(--cbr-border);
+  border-radius: 9px;
+  font-size: 12.5px;
+  color: var(--cbr-mut);
+  line-height: 1.7;
+}
+
+.cbr-legend b {
+  color: var(--cbr-ink);
+}
