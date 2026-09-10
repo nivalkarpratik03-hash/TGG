@@ -49,6 +49,11 @@ export const INDICATOR_REGISTRY = [
     label: "Ceiling Break & Retest",
     color: "#ff9d3d",
   },
+  {
+    id: "pinaka",
+    label: "Pinaka (A1/A2/B/B2)",
+    color: "#2979ff",
+  },
 ];
 
 export function buildDefaultIndicators() {
@@ -60,6 +65,7 @@ export function buildDefaultIndicators() {
     t5: false,
     ema9pivot: false,
     ceilingBreak: false,
+    pinaka: false,
     bubbleGap: 4,    // shared param for consolidation
   };
 }

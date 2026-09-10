@@ -3,13 +3,14 @@
 //   1. Header — back / title / theme / status
 //   2. Control bar — asset class, strategy, instrument type, timeframe, scan now
 //   3. TWO SECTIONS:
-//      A) RESULTS/UPCOMING — exactly ONE of 5 fully self-contained panels
+//      A) RESULTS/UPCOMING — exactly ONE of 6 fully self-contained panels
 //         renders here depending on the active strategy family, each with
 //         its OWN stats row, tabs, and symbol search box baked in:
 //         S1S2S3ScannerPanel | TypeScannerPanel | T5ScannerPanel |
-//         AbsorptionScannerPanel | CeilingBreakScannerPanel. There is no
-//         shared stats bar or shared tabs bar anymore — ScannerPage.js's
-//         only job here is picking which one to render.
+//         AbsorptionScannerPanel | CeilingBreakScannerPanel |
+//         PinakaScannerPanel. There is no shared stats bar or shared tabs
+//         bar anymore — ScannerPage.js's only job here is picking which
+//         one to render.
 //      B) MOTHERWAVE DASHBOARD — latest wave per symbol, sorted by wave size
 //         (uptrend | downtrend columns, then Zone Segregation trays) —
 //         unrelated to the strategy panels above, always shown.
@@ -35,6 +36,8 @@ import AbsorptionScannerPanel from "./AbsorptionScannerPanel";
 import { buildAbsorptionRows } from "./absorptionResultShape";
 import CeilingBreakScannerPanel from "./CeilingBreakScannerPanel";
 import { buildCeilingBreakRows } from "./ceilingBreakResultShape";
+import PinakaScannerPanel from "./PinakaScannerPanel";
+import { buildPinakaRows } from "./pinakaResultShape";
 import S1S2S3ScannerPanel from "./S1S2S3ScannerPanel";
 import TypeScannerPanel from "./TypeScannerPanel";
 import "./ScannerPage.css";
@@ -110,6 +113,17 @@ function openCeilingBreakChart(symbol, timeframe) {
   // draw layer exists). Kept separate rather than reusing
   // openAbsorptionChart directly so a future ceiling-specific chart flag
   // (mirroring T5's `{ t5: true }`) has an obvious home later.
+  window.open(buildChartUrl(symbol, timeframe, null), "_blank");
+}
+
+function openPinakaChart(symbol, timeframe) {
+  // Same non-motherwave pattern as openCeilingBreakChart/openAbsorptionChart
+  // — no mw object, no auto-toggle opts flag. T5 has a `{ t5: true }` flag
+  // that pre-enables its overlay on open (see urlT5 threaded through
+  // ChartsPage.js), but that's a deeper, multi-site wire-up specific to
+  // T5's own route history; Pinaka follows CeilingBreak's simpler
+  // precedent instead — the chart opens plain, and the Pinaka toggle in
+  // the Indicators panel turns the overlay on.
   window.open(buildChartUrl(symbol, timeframe, null), "_blank");
 }
 
@@ -346,6 +360,14 @@ export default function ScannerPage() {
   // (see strategyRegistry.js), no group field needed for this check.
   const isCeilingBreak = activeStrategy === "ceiling-break-retest";
 
+  // Pinaka (A1/A2/B/B2) — same self-contained-panel treatment as T5/
+  // Absorption/CeilingBreak above: its own flat signal-list shape (see
+  // pinakaResultShape.js's header), not s1s2s3's or type's patternStage
+  // vocabulary, so it gets its own branch to its own panel
+  // (PinakaScannerPanel). Matched by id directly — pinaka.js exports
+  // id: "pinaka" (see strategyRegistry.js), no group field needed.
+  const isPinaka = activeStrategy === "pinaka";
+
   // Dropdown-eligible strategies only — excludes variant:"single" entries
   // (type-e/type-r/type-f), which are tab-only, reachable via the R/E/F
   // buttons next to Results/Upcoming instead. Previously the dropdown
@@ -548,6 +570,14 @@ export default function ScannerPage() {
     [results, isCeilingBreak]
   );
 
+  // Pinaka — reshape raw scan() results (signals[]/tag/side) into a flat
+  // Results list for PinakaScannerPanel. No-op (empty) whenever isPinaka
+  // is false, same guard pattern as ceilingBreakRows above.
+  const pinakaRows = useMemo(
+    () => (isPinaka ? buildPinakaRows(results) : { results: [], counts: { a1: 0, a2: 0, b: 0, b2: 0 } }),
+    [results, isPinaka]
+  );
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="scanner-page">
@@ -711,6 +741,15 @@ export default function ScannerPage() {
                 lastScan={comboScannedAt}
                 durationMs={status?.lastScanDurationMs}
                 onRowClick={(symbol) => openCeilingBreakChart(symbol, timeframe)}
+              />
+            ) : isPinaka ? (
+              <PinakaScannerPanel
+                rows={pinakaRows}
+                scannedCount={results.length}
+                resolution={tfLabel}
+                lastScan={comboScannedAt}
+                durationMs={status?.lastScanDurationMs}
+                onRowClick={(symbol) => openPinakaChart(symbol, timeframe)}
               />
             ) : isTypeGroup ? (
               <TypeScannerPanel
