@@ -22,9 +22,10 @@
 // ─────────────────────────────────────────────────────────────────
 
 import React, { useState, useMemo } from "react";
+import * as XLSX from "xlsx";
 import { formatDateTimeIST } from "../../utils/istUtils";
 import { fmtTime } from "./mwScanHelpers";
-import { tickerOf } from "../../utils/symbolMeta";
+import { tickerOf, exchangeOf } from "../../utils/symbolMeta";
 import "./ScannerPage.css";
 
 const TYPE_META = {
@@ -116,7 +117,7 @@ export default function PinakaScannerPanel({
   resolution = "15m",
   lastScan = null,
   durationMs = null,
-  onRowClick = () => {},
+  onRowClick = () => { },
 }) {
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all"); // all | A1 | A2 | B | B2
@@ -129,6 +130,37 @@ export default function PinakaScannerPanel({
   }, [rows.results, query, typeFilter]);
 
   const counts = rows.counts || { a1: 0, a2: 0, b: 0, b2: 0 };
+
+  const hasAnyRows = (rows.results || []).length > 0;
+
+  // ── Download — Results as one sheet in one .xlsx, columns mirroring
+  // what's on screen. Always exports the FULL rows, not the
+  // search/type-filtered view — same rule as
+  // CeilingBreakScannerPanel.js's handleDownload. ────────────────────
+  function handleDownload() {
+    if (!hasAnyRows) return;
+
+    const resultsRows = (rows.results || []).map((r, i) => ({
+      "Sr": i + 1,
+      "Symbol": tickerOf(r.symbol),
+      "Exchange": exchangeOf(r.symbol),
+      "Signal": r.tag || "",
+      "Side": r.side === "long" ? "Long" : "Short",
+      "Close": r.close != null ? r.close.toFixed(2) : "",
+      "# Signals": r.signalCount ?? "",
+      "Timestamp": formatDateTimeIST(r.time || r.scannedAt),
+    }));
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(resultsRows),
+      "Results"
+    );
+
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    XLSX.writeFile(wb, `pinaka_scanner_${resolution}_${stamp}.xlsx`);
+  }
 
   return (
     <div className="s3-wrap">
@@ -169,6 +201,15 @@ export default function PinakaScannerPanel({
               </button>
             )}
           </div>
+
+          <button
+            className="scanner-download-btn"
+            onClick={handleDownload}
+            disabled={!hasAnyRows}
+            title="Download Results as an Excel file"
+          >
+            ⬇ Download
+          </button>
         </div>
       </div>
 
