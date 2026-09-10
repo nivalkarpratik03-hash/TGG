@@ -59,6 +59,16 @@ const strategies = [
   // engine file. HIGHER_LOW is the entry signal (see that file's header).
   require("./ceilingBreakRetest"),
 
+  // ── Pinaka Spec 3 — direct Pine port of pinaka_detectors_3.pine ─────────
+  // UNLIKE every strategy above, the state machine is NOT inlined in
+  // pinaka.js. It lives in exactly one shared file,
+  // frontend/src/strategies/pinakaEngine.js, required across a relative
+  // path from pinaka.js — see that file's own header for why. The chart
+  // overlay (frontend/src/indicators/PinakaIndicator.js) imports the same
+  // file. This is the single source of truth for A1/A2/B/B2 everywhere
+  // in the project — do not inline a second copy here.
+  require("./pinaka"),
+
   // ── Add new strategies below ──────────────────────────────────
   // require("./breakoutStrategy"),
   // require("./divergenceStrategy"),
