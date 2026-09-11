@@ -574,7 +574,7 @@ export default function ScannerPage() {
   // Results list for PinakaScannerPanel. No-op (empty) whenever isPinaka
   // is false, same guard pattern as ceilingBreakRows above.
   const pinakaRows = useMemo(
-    () => (isPinaka ? buildPinakaRows(results) : { results: [], counts: { a1: 0, a2: 0, b: 0, b2: 0 } }),
+    () => (isPinaka ? buildPinakaRows(results) : { results: [], upcoming: [], history: [], counts: { a1: 0, a2: 0, b: 0, b2: 0 } }),
     [results, isPinaka]
   );
 

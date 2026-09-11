@@ -1381,6 +1381,45 @@
   }
 }
 
+/* ── Main tabs (Results / Upcoming / History) — same pattern as
+   CeilingBreakScannerPanel.css's .cbr-tabs/.cbr-tab/.cbr-count, using
+   this file's own theme variables. ─────────────────────────────────── */
+.scanner-maintabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+
+.scanner-maintab {
+  background: none;
+  border: none;
+  color: var(--text2);
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 10px 16px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  font-family: inherit;
+}
+
+.scanner-maintab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.scanner-maintab-count {
+  color: var(--text3, var(--text2));
+  font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  margin-left: 5px;
+  font-size: 12px;
+}
+
+.scanner-maintab.active .scanner-maintab-count {
+  color: var(--accent);
+}
+
 .scanner-signals-tabs {
   display: flex;
   gap: 6px;

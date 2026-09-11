@@ -7,12 +7,16 @@
 // backend/src/strategies/pinaka.js returns, which themselves come from
 // the ONE shared engine, frontend/src/strategies/pinakaEngine.js (the
 // same file the chart overlay, PinakaIndicator.js, imports directly —
-// see that file's header). This panel only renders rows, plus its own
-// local type filter and symbol search.
+// see that file's header).
+//
+// Three main tabs — Results / Upcoming / History — same split as
+// CeilingBreakScannerPanel.js, plus an All/A1/A2/B/B2 sub-filter that
+// applies inside whichever main tab is open (Pinaka-specific; Ceiling
+// Break has no signal-type filter since it only has one event family).
 //
 // USAGE:
 //   <PinakaScannerPanel
-//     rows={pinakaRows}               // { results: [...], counts: {...} }
+//     rows={pinakaRows}               // { results, upcoming, history, counts }
 //     scannedCount={results.length}
 //     resolution={tfLabel}
 //     lastScan={lastScan}
@@ -66,6 +70,15 @@ function TypeBadge({ tag }) {
   );
 }
 
+function SideTag({ side }) {
+  return (
+    <span className={`scanner-signals-mw ${side === "long" ? "bull" : "bear"}`}>
+      {side === "long" ? "▲ Long" : "▼ Short"}
+    </span>
+  );
+}
+
+// ── Results table — latest A1/A2/B/B2 per symbol (unchanged) ────────
 function ResultsTable({ rows, emptyLabel, onRowClick }) {
   if (rows.length === 0) {
     return <div className="scanner-signals-empty">{emptyLabel}</div>;
@@ -95,11 +108,7 @@ function ResultsTable({ rows, emptyLabel, onRowClick }) {
               <td>{i + 1}</td>
               <td className="scanner-signals-sym">{tickerOf(r.symbol)}</td>
               <td><TypeBadge tag={r.tag} /></td>
-              <td>
-                <span className={`scanner-signals-mw ${r.side === "long" ? "bull" : "bear"}`}>
-                  {r.side === "long" ? "▲ Long" : "▼ Short"}
-                </span>
-              </td>
+              <td><SideTag side={r.side} /></td>
               <td>{r.close != null ? r.close.toFixed(2) : "—"}</td>
               <td>{r.signalCount}</td>
               <td className="scanner-signals-ts">{formatDateTimeIST(r.time || r.scannedAt)}</td>
@@ -111,36 +120,120 @@ function ResultsTable({ rows, emptyLabel, onRowClick }) {
   );
 }
 
+// ── Upcoming table — setups building, not fired yet ──────────────────
+function UpcomingTable({ rows, emptyLabel, onRowClick }) {
+  if (rows.length === 0) {
+    return <div className="scanner-signals-empty">{emptyLabel}</div>;
+  }
+  return (
+    <div className="scanner-signals-table-wrap">
+      <table className="scanner-signals-table">
+        <thead>
+          <tr>
+            <th>Sr.No</th>
+            <th>Symbol</th>
+            <th>Signal</th>
+            <th>Stage</th>
+            <th>Waiting For</th>
+            <th>Since</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr
+              key={`${r.symbol}-${r.tag}-${i}`}
+              className="scanner-signals-row"
+              onClick={() => onRowClick(r.symbol)}
+              title="Open chart with Pinaka overlay"
+            >
+              <td>{i + 1}</td>
+              <td className="scanner-signals-sym">{tickerOf(r.symbol)}</td>
+              <td><TypeBadge tag={r.tag} /></td>
+              <td>{r.stage}</td>
+              <td className="scanner-signals-ts">{r.waiting}</td>
+              <td className="scanner-signals-ts">{formatDateTimeIST(r.since)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── History table — every past A1/A2/B/B2 trigger, its own row ──────
+function HistoryTable({ rows, emptyLabel, onRowClick }) {
+  if (rows.length === 0) {
+    return <div className="scanner-signals-empty">{emptyLabel}</div>;
+  }
+  return (
+    <div className="scanner-signals-table-wrap">
+      <table className="scanner-signals-table">
+        <thead>
+          <tr>
+            <th>Sr.No</th>
+            <th>Symbol</th>
+            <th>Signal</th>
+            <th>Side</th>
+            <th>Close</th>
+            <th>Timestamp</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr
+              key={`${r.symbol}-${r.tag}-${r.time}-${i}`}
+              className="scanner-signals-row"
+              onClick={() => onRowClick(r.symbol)}
+              title="Open chart with Pinaka overlay"
+            >
+              <td>{i + 1}</td>
+              <td className="scanner-signals-sym">{tickerOf(r.symbol)}</td>
+              <td><TypeBadge tag={r.tag} /></td>
+              <td><SideTag side={r.side} /></td>
+              <td>{r.close != null ? r.close.toFixed(2) : "—"}</td>
+              <td className="scanner-signals-ts">{formatDateTimeIST(r.time)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function PinakaScannerPanel({
-  rows = { results: [], counts: { a1: 0, a2: 0, b: 0, b2: 0 } },
+  rows = { results: [], upcoming: [], history: [], counts: { a1: 0, a2: 0, b: 0, b2: 0 } },
   scannedCount = 0,
   resolution = "15m",
   lastScan = null,
   durationMs = null,
   onRowClick = () => { },
 }) {
+  const [mainTab, setMainTab] = useState("results"); // results | upcoming | history
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all"); // all | A1 | A2 | B | B2
 
-  const filtered = useMemo(() => {
-    const base = rows.results || [];
-    return base.filter(
-      (r) => matchesSymbol(r.symbol, query) && (typeFilter === "all" || r.tag === typeFilter)
-    );
-  }, [rows.results, query, typeFilter]);
+  const results = useMemo(() => rows.results || [], [rows.results]);
+  const upcoming = useMemo(() => rows.upcoming || [], [rows.upcoming]);
+  const history = useMemo(() => rows.history || [], [rows.history]);
+
+  const passesFilter = (r) =>
+    matchesSymbol(r.symbol, query) && (typeFilter === "all" || r.tag === typeFilter);
+
+  const filteredResults = useMemo(() => results.filter(passesFilter), [results, query, typeFilter]);
+  const filteredUpcoming = useMemo(() => upcoming.filter(passesFilter), [upcoming, query, typeFilter]);
+  const filteredHistory = useMemo(() => history.filter(passesFilter), [history, query, typeFilter]);
 
   const counts = rows.counts || { a1: 0, a2: 0, b: 0, b2: 0 };
+  const hasAnyRows = results.length > 0 || upcoming.length > 0 || history.length > 0;
 
-  const hasAnyRows = (rows.results || []).length > 0;
-
-  // ── Download — Results as one sheet in one .xlsx, columns mirroring
-  // what's on screen. Always exports the FULL rows, not the
-  // search/type-filtered view — same rule as
-  // CeilingBreakScannerPanel.js's handleDownload. ────────────────────
+  // ── Download — Results / Upcoming / History as three sheets in one
+  // .xlsx, columns mirroring what's on screen in each tab. Always
+  // exports the FULL rows, not the search/type-filtered view — same
+  // rule as CeilingBreakScannerPanel.js's handleDownload. ────────────
   function handleDownload() {
     if (!hasAnyRows) return;
 
-    const resultsRows = (rows.results || []).map((r, i) => ({
+    const resultsRows = results.map((r, i) => ({
       "Sr": i + 1,
       "Symbol": tickerOf(r.symbol),
       "Exchange": exchangeOf(r.symbol),
@@ -151,11 +244,41 @@ export default function PinakaScannerPanel({
       "Timestamp": formatDateTimeIST(r.time || r.scannedAt),
     }));
 
+    const upcomingRows = upcoming.map((r, i) => ({
+      "Sr": i + 1,
+      "Symbol": tickerOf(r.symbol),
+      "Exchange": exchangeOf(r.symbol),
+      "Signal": r.tag || "",
+      "Stage": r.stage || "",
+      "Waiting For": r.waiting || "",
+      "Since": formatDateTimeIST(r.since),
+    }));
+
+    const historyRows = history.map((r, i) => ({
+      "Sr": i + 1,
+      "Symbol": tickerOf(r.symbol),
+      "Exchange": exchangeOf(r.symbol),
+      "Signal": r.tag || "",
+      "Side": r.side === "long" ? "Long" : "Short",
+      "Close": r.close != null ? r.close.toFixed(2) : "",
+      "Timestamp": formatDateTimeIST(r.time),
+    }));
+
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(
       wb,
-      XLSX.utils.json_to_sheet(resultsRows),
+      XLSX.utils.json_to_sheet(resultsRows.length ? resultsRows : [{ "Info": "No signals yet." }]),
       "Results"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(upcomingRows.length ? upcomingRows : [{ "Info": "No setups currently building." }]),
+      "Upcoming"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(historyRows.length ? historyRows : [{ "Info": "No past signals yet." }]),
+      "History"
     );
 
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
@@ -175,6 +298,20 @@ export default function PinakaScannerPanel({
         <div className="stat-chip"><span className="stat-chip-label">Duration</span><span className="stat-chip-val">{durationMs ? `${(durationMs / 1000).toFixed(0)}s` : "—"}</span></div>
       </div>
 
+      {/* Main tabs — Results / Upcoming / History */}
+      <div className="scanner-maintabs">
+        <button className={`scanner-maintab ${mainTab === "results" ? "active" : ""}`} onClick={() => setMainTab("results")}>
+          Results <span className="scanner-maintab-count">({results.length})</span>
+        </button>
+        <button className={`scanner-maintab ${mainTab === "upcoming" ? "active" : ""}`} onClick={() => setMainTab("upcoming")}>
+          Upcoming <span className="scanner-maintab-count">({upcoming.length})</span>
+        </button>
+        <button className={`scanner-maintab ${mainTab === "history" ? "active" : ""}`} onClick={() => setMainTab("history")}>
+          History <span className="scanner-maintab-count">({history.length})</span>
+        </button>
+      </div>
+
+      {/* All/A1/A2/B/B2 filter + search + download — applies inside whichever main tab is open */}
       <div className="scanner-signals-tabs">
         {["all", "A1", "A2", "B", "B2"].map((t) => (
           <button
@@ -206,26 +343,57 @@ export default function PinakaScannerPanel({
             className="scanner-download-btn"
             onClick={handleDownload}
             disabled={!hasAnyRows}
-            title="Download Results as an Excel file"
+            title="Download Results, Upcoming & History as one Excel file"
           >
             ⬇ Download
           </button>
         </div>
       </div>
 
-      <div className="scanner-signals-col">
-        <div className="scanner-signals-col-header">
-          <span className="scanner-signals-col-title">Results</span>
-          <span className="scanner-signals-col-sub">
-            Most recent A1/A2/B/B2 trade signal per symbol — reference-only A1✕/A2✕ marks are on the chart overlay only, not listed here
-          </span>
+      {mainTab === "results" && (
+        <div className="scanner-signals-col">
+          <div className="scanner-signals-col-header">
+            <span className="scanner-signals-col-sub">
+              Most recent A1/A2/B/B2 trade signal per symbol — one row per symbol, newest first
+            </span>
+          </div>
+          <ResultsTable
+            rows={filteredResults}
+            emptyLabel={query || typeFilter !== "all" ? "No rows match your filters" : "No signals yet"}
+            onRowClick={onRowClick}
+          />
         </div>
-        <ResultsTable
-          rows={filtered}
-          emptyLabel={query || typeFilter !== "all" ? "No rows match your filters" : "No signals yet"}
-          onRowClick={onRowClick}
-        />
-      </div>
+      )}
+
+      {mainTab === "upcoming" && (
+        <div className="scanner-signals-col">
+          <div className="scanner-signals-col-header">
+            <span className="scanner-signals-col-sub">
+              Setups currently building — condition sequence started but the entry candle hasn't fired yet
+            </span>
+          </div>
+          <UpcomingTable
+            rows={filteredUpcoming}
+            emptyLabel={query || typeFilter !== "all" ? "No rows match your filters" : "No setups currently building"}
+            onRowClick={onRowClick}
+          />
+        </div>
+      )}
+
+      {mainTab === "history" && (
+        <div className="scanner-signals-col">
+          <div className="scanner-signals-col-header">
+            <span className="scanner-signals-col-sub">
+              Every past A1/A2/B/B2 trigger, one row per signal — newest first
+            </span>
+          </div>
+          <HistoryTable
+            rows={filteredHistory}
+            emptyLabel={query || typeFilter !== "all" ? "No rows match your filters" : "No past signals yet"}
+            onRowClick={onRowClick}
+          />
+        </div>
+      )}
     </div>
   );
 }

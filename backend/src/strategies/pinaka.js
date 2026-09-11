@@ -40,6 +40,83 @@ const { PinakaDetectors } = require(
 
 const TRADE_TYPES = new Set(['A1', 'A2', 'B', 'B2']);
 
+// ── Upcoming — setups currently building, not fired yet ─────────────────
+// Reads engine.run()'s `series` (per-bar internal state, already computed,
+// previously discarded here) and looks ONLY at the last bar to decide what's
+// still in progress. Fields read are the exact ones pinakaEngine.js pushes
+// per bar — see that file's `series.push({...})` — nothing here is guessed:
+//   a1: { structSeen, pulled }  — pulled=true means price already closed
+//                                  below emaLow after A1 structure formed,
+//                                  waiting for the reclaim candle.
+//   a2Stage                     — 0=idle, 1=reclaimed emaLow (waiting for
+//                                  the re-touch/"higher low"), 2=re-touched
+//                                  (waiting for the breakout close).
+//   bFlew                       — a flying candle has been seen, waiting
+//                                  for the red trigger candle.
+//   b2Armed                     — the poke above the band happened and is
+//                                  still inside the turn window, waiting
+//                                  for the red engulf/close-below-band.
+// `since` walks backward through `series` to the first bar where the same
+// condition has been continuously true, so it's the real start of that
+// run, not just "now".
+function computeUpcoming(series) {
+  const upcoming = [];
+  if (!series || !series.length) return upcoming;
+  const last = series[series.length - 1];
+
+  function since(test) {
+    let t = last.time;
+    for (let i = series.length - 1; i >= 0; i--) {
+      if (test(series[i])) t = series[i].time; else break;
+    }
+    return t;
+  }
+
+  if (last.a1 && last.a1.pulled) {
+    upcoming.push({
+      tag: 'A1',
+      side: 'long',
+      stage: 'Pulled below emaLow',
+      waiting: 'Full-bodied green candle closing back above emaLow',
+      since: since((s) => s.a1 && s.a1.pulled),
+    });
+  }
+
+  if (last.a2Stage === 1 || last.a2Stage === 2) {
+    upcoming.push({
+      tag: 'A2',
+      side: 'long',
+      stage: last.a2Stage === 1 ? 'Stage 1 — reclaimed emaLow' : 'Stage 2 — re-touched emaLow (higher low)',
+      waiting: last.a2Stage === 1
+        ? 'Price to re-touch emaLow (the higher low)'
+        : 'Full-bodied green candle closing above emaHigh',
+      since: since((s) => s.a2Stage >= 1),
+    });
+  }
+
+  if (last.bFlew) {
+    upcoming.push({
+      tag: 'B',
+      side: 'short',
+      stage: 'Flying above emaHigh',
+      waiting: 'Red candle to engulf the green, or close below emaLow',
+      since: since((s) => s.bFlew),
+    });
+  }
+
+  if (last.b2Armed) {
+    upcoming.push({
+      tag: 'B2',
+      side: 'short',
+      stage: 'Armed after poke',
+      waiting: 'Red candle to engulf the green run and close back below the band',
+      since: since((s) => s.b2Armed),
+    });
+  }
+
+  return upcoming;
+}
+
 // scannerRunner.js / strategyRegistry.js require every strategy to export
 // { id, name, description, scan(symbol, candles, context) } returning a
 // ScanResult with at minimum { symbol, found, patternStage, error, scannedAt }
@@ -56,7 +133,9 @@ function scan(symbol, candles, context = {}) {
     side: null,          // "long" | "short" of the most recent TRADE signal
     tag: null,            // e.g. "A1", "B2"
     signals: [],          // every signal — TRADE (A1/A2/B/B2) AND
-                           // reference-only ✕ marks (A1x/A2x), for context
+    // reference-only ✕ marks (A1x/A2x), for context
+    upcoming: [],          // setups currently building, not fired yet —
+    // see computeUpcoming() above
     lastCandle: candles && candles.length ? candles[candles.length - 1] : null,
     candleCount: candles ? candles.length : 0,
     scannedAt: new Date().toISOString(),
@@ -89,8 +168,9 @@ function scan(symbol, candles, context = {}) {
       b2CloseAbove: context.b2CloseAbove,
     });
 
-    const { signals } = engine.run(candles);
+    const { signals, series } = engine.run(candles);
     result.signals = signals;
+    result.upcoming = computeUpcoming(series);
 
     // found / patternStage / side / tag mirror the most recent TRADE
     // signal only — A1x/A2x are reference-only (per the Pine script's own
