@@ -584,3 +584,9 @@ module.exports.getSymbols = getSymbols;
 // instead of keeping its own separate hardcoded copy of "which bases get
 // type:'future' index entries here." One source of truth for that fact.
 module.exports.INDEX_FUT_ROOTS = INDEX_FUT_ROOTS;
+// NEW (Data Export feature) — exported so
+// services/fyersSymbolMaster.js can label its universal search results
+// with the same NSE/BSE/MCX exchange-from-symbol-prefix logic already
+// used here for the curated list, instead of a second copy of this same
+// one-line rule living in a different file.
+module.exports.exchangeOf = exchangeOf;

@@ -94,6 +94,27 @@ const NAV_ITEMS = [
     tagColor: "green",
     stats: ["Win rate & expectancy", "MFE / MAE excursion", "Excel export"],
   },
+  {
+    id: "data-export",
+    path: "/data-export",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <polyline points="7 10 12 15 17 10" />
+        <line x1="12" y1="15" x2="12" y2="3" />
+      </svg>
+    ),
+    label: "Data Export",
+    description: "Search any symbol, pick a date range, download candle history as Excel",
+    stats: ["Live symbol search", "Spot / Future / Option", "Excel export"],
+    // Distinct from Charts' `dynamic` (which only swaps the TAG TEXT via
+    // the shared backend-connection statusLabel, keeping tagColor fixed).
+    // This card's whole color — border accent, icon, stat dots AND tag —
+    // needs to track Fyers token validity specifically, so it's handled
+    // as its own small case in the render loop below rather than
+    // stretching the existing `dynamic` flag to mean two different things.
+    dynamicAuth: true,
+  },
 ];
 
 export default function HomePage() {
@@ -115,6 +136,28 @@ export default function HomePage() {
   const dotClass = connState === "connected" ? "green" : connState === "connecting" ? "grey" : "red";
   const statusLabel = connState === "connected" ? "Connected" : connState === "connecting" ? "Connecting…" : "Offline";
   const { theme, toggleTheme } = useTheme();
+
+  // Fyers token validity — separate from the backend-connection check
+  // above (a backend can be perfectly "Connected" while Fyers itself has
+  // no valid token yet). Reuses the EXISTING /api/auth/status endpoint
+  // (chartRouter.js) — same one the Admin page's own auth flow already
+  // relies on — so this isn't a new source of truth, just a second reader
+  // of the one that already exists.
+  const [authState, setAuthState] = useState("checking"); // "checking" | "valid" | "invalid"
+  useEffect(() => {
+    let cancelled = false;
+    function check() {
+      fetch(`${BACKEND}/api/auth/status`)
+        .then(r => r.json())
+        .then(data => { if (!cancelled) setAuthState(data.authenticated ? "valid" : "invalid"); })
+        .catch(() => { if (!cancelled) setAuthState("invalid"); });
+    }
+    check();
+    const t = setInterval(check, 30_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
+  const authColor = authState === "valid" ? "green" : authState === "checking" ? "grey" : "red";
+  const authLabel = authState === "valid" ? "Token Valid" : authState === "checking" ? "Checking…" : "Token Invalid";
 
   useEffect(() => {
     // Staggered entrance
@@ -172,42 +215,51 @@ export default function HomePage() {
 
         {/* Nav cards */}
         <div className="home-cards">
-          {NAV_ITEMS.map((item, i) => (
-            <button
-              key={item.id}
-              className={`home-card home-card--${item.tagColor}`}
-              onClick={() => navigate(item.path)}
-              ref={(el) => (cardRefs.current[i] = el)}
-            >
-              <div className="home-card-top">
-                <div className="home-card-icon">{item.icon}</div>
-                <span className={`home-card-tag home-card-tag--${item.tagColor}`}>
-                  {item.dynamic ? statusLabel : item.tag}
-                </span>
-              </div>
-
-              <div className="home-card-body">
-                <h2 className="home-card-label">{item.label}</h2>
-                <p className="home-card-desc">{item.description}</p>
-              </div>
-
-              <div className="home-card-stats">
-                {item.stats.map((s) => (
-                  <span key={s} className="home-card-stat">
-                    <span className="home-card-stat-dot" />
-                    {s}
+          {NAV_ITEMS.map((item, i) => {
+            const color = item.dynamicAuth ? authColor : item.tagColor;
+            const tagText = item.dynamic ? statusLabel : item.dynamicAuth ? authLabel : item.tag;
+            // If this card's own access depends on the Fyers token (only
+            // Data Export, right now) and it isn't valid yet, send the
+            // click to Admin to fix that first instead of into a page
+            // that would just fail without one.
+            const targetPath = item.dynamicAuth && authState !== "valid" ? "/admin" : item.path;
+            return (
+              <button
+                key={item.id}
+                className={`home-card home-card--${color}`}
+                onClick={() => navigate(targetPath)}
+                ref={(el) => (cardRefs.current[i] = el)}
+              >
+                <div className="home-card-top">
+                  <div className="home-card-icon">{item.icon}</div>
+                  <span className={`home-card-tag home-card-tag--${color}`}>
+                    {tagText}
                   </span>
-                ))}
-              </div>
+                </div>
 
-              <div className="home-card-arrow">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                  <polyline points="12 5 19 12 12 19" />
-                </svg>
-              </div>
-            </button>
-          ))}
+                <div className="home-card-body">
+                  <h2 className="home-card-label">{item.label}</h2>
+                  <p className="home-card-desc">{item.description}</p>
+                </div>
+
+                <div className="home-card-stats">
+                  {item.stats.map((s) => (
+                    <span key={s} className="home-card-stat">
+                      <span className="home-card-stat-dot" />
+                      {s}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="home-card-arrow">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                    <polyline points="12 5 19 12 12 19" />
+                  </svg>
+                </div>
+              </button>
+            );
+          })}
         </div>
       </main >
 

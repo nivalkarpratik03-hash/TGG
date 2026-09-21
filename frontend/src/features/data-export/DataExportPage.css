@@ -1,0 +1,212 @@
+/* ─── DataExportPage ─────────────────────────────────────────────────
+   Uses the SAME CSS variables already defined in styles/index.css
+   (--bg, --bg2, --border, --text, --green, --red, --accent, etc.) —
+   no new tokens introduced, same dark/light theme this page inherits
+   automatically via [data-theme] on <html>. ───────────────────────── */
+
+.de-page {
+  min-height: 100vh;
+  position: relative;
+  overflow-x: hidden;
+  background: var(--bg);
+}
+
+.de-grid-bg {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--border) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border) 1px, transparent 1px);
+  background-size: 48px 48px;
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.de-header {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 32px;
+  border-bottom: 1px solid var(--border);
+}
+
+.de-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 18px;
+  color: var(--text);
+}
+
+.de-brand-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, var(--accent), var(--blue));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 800;
+  color: #0a0b0f;
+}
+
+.de-crumb {
+  color: var(--text2);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.de-crumb a { color: var(--text2); text-decoration: none; }
+.de-crumb a:hover { color: var(--text); }
+.de-crumb .de-sep { color: var(--text3); }
+.de-crumb .de-here { color: var(--text); }
+
+.de-main {
+  position: relative;
+  z-index: 2;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+}
+
+.de-title-block { margin-bottom: 28px; }
+.de-title-block h1 {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+.de-title-block p {
+  color: var(--text2);
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 52ch;
+}
+
+/* ── Token banner ─────────────────────────────────────────────────── */
+.de-token-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  margin-bottom: 24px;
+}
+.de-token-valid { border-color: rgba(0, 217, 126, 0.35); background: var(--green-dim); }
+.de-token-invalid { border-color: rgba(255, 69, 96, 0.35); background: var(--red-dim); }
+.de-token-loading { opacity: 0.7; }
+
+.de-token-left { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--text); }
+.de-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--text3); }
+.de-token-valid .de-dot { background: var(--green); box-shadow: 0 0 0 3px var(--green-dim); }
+.de-token-invalid .de-dot { background: var(--red); box-shadow: 0 0 0 3px var(--red-dim); }
+
+.de-admin-link { font-size: 12px; color: var(--blue); text-decoration: none; border-bottom: 1px solid transparent; white-space: nowrap; }
+.de-admin-link:hover { border-color: var(--blue); }
+
+/* ── Form ─────────────────────────────────────────────────────────── */
+.de-form { display: flex; flex-direction: column; gap: 22px; }
+.de-form fieldset { border: none; padding: 0; margin: 0; }
+.de-label { display: block; font-size: 11.5px; color: var(--text2); margin-bottom: 8px; letter-spacing: 0.01em; }
+
+/* Symbol search */
+.de-symbol-search { position: relative; }
+.de-input-wrap {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 14px; transition: border-color 0.15s;
+}
+.de-input-wrap:focus-within { border-color: var(--accent); }
+.de-input-wrap svg { flex-shrink: 0; color: var(--text3); width: 15px; height: 15px; }
+.de-input-wrap input {
+  flex: 1; background: none; border: none; outline: none;
+  color: var(--text); font-family: var(--font-mono); font-size: 14px;
+}
+.de-input-wrap input::placeholder { color: var(--text3); }
+.de-universal-tag { font-size: 10px; color: var(--accent); background: var(--accent-dim); padding: 3px 7px; border-radius: 5px; flex-shrink: 0; white-space: nowrap; }
+
+.de-suggest-list {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0;
+  background: var(--bg2); border: 1px solid var(--border2); border-radius: var(--radius);
+  overflow-y: auto; max-height: 280px; z-index: 10;
+  box-shadow: 0 12px 32px var(--shadow);
+}
+.de-suggest-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--border);
+}
+.de-suggest-item:last-child { border-bottom: none; }
+.de-suggest-item:hover { background: var(--bg3); }
+.de-suggest-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.de-suggest-symbol { font-size: 13px; color: var(--text); font-weight: 600; }
+.de-suggest-name { font-size: 11px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.de-suggest-empty { padding: 16px 14px; color: var(--text3); font-size: 12px; text-align: center; }
+
+.de-type-pill { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em; padding: 3px 7px; border-radius: 5px; flex-shrink: 0; }
+.de-type-spot { color: var(--blue); background: var(--blue-dim); }
+.de-type-future { color: var(--yellow); background: var(--yellow-dim); }
+.de-type-option { color: var(--accent); background: var(--accent-dim); }
+
+.de-selected-chip {
+  display: inline-flex; align-items: center; gap: 10px; margin-top: 10px;
+  padding: 8px 12px; background: var(--bg3); border: 1px solid var(--border2); border-radius: var(--radius);
+}
+.de-selected-chip .de-chip-sym { font-size: 13px; font-weight: 600; color: var(--text); }
+.de-chip-clear { color: var(--text3); cursor: pointer; font-size: 14px; line-height: 1; margin-left: 4px; }
+.de-chip-clear:hover { color: var(--red); }
+
+/* Segment toggle */
+.de-segment-toggle { display: flex; gap: 8px; }
+.de-segment-btn {
+  flex: 1; padding: 11px; text-align: center; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--bg2); color: var(--text2);
+  font-family: var(--font-mono); font-size: 12.5px; cursor: pointer; transition: all 0.15s;
+}
+.de-segment-btn:hover { border-color: var(--border2); color: var(--text); }
+.de-segment-active { border-color: var(--accent); background: var(--accent-dim); color: var(--text); }
+
+.de-expiry-block { margin-top: 4px; }
+
+.de-row-three { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+
+select, input[type="date"] {
+  width: 100%; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 11px 12px; color: var(--text); font-family: var(--font-mono); font-size: 13px;
+  outline: none; transition: border-color 0.15s;
+}
+select:focus, input[type="date"]:focus { border-color: var(--accent); }
+select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.de-info-note { font-size: 11.5px; color: var(--text3); line-height: 1.5; margin-top: 6px; }
+.de-info-note.de-warn { color: var(--yellow); }
+
+.de-submit-row { display: flex; align-items: center; gap: 14px; margin-top: 6px; }
+.de-download-btn {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 9px;
+  padding: 14px; background: var(--green); color: #06140d; border: none; border-radius: var(--radius);
+  font-family: var(--font-mono); font-size: 13.5px; font-weight: 700; cursor: pointer;
+  text-decoration: none; transition: filter 0.15s, transform 0.1s;
+}
+.de-download-btn:hover { filter: brightness(1.08); }
+.de-download-btn:active { transform: scale(0.98); }
+.de-download-btn svg { width: 16px; height: 16px; }
+.de-download-disabled { background: var(--bg3); color: var(--text3); cursor: not-allowed; }
+.de-download-disabled:hover { filter: none; }
+
+.de-format-badge { font-size: 11px; color: var(--text2); border: 1px solid var(--border); border-radius: 6px; padding: 9px 12px; white-space: nowrap; }
+
+@media (max-width: 560px) {
+  .de-row-three { grid-template-columns: 1fr; }
+  .de-main { padding: 28px 16px 60px; }
+}

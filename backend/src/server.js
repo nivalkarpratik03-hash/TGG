@@ -10,6 +10,10 @@ const symbolsRouter = require("./routes/symbolsRouter");
 const scannerRouter = require("./routes/scannerRouter");
 const backtestRouter = require("./routes/backtestRouter");
 const analyticsRouter = require("./routes/analyticsRouter");
+// NEW — Data Export feature (homepage "Data Export" card): universal
+// symbol search + .xlsx candle download. See routes/dataExportRouter.js's
+// own header for exactly what it reuses vs. what's new.
+const dataExportRouter = require("./routes/dataExportRouter");
 const { detectMotherWaveForAPI } = require("./services/motherwave");
 const createChartRouter = require("./routes/chartRouter");
 const corsMiddleware = require("./middleware/cors");
@@ -101,6 +105,7 @@ app.use("/api/symbols", symbolsRouter);
 app.use("/api/scanner", scannerRouter);
 app.use("/api/backtest", backtestRouter);
 app.use("/api/analytics", analyticsRouter);
+app.use("/api/data-export", dataExportRouter);
 
 // ─── Serve React Frontend ─────────────────────────────────────────────────────
 const FRONTEND_BUILD = path.join(__dirname, "../../frontend/build");
