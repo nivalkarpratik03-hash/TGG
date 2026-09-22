@@ -798,4 +798,8 @@ module.exports = {
   backfillOptionSymbol,
   backfillFuturesSymbol,
   backfillStrikesForEntry,
+  // NEW (Data Export bulk-options feature) — services/bulkOptionFetch.js
+  // reuses this exact between-strike delay instead of a second hardcoded
+  // "300ms" guess. Same spirit as fyers/client.js's SYMBOL_CHECK_BATCH_DELAY_MS.
+  INTER_STRIKE_DELAY_MS,
 };

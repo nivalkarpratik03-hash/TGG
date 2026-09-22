@@ -105,7 +105,7 @@ app.use("/api/symbols", symbolsRouter);
 app.use("/api/scanner", scannerRouter);
 app.use("/api/backtest", backtestRouter);
 app.use("/api/analytics", analyticsRouter);
-app.use("/api/data-export", dataExportRouter);
+app.use("/api/data-export", dataExportRouter({ io }));
 
 // ─── Serve React Frontend ─────────────────────────────────────────────────────
 const FRONTEND_BUILD = path.join(__dirname, "../../frontend/build");

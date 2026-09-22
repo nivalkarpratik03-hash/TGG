@@ -22,50 +22,77 @@
   pointer-events: none;
 }
 
+/* Same topbar convention as ReportsPage.css's .cr-topbar/.cr-back-btn/
+   .cr-logo-img and ScannerPage.css's .scanner-header-title/-spacer/
+   -theme-btn — reproduced here (own file per this app's per-page CSS
+   convention) rather than importing another feature's stylesheet. */
 .de-header {
   position: relative;
   z-index: 2;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 20px 32px;
+  gap: 0;
+  height: 52px;
+  background: var(--bg2);
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  padding-right: 16px;
 }
 
-.de-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-family: var(--font-display);
-  font-weight: 800;
-  font-size: 18px;
-  color: var(--text);
-}
-
-.de-brand-mark {
-  width: 28px;
-  height: 28px;
-  border-radius: 7px;
-  background: linear-gradient(135deg, var(--accent), var(--blue));
+.de-back-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
-  font-weight: 800;
-  color: #0a0b0f;
-}
-
-.de-crumb {
+  width: 44px;
+  height: 100%;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  border-right: 1px solid var(--border);
   color: var(--text2);
-  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.de-back-btn svg { width: 16px; height: 16px; }
+.de-back-btn:hover { color: var(--text); background: var(--bg3); }
+
+.de-logo {
   display: flex;
   align-items: center;
-  gap: 8px;
+  padding: 0 14px;
+  border-right: 1px solid var(--border);
+  height: 100%;
 }
-.de-crumb a { color: var(--text2); text-decoration: none; }
-.de-crumb a:hover { color: var(--text); }
-.de-crumb .de-sep { color: var(--text3); }
-.de-crumb .de-here { color: var(--text); }
+.de-logo-img { height: 30px; width: auto; object-fit: contain; display: block; }
+
+.de-header-title {
+  padding-left: 14px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: var(--text);
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+
+.de-header-spacer { flex: 1 1 auto; }
+
+.de-theme-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 30px;
+  background: var(--bg3);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 16px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.de-theme-btn:hover { background: var(--accent-dim); border-color: var(--accent); }
 
 .de-main {
   position: relative;
@@ -175,6 +202,38 @@
 }
 .de-segment-btn:hover { border-color: var(--border2); color: var(--text); }
 .de-segment-active { border-color: var(--accent); background: var(--accent-dim); color: var(--text); }
+
+/* Single-contract vs Bulk toggle (option segment only) */
+.de-mode-toggle { display: flex; gap: 8px; margin-top: 12px; }
+.de-mode-btn {
+  flex: 1; padding: 9px; text-align: center; border-radius: var(--radius);
+  border: 1px dashed var(--border); background: transparent; color: var(--text2);
+  font-family: var(--font-mono); font-size: 11.5px; cursor: pointer; transition: all 0.15s;
+}
+.de-mode-btn:hover { border-color: var(--border2); color: var(--text); }
+.de-mode-active { border-style: solid; border-color: var(--accent); background: var(--accent-dim); color: var(--text); }
+
+.de-bulk-block { margin-top: 4px; }
+
+.de-checkbox-row { display: flex; gap: 18px; margin-top: 4px; }
+.de-checkbox { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text); cursor: pointer; }
+.de-checkbox input { width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; }
+
+/* Bulk-run progress bar — same tiny pattern ScannerPage.css already uses
+   for scanner-progress-bar (height:2px track, accent-colored fill,
+   width-transition), reproduced here rather than importing another
+   page's CSS file across features. */
+.de-progress-wrap { margin-top: -6px; }
+.de-progress-bar-wrap { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; margin-bottom: 6px; }
+.de-progress-bar { height: 100%; background: var(--accent); transition: width 0.3s ease; }
+
+/* Bulk-run summary — fetched/skipped list shown below the download button */
+.de-bulk-summary { margin-top: 4px; padding: 12px 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); font-size: 11.5px; }
+.de-bulk-summary-title { color: var(--text); font-weight: 600; margin-bottom: 8px; }
+.de-bulk-summary-line { color: var(--text2); margin-top: 8px; font-weight: 600; }
+.de-bulk-summary-item { padding: 2px 0 2px 4px; font-family: var(--font-mono); }
+.de-bulk-ok { color: var(--green); }
+.de-bulk-skip { color: var(--red); }
 
 .de-expiry-block { margin-top: 4px; }
 

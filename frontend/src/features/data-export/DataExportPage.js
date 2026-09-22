@@ -18,8 +18,10 @@
 // ─────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { BACKEND } from "../../config";
+import { createBackendSocket } from "../../utils/backendSocket";
+import { useTheme } from "../../App";
 import "./DataExportPage.css";
 
 const SEGMENTS = [
@@ -45,6 +47,9 @@ function todayISO() {
 }
 
 export default function DataExportPage() {
+  const navigate = useNavigate();
+  const { theme, toggleTheme } = useTheme();
+
   // ── Token status — same /api/auth/status endpoint chartRouter.js
   // already exposes and the homepage card now also reads. ────────────────
   const [auth, setAuth] = useState({ loading: true, authenticated: false, authUrl: null });
@@ -164,20 +169,134 @@ export default function DataExportPage() {
     return `${BACKEND}/api/data-export/download?${params.toString()}`;
   }, [selected, fromDate, toDate, timeframe]);
 
+  // ── Bulk options mode (ATM ± N, or an explicit strike list) ──────────
+  // Only reachable when segment === "option". Reuses the shared backend
+  // socket (utils/backendSocket.js) — the same connection Scanner/
+  // Backtest/Strategies already use — for live progress + a final
+  // fetched/skipped summary, instead of a second socket connection.
+  const [downloadMode, setDownloadMode] = useState("single"); // "single" | "bulk"
+
+  useEffect(() => {
+    // Leaving Option entirely, or switching back to single, clears
+    // whatever bulk run state was showing — stale progress/summary from
+    // a previous underlying shouldn't linger under a new selection.
+    if (segment !== "option") setDownloadMode("single");
+  }, [segment]);
+
+  const [underlyings, setUnderlyings] = useState([]);
+  const [atmBandDefault, setAtmBandDefault] = useState(4);
+  useEffect(() => {
+    fetch(`${BACKEND}/api/data-export/curated-underlyings`)
+      .then((r) => r.json())
+      .then((data) => {
+        setUnderlyings(Array.isArray(data.underlyings) ? data.underlyings : []);
+        if (data.atmBandWidth) setAtmBandDefault(data.atmBandWidth);
+      })
+      .catch(() => setUnderlyings([]));
+  }, []);
+
+  const [bulkUnderlying, setBulkUnderlying] = useState("");
+  const [strikeMode, setStrikeMode] = useState("atm"); // "atm" | "strikes"
+  const [atmWidth, setAtmWidth] = useState(atmBandDefault);
+  useEffect(() => { setAtmWidth(atmBandDefault); }, [atmBandDefault]);
+  const [strikesText, setStrikesText] = useState("");
+  const [optCE, setOptCE] = useState(true);
+  const [optPE, setOptPE] = useState(true);
+
+  const bulkEntry = useMemo(() => underlyings.find((u) => u.underlying === bulkUnderlying) || null, [underlyings, bulkUnderlying]);
+
+  const [bulkExpiries, setBulkExpiries] = useState([]);
+  const [bulkExpiry, setBulkExpiry] = useState(""); // "" = auto-pick the nearest live one
+  const [expiriesLoading, setExpiriesLoading] = useState(false);
+  useEffect(() => {
+    setBulkExpiry("");
+    setBulkExpiries([]);
+    if (!bulkUnderlying || !auth.authenticated) return;
+    setExpiriesLoading(true);
+    const params = new URLSearchParams({ underlying: bulkUnderlying });
+    if (bulkEntry?.exchange) params.set("exchange", bulkEntry.exchange);
+    fetch(`${BACKEND}/api/data-export/expiries?${params.toString()}`)
+      .then((r) => r.json())
+      .then((data) => setBulkExpiries(Array.isArray(data.expiries) ? data.expiries : []))
+      .catch(() => setBulkExpiries([]))
+      .finally(() => setExpiriesLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bulkUnderlying, auth.authenticated]);
+
+  // Shared socket — connect once per page visit, not once per bulk run.
+  const [socketId, setSocketId] = useState(null);
+  const [bulkProgress, setBulkProgress] = useState(null); // {done,total,symbol}
+  const [bulkSummary, setBulkSummary] = useState(null); // {fetched,skipped,clipped,clipMessage,expiryUsed,atmStrike}
+  const [bulkRunning, setBulkRunning] = useState(false);
+
+  useEffect(() => {
+    const sock = createBackendSocket();
+    sock.on("connect", () => setSocketId(sock.id));
+    sock.on("bulk_options_progress", (d) => setBulkProgress(d));
+    sock.on("bulk_options_summary", (d) => { setBulkSummary(d); setBulkRunning(false); });
+    return () => sock.disconnect();
+  }, []);
+
+  const startBulkRun = useCallback(() => {
+    setBulkProgress(null);
+    setBulkSummary(null);
+    setBulkRunning(true);
+  }, []);
+
+  const canDownloadBulk =
+    auth.authenticated &&
+    !!bulkUnderlying &&
+    dateRangeValid &&
+    (optCE || optPE) &&
+    (strikeMode === "atm" ? Number(atmWidth) > 0 : strikesText.trim().length > 0);
+
+  const bulkDownloadUrl = useMemo(() => {
+    if (!bulkUnderlying) return null;
+    const params = new URLSearchParams({
+      underlying: bulkUnderlying,
+      mode: strikeMode,
+      from: fromDate,
+      to: toDate,
+      timeframe,
+      optionTypes: [optCE && "CE", optPE && "PE"].filter(Boolean).join(","),
+    });
+    if (bulkEntry?.exchange) params.set("exchange", bulkEntry.exchange);
+    if (strikeMode === "atm") params.set("atmWidth", String(atmWidth || atmBandDefault));
+    if (strikeMode === "strikes") {
+      const parsed = strikesText.split(",").map((s) => s.trim()).filter(Boolean).join(",");
+      params.set("strikes", parsed);
+    }
+    if (bulkExpiry) params.set("expiryDate", bulkExpiry);
+    if (socketId) params.set("socketId", socketId);
+    return `${BACKEND}/api/data-export/bulk-options?${params.toString()}`;
+  }, [bulkUnderlying, strikeMode, fromDate, toDate, timeframe, optCE, optPE, bulkEntry, atmWidth, atmBandDefault, strikesText, bulkExpiry, socketId]);
+
+  const bulkProgressPct = bulkProgress ? Math.round((bulkProgress.done / Math.max(1, bulkProgress.total)) * 100) : 0;
+
   return (
     <div className="de-page">
       <div className="de-grid-bg" aria-hidden="true" />
 
+      {/* Same topbar convention as Reports/Scanner: back arrow, real TG
+          logo image, page title, spacer, theme toggle — nothing else. */}
       <header className="de-header">
-        <div className="de-brand">
-          <div className="de-brand-mark">TG</div>
-          TG Levels
+        <button className="de-back-btn" onClick={() => navigate("/")} title="Back to Home">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M19 12H5M12 5l-7 7 7 7" />
+          </svg>
+        </button>
+
+        <div className="de-logo">
+          <img src="/tg-levels-logo.png" alt="TG Levels" className="de-logo-img" />
         </div>
-        <nav className="de-crumb">
-          <Link to="/">Home</Link>
-          <span className="de-sep">/</span>
-          <span className="de-here">Data Export</span>
-        </nav>
+
+        <span className="de-header-title">Data Export</span>
+
+        <div className="de-header-spacer" />
+
+        <button className="de-theme-btn" onClick={toggleTheme} title="Toggle theme">
+          {theme === "dark" ? "☀" : "🌙"}
+        </button>
       </header>
 
       <main className="de-main">
@@ -203,7 +322,9 @@ export default function DataExportPage() {
         </div>
 
         <form className="de-form" onSubmit={(e) => e.preventDefault()}>
-          {/* ── Symbol search ─────────────────────────────────────── */}
+          {/* ── Symbol search (hidden in Bulk mode — bulk uses an
+              underlying + strike-band picker instead, see below) ──── */}
+          {!(segment === "option" && downloadMode === "bulk") && (
           <fieldset>
             <label className="de-label">Symbol</label>
             <div className="de-symbol-search" ref={boxRef}>
@@ -249,6 +370,7 @@ export default function DataExportPage() {
 
             <div className="de-info-note">Pulled live from Fyers' own symbol master (NSE, BSE) plus this app's curated MCX list — not a fixed list, so anything currently tradable will show up.</div>
           </fieldset>
+          )}
 
           {/* ── Segment ───────────────────────────────────────────── */}
           <fieldset>
@@ -266,6 +388,23 @@ export default function DataExportPage() {
             </div>
 
             {segment === "option" && (
+              <div className="de-mode-toggle">
+                <div
+                  className={`de-mode-btn ${downloadMode === "single" ? "de-mode-active" : ""}`}
+                  onClick={() => setDownloadMode("single")}
+                >
+                  Single contract
+                </div>
+                <div
+                  className={`de-mode-btn ${downloadMode === "bulk" ? "de-mode-active" : ""}`}
+                  onClick={() => setDownloadMode("bulk")}
+                >
+                  Bulk (ATM ± N or strike list)
+                </div>
+              </div>
+            )}
+
+            {segment === "option" && downloadMode === "single" && (
               <div className="de-expiry-block">
                 <label className="de-label" style={{ marginTop: 16 }}>Expiry</label>
                 <select value={selectedExpiry} onChange={(e) => setSelectedExpiry(e.target.value)} disabled={expiryOptions.length === 0}>
@@ -273,6 +412,63 @@ export default function DataExportPage() {
                   {expiryOptions.map((d) => <option key={d} value={d}>{d}</option>)}
                 </select>
                 <div className="de-info-note de-warn">Only currently live, unexpired option contracts are available — Fyers doesn't provide historical data for expired options.</div>
+              </div>
+            )}
+
+            {segment === "option" && downloadMode === "bulk" && (
+              <div className="de-bulk-block">
+                <label className="de-label" style={{ marginTop: 16 }}>Underlying</label>
+                <select value={bulkUnderlying} onChange={(e) => setBulkUnderlying(e.target.value)}>
+                  <option value="">Select an underlying…</option>
+                  {underlyings.map((u) => (
+                    <option key={`${u.exchange}:${u.underlying}`} value={u.underlying}>
+                      {u.underlying} ({u.exchange}{u.assetClass === "COMMODITY" ? " · MCX" : ""})
+                    </option>
+                  ))}
+                </select>
+                <div className="de-info-note">Bulk download covers this app's curated indices/commodities (NIFTY, BANKNIFTY, SENSEX, etc.) — for any other option, use Single contract above.</div>
+
+                <label className="de-label" style={{ marginTop: 16 }}>Expiry</label>
+                <select value={bulkExpiry} onChange={(e) => setBulkExpiry(e.target.value)} disabled={!bulkUnderlying || expiriesLoading}>
+                  <option value="">{expiriesLoading ? "Loading live expiries…" : "Auto-pick nearest live expiry"}</option>
+                  {bulkExpiries.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+                {bulkUnderlying && bulkExpiries.length > 1 && (
+                  <div className="de-info-note">Both weekly and monthly expiries shown when both are live — pick either, or leave on auto for the nearest one.</div>
+                )}
+
+                <label className="de-label" style={{ marginTop: 16 }}>Strike selection</label>
+                <div className="de-segment-toggle">
+                  <div className={`de-segment-btn ${strikeMode === "atm" ? "de-segment-active" : ""}`} onClick={() => setStrikeMode("atm")}>ATM ± N</div>
+                  <div className={`de-segment-btn ${strikeMode === "strikes" ? "de-segment-active" : ""}`} onClick={() => setStrikeMode("strikes")}>Specific strikes</div>
+                </div>
+
+                {strikeMode === "atm" ? (
+                  <div style={{ marginTop: 12 }}>
+                    <label className="de-label">Strikes each side of ATM</label>
+                    <input
+                      type="number" min="1" max="50" value={atmWidth}
+                      onChange={(e) => setAtmWidth(e.target.value)}
+                      style={{ maxWidth: 120 }}
+                    />
+                    <div className="de-info-note">Default ({atmBandDefault}) matches what this app already uses everywhere else for ATM bands.</div>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 12 }}>
+                    <label className="de-label">Strike prices (comma-separated)</label>
+                    <input
+                      type="text" value={strikesText}
+                      onChange={(e) => setStrikesText(e.target.value)}
+                      placeholder="e.g. 23100, 23150, 23200"
+                    />
+                  </div>
+                )}
+
+                <label className="de-label" style={{ marginTop: 16 }}>Option type</label>
+                <div className="de-checkbox-row">
+                  <label className="de-checkbox"><input type="checkbox" checked={optCE} onChange={(e) => setOptCE(e.target.checked)} /> CE</label>
+                  <label className="de-checkbox"><input type="checkbox" checked={optPE} onChange={(e) => setOptPE(e.target.checked)} /> PE</label>
+                </div>
               </div>
             )}
           </fieldset>
@@ -299,24 +495,81 @@ export default function DataExportPage() {
             {!dateRangeValid && <div className="de-info-note de-warn">"From" date must be on or before "To" date.</div>}
           </fieldset>
 
-          <div className="de-submit-row">
-            {canDownload ? (
-              <a className="de-download-btn" href={downloadUrl}>
-                <DownloadIcon />
-                Download .xlsx
-              </a>
-            ) : (
-              <button type="button" className="de-download-btn de-download-disabled" disabled title={
-                !auth.authenticated ? "Generate a valid Fyers token first" :
-                  !selected ? "Pick a symbol from the search results first" :
-                    "Fix the date range first"
-              }>
-                <DownloadIcon />
-                Download .xlsx
-              </button>
-            )}
-            <div className="de-format-badge">Excel (.xlsx)</div>
-          </div>
+          {segment === "option" && downloadMode === "bulk" ? (
+            <>
+              {bulkRunning && (
+                <div className="de-progress-wrap">
+                  <div className="de-progress-bar-wrap">
+                    <div className="de-progress-bar" style={{ width: `${bulkProgressPct}%` }} />
+                  </div>
+                  <div className="de-info-note">
+                    {bulkProgress ? `Fetching ${bulkProgress.done} of ${bulkProgress.total} (${bulkProgress.symbol})…` : "Starting…"}
+                  </div>
+                </div>
+              )}
+
+              <div className="de-submit-row">
+                {canDownloadBulk ? (
+                  <a className="de-download-btn" href={bulkDownloadUrl} onClick={startBulkRun}>
+                    <DownloadIcon />
+                    Download .xlsx
+                  </a>
+                ) : (
+                  <button type="button" className="de-download-btn de-download-disabled" disabled title={
+                    !auth.authenticated ? "Generate a valid Fyers token first" :
+                      !bulkUnderlying ? "Pick an underlying first" :
+                        !(optCE || optPE) ? "Pick at least one of CE/PE" :
+                          strikeMode === "strikes" && !strikesText.trim() ? "Type at least one strike price" :
+                            "Fix the date range first"
+                  }>
+                    <DownloadIcon />
+                    Download .xlsx
+                  </button>
+                )}
+                <div className="de-format-badge">Excel (.xlsx)</div>
+              </div>
+
+              {bulkSummary && (
+                <div className="de-bulk-summary">
+                  <div className="de-bulk-summary-title">
+                    Expiry used: {bulkSummary.expiryUsed}{bulkSummary.atmStrike ? ` · ATM ${bulkSummary.atmStrike}` : ""}
+                  </div>
+                  {bulkSummary.clipped && (
+                    <div className="de-info-note de-warn">{bulkSummary.clipMessage}</div>
+                  )}
+                  <div className="de-bulk-summary-line de-bulk-ok">✓ Fetched: {bulkSummary.fetched.length} contract{bulkSummary.fetched.length === 1 ? "" : "s"}</div>
+                  {bulkSummary.fetched.map((s) => (
+                    <div key={s} className="de-bulk-summary-item de-bulk-ok">✓ {s}</div>
+                  ))}
+                  {bulkSummary.skipped.length > 0 && (
+                    <div className="de-bulk-summary-line de-bulk-skip">✗ Skipped: {bulkSummary.skipped.length}</div>
+                  )}
+                  {bulkSummary.skipped.map((s, i) => (
+                    <div key={i} className="de-bulk-summary-item de-bulk-skip">✗ {s.symbol || `strike ${s.strike}`} — {s.reason}</div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="de-submit-row">
+              {canDownload ? (
+                <a className="de-download-btn" href={downloadUrl}>
+                  <DownloadIcon />
+                  Download .xlsx
+                </a>
+              ) : (
+                <button type="button" className="de-download-btn de-download-disabled" disabled title={
+                  !auth.authenticated ? "Generate a valid Fyers token first" :
+                    !selected ? "Pick a symbol from the search results first" :
+                      "Fix the date range first"
+                }>
+                  <DownloadIcon />
+                  Download .xlsx
+                </button>
+              )}
+              <div className="de-format-badge">Excel (.xlsx)</div>
+            </div>
+          )}
         </form>
       </main>
     </div>
