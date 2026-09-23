@@ -8,7 +8,6 @@ const { getAuthURL, generateToken, validateToken: _validateToken } = require("./
 const { isLiveMarket, isTradingDay, isAnyMarketLive } = require("./fyers/tickStream");
 const symbolsRouter = require("./routes/symbolsRouter");
 const scannerRouter = require("./routes/scannerRouter");
-const backtestRouter = require("./routes/backtestRouter");
 const analyticsRouter = require("./routes/analyticsRouter");
 // NEW — Data Export feature (homepage "Data Export" card): universal
 // symbol search + .xlsx candle download. See routes/dataExportRouter.js's
@@ -31,7 +30,7 @@ const createTickEngine = require("./core/tickEngine");
 const createDataFetch = require("./core/dataFetch");
 const createCatchUp = require("./core/catchUp");
 const createWebSocket = require("./core/websocket");
-const { wireDbJobs, wireScannerAndBacktest } = require("./core/scheduler");
+const { wireDbJobs, wireScannerSymbols } = require("./core/scheduler");
 const symbolCheck = require("./core/symbolCheck");
 
 const app = express();
@@ -103,7 +102,6 @@ app.use(createChartRouter({
 
 app.use("/api/symbols", symbolsRouter);
 app.use("/api/scanner", scannerRouter);
-app.use("/api/backtest", backtestRouter);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/data-export", dataExportRouter({ io }));
 
@@ -125,7 +123,7 @@ const PORT = parseInt(process.env.PORT || "5280");
 // 4. startTickWatchdog() — arms watchdog
 // 5. initialRestFetch() — pre-warms backend default (NIFTY50) candles
 // 6. Tick stream start (if market live)
-// 7. wireScannerAndBacktest()
+// 7. wireScannerSymbols()
 // 8. wireDbJobs() — DB health check → Staleness → GapFill → Validator/Recovery
 //    (last, deliberately — it's the slowest stage)
 // No fixed delay between stages — each `await` simply waits for the
@@ -158,8 +156,8 @@ server.listen(PORT, async () => {
   else if (isTradingDay()) { console.log("[INIT] Weekday outside market hours — REST data ready. Tick stream inactive."); }
   else { console.log("[INIT] Weekend/holiday — REST data loaded from last session. No tick stream."); }
 
-  // ── 7. Scanner + Backtest ─────────────────────────────────────────────────
-  wireScannerAndBacktest({ io });
+  // ── 7. Scanner symbol loading ─────────────────────────────────────────────
+  wireScannerSymbols({ io });
 
   // ── 8. DB: connect, health-check, wire every DB-dependent periodic job ────
   // (prune sweep, recoveryEngine emitter, periodicSync, GapFill scheduler,

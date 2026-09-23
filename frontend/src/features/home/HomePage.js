@@ -20,20 +20,6 @@ const NAV_ITEMS = [
     dynamic: true, // market-status driven
   },
   {
-    id: "fib-dashboard",
-    path: "/fib-dashboard",
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <line x1="12" y1="2" x2="12" y2="22" />
-        <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-      </svg>
-    ),
-    label: "Fib Dashboard",
-    description: "Wave · Fib · Entry — multi-timeframe Fibonacci analysis",
-    tagColor: "blue",
-    stats: ["Motherwave detection", "Fib levels", "Entry signals"],
-  },
-  {
     id: "reports",
     path: "/reports",
     icon: (
@@ -64,20 +50,6 @@ const NAV_ITEMS = [
     description: "Scan 350 symbols for Motherwave · TrapZone · S1/S2/S3 pattern",
     tagColor: "purple",
     stats: ["Motherwave detection", "TrapZone 0.236", "S1/S2/S3 entry"],
-  },
-  {
-    id: "backtest",
-    path: "/backtest",
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
-        <polyline points="17 6 23 6 23 12" />
-      </svg>
-    ),
-    label: "Backtest",
-    description: "Scan 350 symbols for MW zone red candle setups after the Mother Wave tip",
-    tagColor: "orange",
-    stats: ["HOT zone 0.618", "NEAR zone 0.382", "EMA9L confirmation"],
   },
   {
     id: "analytics",

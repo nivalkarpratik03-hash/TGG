@@ -6,9 +6,9 @@
 // server.listen()'s callback: DB health-check + derivatives prune sweep,
 // recoveryEngine status-emitter wiring, periodic broker-drift sync,
 // GapFill scheduler wiring, the curated-catchup→GapFill startup chain, and
-// scanner/backtest symbol loading + Socket.IO event forwarding.
+// scanner symbol loading + Socket.IO event forwarding.
 //
-// Split into two functions (wireDbJobs, wireScannerAndBacktest) called from
+// Split into two functions (wireDbJobs, wireScannerSymbols) called from
 // server.js's listen callback in the exact same order the original inline
 // code ran them — this file changes WHERE the code lives, not WHEN it runs.
 const { fetchCandles } = require("../fyers/client");
@@ -16,7 +16,6 @@ const { isTradingDay, isLiveMarket } = require("../fyers/tickStream");
 const { wireGapFillScheduler } = require("../derivatives/gapFillScheduler");
 const symbolsRouter = require("../routes/symbolsRouter");
 const { scanner } = require("../services/scannerRunner");
-const { backtestRunner } = require("../services/backtestRunner");
 const { flags: storageFlags } = require("../../../database/src/storageFlags");
 const state = require("./state");
 
@@ -242,21 +241,25 @@ async function wireDbJobs({ io, sweepCuratedStaleness, runValidatorRecovery }) {
   }
 }
 
-// ─── Scanner + Backtest symbol loading ──────────────────────────────────────
+// ─── Scanner symbol loading ──────────────────────────────────────────────────
 // REPOINTED 2026-07-31 — this used to be its own duplicate loadScanSymbols(),
 // re-parsing frontend/src/symbols.json, mcx.json, stocks.xlsx, and
 // NIFTY.xlsx independently, with its own simpler dedup logic. Deleted —
-// Scanner/backtest symbol loading now calls symbolsRouter.js's own
-// getSymbols(), the exact same parser (and 1-hour cache) GET /api/symbols
-// uses, so there is only ever one symbol parser in the codebase. That
-// parser already reads the root symbols/ master (index.json, equity.json,
-// commodity.json) instead of frontend/src/ — see symbolsRouter.js.
-function wireScannerAndBacktest({ io }) {
+// Scanner symbol loading now calls symbolsRouter.js's own getSymbols(), the
+// exact same parser (and 1-hour cache) GET /api/symbols uses, so there is
+// only ever one symbol parser in the codebase. That parser already reads
+// the root symbols/ master (index.json, equity.json, commodity.json)
+// instead of frontend/src/ — see symbolsRouter.js.
+//
+// RENAMED (Backtest removal) — was wireScannerAndBacktest. backtestRunner's
+// setSymbols() call and its 4 event forwarders (backtest_start/progress/
+// complete/hit) are gone along with the Backtest feature itself; this now
+// only wires the Scanner.
+function wireScannerSymbols({ io }) {
   setImmediate(() => {
     const allSymbols = symbolsRouter.getSymbols().map((s) => s.symbol);
     console.log(`[Scanner] Loaded ${allSymbols.length} symbols for scanning`);
     scanner.setSymbols(allSymbols);
-    backtestRunner.setSymbols(allSymbols);
 
     // Forward scanner events to all connected clients via Socket.IO
     scanner.on("scan_start", (data) => io.emit("scanner_start", data));
@@ -265,14 +268,8 @@ function wireScannerAndBacktest({ io }) {
     scanner.on("signal_found", (data) => io.emit("scanner_signal", data));
     scanner.on("signal_partial", (data) => io.emit("scanner_partial", data));
 
-    // Forward backtest events
-    backtestRunner.on("backtest_start", (data) => io.emit("backtest_start", data));
-    backtestRunner.on("backtest_progress", (data) => io.emit("backtest_progress", data));
-    backtestRunner.on("backtest_complete", (data) => io.emit("backtest_complete", data));
-    backtestRunner.on("backtest_hit", (data) => io.emit("backtest_hit", data));
-
     // No auto-start — scan is triggered manually from the UI or POST /api/scanner/trigger
   });
 }
 
-module.exports = { wireDbJobs, wireScannerAndBacktest };
+module.exports = { wireDbJobs, wireScannerSymbols };
