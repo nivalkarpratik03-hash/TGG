@@ -256,8 +256,18 @@ module.exports = function createDataExportRouter({ io } = {}) {
   router.get("/curated-underlyings", (req, res) => {
     try {
       const { all, atmBandWidth } = loadCuratedUnderlyings();
+      // CHANGED: used to filter out assetClass==="EQUITY" here, scoping
+      // Bulk mode to indices/commodities only and pointing equities at
+      // Single-contract search instead. That was a UI scoping choice, not
+      // a technical one — the derivatives pipeline has treated equities
+      // as options-capable (hasOptions:true) since 2026-08-11, and
+      // resolveChainLookupSymbol() already handles them the same way it
+      // handles indices (via entry.spotSymbol). The frontend's Bulk-mode
+      // underlying picker is now a search box (same pattern as the
+      // Symbol box) instead of a plain <select>, so a ~210-item list is
+      // no longer unusable — nothing here needs to stay curated-down
+      // anymore.
       const underlyings = all
-        .filter((e) => e.assetClass !== "EQUITY") // bulk mode targets indices/commodities; the ~200 equities are still reachable via single-contract search
         .map((e) => ({ underlying: e.underlying, exchange: e.exchange, assetClass: e.assetClass, expiryTypes: e.expiryTypes || [] }));
       res.json({ underlyings, atmBandWidth: atmBandWidth || 4 });
     } catch (err) {

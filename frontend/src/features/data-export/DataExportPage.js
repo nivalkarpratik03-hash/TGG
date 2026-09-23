@@ -10,11 +10,22 @@
 // nowhere else in the frontend yet, so this page is its first consumer,
 // not a new duplicate of it.
 //
-// The actual file download reuses the exact same technique
-// AnalyticsPage.js already uses for its "Download Excel" button — a plain
-// <a href="..."> pointing at a backend endpoint that sets
-// Content-Disposition: attachment, letting the browser handle the save
-// natively. No blob/fetch trickery, nothing reinvented.
+// The actual file download used to be a plain <a href="..."> pointing at a
+// backend endpoint that sets Content-Disposition: attachment (the same
+// technique AnalyticsPage.js's "Download Excel" button still uses) — no
+// blob/fetch trickery, letting the browser stream the save natively.
+//
+// CHANGED (bug fix): a raw <a href> has no way to know the request failed
+// before the browser commits to following it. When /download or
+// /bulk-options errors (bad symbol, no candles, expired option, etc.) the
+// backend still returns 200-shaped-looking JSON with no attachment header
+// — so the browser just navigates the whole tab to that raw JSON,
+// replacing the entire app. That's exactly the blank-JSON-page bug this
+// page hit. Every download now goes through fetch() + a shared
+// triggerBlobDownload() helper (below) instead: check response.ok BEFORE
+// touching the page, and only ever save-as-blob on success. Same one
+// helper for the single/multi search-box downloads AND the Bulk run —
+// not two parallel implementations.
 // ─────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
@@ -42,8 +53,65 @@ const TIMEFRAMES = [
 const SEARCH_DEBOUNCE_MS = 300;
 const AUTH_POLL_MS = 30_000;
 
+// Multi-symbol export (Spot/Future/Option-single search box) — a soft UI
+// cap so a long chip list can't queue an unreasonable burst of sequential
+// downloads.
+const MAX_MULTI_SYMBOLS = 25;
+// Small pause between each queued blob-download so the browser's "this
+// site is downloading multiple files" throttle treats every file as a
+// deliberate, separate save rather than a flood.
+const MULTI_DOWNLOAD_GAP_MS = 400;
+// How many underlyings the Bulk-mode search box shows at once — same idea
+// as the Symbol box's dropdown, just filtered client-side (see
+// bulkResults below) since the full curated+equity list is small enough
+// to already be sitting in memory, unlike the universal Fyers symbol
+// master the Symbol box searches server-side.
+const MAX_UNDERLYING_RESULTS = 20;
+
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Reads the real filename Express set via Content-Disposition (requires
+ * backend/src/middleware/cors.js to list it under exposedHeaders — cross-
+ * origin fetch() hides every response header except a few "simple" ones
+ * by default) and saves the response body as that file. Falls back to
+ * fallbackName only if the header is somehow missing, so a filename is
+ * still produced instead of the fetch throwing.
+ *
+ * Shared by every download on this page (single, multi-symbol, and Bulk)
+ * so there's exactly one blob-saving code path, not one per mode.
+ */
+async function triggerBlobDownload(response, fallbackName) {
+  const blob = await response.blob();
+  const disposition = response.headers.get("content-disposition") || "";
+  const match = /filename="?([^";]+)"?/i.exec(disposition);
+  const filename = (match && match[1]) || fallbackName;
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Give the browser a beat to actually start the save before the object
+  // URL backing it is revoked.
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+/** Turns a failed fetch Response into a readable message — this app's
+ * /api/data-export/* error responses are always { error, message } JSON,
+ * but this still degrades gracefully if a response ever isn't. */
+async function readErrorMessage(response) {
+  try {
+    const data = await response.json();
+    return data?.message || data?.error || `Request failed (${response.status})`;
+  } catch {
+    return `Request failed (${response.status})`;
+  }
 }
 
 export default function DataExportPage() {
@@ -73,19 +141,28 @@ export default function DataExportPage() {
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [selected, setSelected] = useState(null); // the chosen result object
+  // Multiple symbols can be queued for one export — the search box adds
+  // symbols one at a time (see handleSelect below), each shown as a
+  // removable chip. Download then fires one native download per symbol
+  // (see triggerMultiDownload) by reusing the exact same single-symbol
+  // /api/data-export/download endpoint and <a>-download technique this
+  // page already used for a single pick — not a second, parallel code
+  // path, and no backend changes needed.
+  const [selectedList, setSelectedList] = useState([]);
   const [selectedExpiry, setSelectedExpiry] = useState("");
 
   const boxRef = useRef(null);
+  const bulkBoxRef = useRef(null);
   const debounceRef = useRef(null);
 
   useEffect(() => {
     // Changing segment invalidates whatever was picked/typed before —
     // a spot symbol string isn't a valid option contract and vice versa.
-    setSelected(null);
+    setSelectedList([]);
     setSelectedExpiry("");
     setResults([]);
     setQuery("");
+    setRangeHintDismissed(false);
   }, [segment]);
 
   useEffect(() => {
@@ -109,10 +186,13 @@ export default function DataExportPage() {
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [query, segment]);
 
-  // Close the dropdown on an outside click.
+  // Close whichever dropdown (Symbol box or Bulk underlying box) is open
+  // on an outside click — one shared listener, same as before, just now
+  // checking both boxes' refs instead of only one.
   useEffect(() => {
     function onDocClick(e) {
       if (boxRef.current && !boxRef.current.contains(e.target)) setDropdownOpen(false);
+      if (bulkBoxRef.current && !bulkBoxRef.current.contains(e.target)) setBulkDropdownOpen(false);
     }
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
@@ -135,15 +215,25 @@ export default function DataExportPage() {
   }, [segment, results, selectedExpiry]);
 
   const handleSelect = useCallback((entry) => {
-    setSelected(entry);
-    setQuery(entry.symbol);
+    setSelectedList((prev) => {
+      if (prev.some((p) => p.symbol === entry.symbol)) return prev; // already queued
+      if (prev.length >= MAX_MULTI_SYMBOLS) return prev; // soft cap, see de-info-note below
+      return [...prev, entry];
+    });
+    // Clear the box right away so the next symbol can be typed/searched
+    // immediately — the running list of picks lives in the chips below,
+    // not in this input.
+    setQuery("");
+    setResults([]);
     setDropdownOpen(false);
   }, []);
 
-  const clearSelection = useCallback(() => {
-    setSelected(null);
-    setQuery("");
-    setResults([]);
+  const removeSymbol = useCallback((symbol) => {
+    setSelectedList((prev) => prev.filter((p) => p.symbol !== symbol));
+  }, []);
+
+  const clearAllSymbols = useCallback(() => {
+    setSelectedList([]);
   }, []);
 
   // ── Date range + timeframe ───────────────────────────────────────────
@@ -154,20 +244,76 @@ export default function DataExportPage() {
   });
   const [toDate, setToDate] = useState(todayISO());
   const [timeframe, setTimeframe] = useState("5min");
+  // Options only ever trade for a few weeks before expiry, so the
+  // generic 6-months-back default is mostly a guaranteed-empty range for
+  // them — this just offers a shortcut, it never changes the date fields
+  // on its own. Dismissed per segment (see the segment-change effect
+  // above) rather than permanently, since it's specific to whichever
+  // option the person is about to look up.
+  const [rangeHintDismissed, setRangeHintDismissed] = useState(false);
+  const showRangeHint =
+    segment === "option" && !rangeHintDismissed &&
+    fromDate && toDate &&
+    (new Date(toDate) - new Date(fromDate)) / 86_400_000 > 45;
 
   const dateRangeValid = fromDate && toDate && fromDate <= toDate;
-  const canDownload = auth.authenticated && !!selected && dateRangeValid;
+  const canDownload = auth.authenticated && selectedList.length > 0 && dateRangeValid;
 
-  const downloadUrl = useMemo(() => {
-    if (!selected) return null;
+  // Same URL shape the old single-symbol downloadUrl used — now built
+  // per-entry so it can be reused for every symbol in the list, one
+  // download per symbol, each hitting the exact same
+  // /api/data-export/download endpoint (see that route's header comment:
+  // one exact contract in, one uniquely-named .xlsx out).
+  const buildDownloadUrl = useCallback((entry) => {
     const params = new URLSearchParams({
-      symbol: selected.symbol,
+      symbol: entry.symbol,
       from: fromDate,
       to: toDate,
       timeframe,
     });
     return `${BACKEND}/api/data-export/download?${params.toString()}`;
-  }, [selected, fromDate, toDate, timeframe]);
+  }, [fromDate, toDate, timeframe]);
+
+  const [multiRunning, setMultiRunning] = useState(false);
+  const [multiProgress, setMultiProgress] = useState(null); // {done,total,symbol}
+  // Per-symbol failures from the run just finished — a bad/illiquid
+  // contract no longer takes down the whole page (see the module-level
+  // comment on triggerBlobDownload for why the old <a href> approach did).
+  const [multiErrors, setMultiErrors] = useState([]); // [{symbol,message}]
+
+  const triggerMultiDownload = useCallback(async (list) => {
+    if (!list.length || multiRunning) return;
+    setMultiRunning(true);
+    setMultiProgress(null);
+    setMultiErrors([]);
+
+    const errors = [];
+    for (let i = 0; i < list.length; i += 1) {
+      const entry = list[i];
+      try {
+        const res = await fetch(buildDownloadUrl(entry));
+        if (res.ok) {
+          const fallback = `${entry.symbol.replace(/[^A-Za-z0-9_-]/g, "_")}.xlsx`;
+          await triggerBlobDownload(res, fallback);
+        } else {
+          errors.push({ symbol: entry.symbol, message: await readErrorMessage(res) });
+        }
+      } catch {
+        errors.push({ symbol: entry.symbol, message: "Network error — check your connection and try again." });
+      }
+      // `done` = how many symbols have been processed so far (success or
+      // fail), `symbol` = the one just processed — matches the progress
+      // text below exactly.
+      setMultiProgress({ done: i + 1, total: list.length, symbol: entry.symbol });
+      if (i < list.length - 1) await new Promise((r) => setTimeout(r, MULTI_DOWNLOAD_GAP_MS));
+    }
+
+    setMultiErrors(errors);
+    setMultiRunning(false);
+    setMultiProgress(null);
+  }, [buildDownloadUrl, multiRunning]);
+
+  const multiProgressPct = multiProgress ? Math.round((multiProgress.done / Math.max(1, multiProgress.total)) * 100) : 0;
 
   // ── Bulk options mode (ATM ± N, or an explicit strike list) ──────────
   // Only reachable when segment === "option". Reuses the shared backend
@@ -196,6 +342,8 @@ export default function DataExportPage() {
   }, []);
 
   const [bulkUnderlying, setBulkUnderlying] = useState("");
+  const [bulkQuery, setBulkQuery] = useState("");
+  const [bulkDropdownOpen, setBulkDropdownOpen] = useState(false);
   const [strikeMode, setStrikeMode] = useState("atm"); // "atm" | "strikes"
   const [atmWidth, setAtmWidth] = useState(atmBandDefault);
   useEffect(() => { setAtmWidth(atmBandDefault); }, [atmBandDefault]);
@@ -204,6 +352,29 @@ export default function DataExportPage() {
   const [optPE, setOptPE] = useState(true);
 
   const bulkEntry = useMemo(() => underlyings.find((u) => u.underlying === bulkUnderlying) || null, [underlyings, bulkUnderlying]);
+
+  // Client-side filter over the already-fetched underlyings list (now
+  // indices + MCX + all ~200 curated equities, see curated-underlyings'
+  // updated header comment) — same live-search *feel* as the Symbol box
+  // above, but without a per-keystroke server round trip, since this
+  // whole list is small enough to already be sitting in memory.
+  const bulkResults = useMemo(() => {
+    const q = bulkQuery.trim().toLowerCase();
+    if (!q) return [];
+    return underlyings
+      .filter((u) => u.underlying.toLowerCase().includes(q))
+      .slice(0, MAX_UNDERLYING_RESULTS);
+  }, [underlyings, bulkQuery]);
+
+  const pickBulkUnderlying = useCallback((u) => {
+    setBulkUnderlying(u.underlying);
+    setBulkQuery("");
+    setBulkDropdownOpen(false);
+  }, []);
+
+  const clearBulkUnderlying = useCallback(() => {
+    setBulkUnderlying("");
+  }, []);
 
   const [bulkExpiries, setBulkExpiries] = useState([]);
   const [bulkExpiry, setBulkExpiry] = useState(""); // "" = auto-pick the nearest live one
@@ -228,6 +399,7 @@ export default function DataExportPage() {
   const [bulkProgress, setBulkProgress] = useState(null); // {done,total,symbol}
   const [bulkSummary, setBulkSummary] = useState(null); // {fetched,skipped,clipped,clipMessage,expiryUsed,atmStrike}
   const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkError, setBulkError] = useState(null); // string | null
 
   useEffect(() => {
     const sock = createBackendSocket();
@@ -235,12 +407,6 @@ export default function DataExportPage() {
     sock.on("bulk_options_progress", (d) => setBulkProgress(d));
     sock.on("bulk_options_summary", (d) => { setBulkSummary(d); setBulkRunning(false); });
     return () => sock.disconnect();
-  }, []);
-
-  const startBulkRun = useCallback(() => {
-    setBulkProgress(null);
-    setBulkSummary(null);
-    setBulkRunning(true);
   }, []);
 
   const canDownloadBulk =
@@ -270,6 +436,37 @@ export default function DataExportPage() {
     if (socketId) params.set("socketId", socketId);
     return `${BACKEND}/api/data-export/bulk-options?${params.toString()}`;
   }, [bulkUnderlying, strikeMode, fromDate, toDate, timeframe, optCE, optPE, bulkEntry, atmWidth, atmBandDefault, strikesText, bulkExpiry, socketId]);
+
+  // Same fetch()-first approach as triggerMultiDownload above (see the
+  // module-level comment on triggerBlobDownload): only ever hand the
+  // response to the browser as a save once we know it's really the file
+  // and not an error. bulk_options_progress/summary socket events keep
+  // driving the progress bar exactly as before — this only changes how
+  // the actual HTTP response is handled once it comes back.
+  const startBulkRun = useCallback(async () => {
+    if (!bulkDownloadUrl || bulkRunning) return;
+    setBulkProgress(null);
+    setBulkSummary(null);
+    setBulkError(null);
+    setBulkRunning(true);
+    try {
+      const res = await fetch(bulkDownloadUrl);
+      if (res.ok) {
+        const fallback = `${bulkUnderlying.replace(/[^A-Za-z0-9_-]/g, "_")}_options.xlsx`;
+        await triggerBlobDownload(res, fallback);
+      } else {
+        setBulkError(await readErrorMessage(res));
+      }
+    } catch {
+      setBulkError("Network error — check your connection and try again.");
+    } finally {
+      // Belt-and-braces: bulk_options_summary normally clears this via the
+      // socket, but if the socket had already reconnected with a new id
+      // (or never connected), that event never arrives and the button
+      // would otherwise stay stuck on "Downloading…" forever.
+      setBulkRunning(false);
+    }
+  }, [bulkDownloadUrl, bulkRunning, bulkUnderlying]);
 
   const bulkProgressPct = bulkProgress ? Math.round((bulkProgress.done / Math.max(1, bulkProgress.total)) * 100) : 0;
 
@@ -333,7 +530,7 @@ export default function DataExportPage() {
                 <input
                   type="text"
                   value={query}
-                  onChange={(e) => { setQuery(e.target.value); setSelected(null); }}
+                  onChange={(e) => setQuery(e.target.value)}
                   onFocus={() => { if (results.length) setDropdownOpen(true); }}
                   placeholder="Type a symbol or company name… e.g. BEML, RELIANCE, NIFTY"
                   autoComplete="off"
@@ -360,15 +557,25 @@ export default function DataExportPage() {
               )}
             </div>
 
-            {selected && (
-              <div className="de-selected-chip">
-                <span className="de-chip-sym">{selected.symbol} — {selected.name}</span>
-                <span className={`de-type-pill de-type-${selected.type}`}>{selected.type}</span>
-                <span className="de-chip-clear" onClick={clearSelection}>✕</span>
+            {selectedList.length > 0 && (
+              <div className="de-selected-chips">
+                {selectedList.map((s) => (
+                  <div key={s.symbol} className="de-selected-chip">
+                    <span className="de-chip-sym">{s.symbol} — {s.name}</span>
+                    <span className={`de-type-pill de-type-${s.type}`}>{s.type}</span>
+                    <span className="de-chip-clear" onClick={() => removeSymbol(s.symbol)}>✕</span>
+                  </div>
+                ))}
+                {selectedList.length > 1 && (
+                  <div className="de-chip-clear-all" onClick={clearAllSymbols}>Clear all</div>
+                )}
               </div>
             )}
 
-            <div className="de-info-note">Pulled live from Fyers' own symbol master (NSE, BSE) plus this app's curated MCX list — not a fixed list, so anything currently tradable will show up.</div>
+            <div className="de-info-note">Pulled live from Fyers' own symbol master (NSE, BSE) plus this app's curated MCX list — not a fixed list, so anything currently tradable will show up. Pick as many symbols as you need — each one downloads as its own .xlsx.</div>
+            {selectedList.length >= MAX_MULTI_SYMBOLS && (
+              <div className="de-info-note de-warn">Maximum {MAX_MULTI_SYMBOLS} symbols per export — remove one to add another.</div>
+            )}
           </fieldset>
           )}
 
@@ -418,15 +625,47 @@ export default function DataExportPage() {
             {segment === "option" && downloadMode === "bulk" && (
               <div className="de-bulk-block">
                 <label className="de-label" style={{ marginTop: 16 }}>Underlying</label>
-                <select value={bulkUnderlying} onChange={(e) => setBulkUnderlying(e.target.value)}>
-                  <option value="">Select an underlying…</option>
-                  {underlyings.map((u) => (
-                    <option key={`${u.exchange}:${u.underlying}`} value={u.underlying}>
-                      {u.underlying} ({u.exchange}{u.assetClass === "COMMODITY" ? " · MCX" : ""})
-                    </option>
-                  ))}
-                </select>
-                <div className="de-info-note">Bulk download covers this app's curated indices/commodities (NIFTY, BANKNIFTY, SENSEX, etc.) — for any other option, use Single contract above.</div>
+                {bulkUnderlying ? (
+                  <div className="de-selected-chips">
+                    <div className="de-selected-chip">
+                      <span className="de-chip-sym">
+                        {bulkUnderlying} ({bulkEntry?.exchange || "?"}{bulkEntry?.assetClass === "COMMODITY" ? " · MCX" : ""})
+                      </span>
+                      <span className={`de-type-pill de-type-${(bulkEntry?.assetClass || "").toLowerCase()}`}>{bulkEntry?.assetClass || ""}</span>
+                      <span className="de-chip-clear" onClick={clearBulkUnderlying}>✕</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="de-symbol-search" ref={bulkBoxRef}>
+                    <div className="de-input-wrap">
+                      <SearchIcon />
+                      <input
+                        type="text"
+                        value={bulkQuery}
+                        onChange={(e) => { setBulkQuery(e.target.value); setBulkDropdownOpen(true); }}
+                        onFocus={() => { if (bulkQuery.trim()) setBulkDropdownOpen(true); }}
+                        placeholder="Type an underlying… e.g. NIFTY, CRUDEOILM, RELIANCE"
+                        autoComplete="off"
+                      />
+                    </div>
+                    <div className={`de-suggest-list ${bulkDropdownOpen && bulkQuery.trim() ? "open" : ""}`}>
+                      {bulkResults.length === 0 ? (
+                        <div className="de-suggest-empty">{bulkQuery.trim() ? `No underlying matches "${bulkQuery.trim()}"` : ""}</div>
+                      ) : (
+                        bulkResults.map((u) => (
+                          <div key={`${u.exchange}:${u.underlying}`} className="de-suggest-item" onMouseDown={() => pickBulkUnderlying(u)}>
+                            <div className="de-suggest-main">
+                              <div className="de-suggest-symbol">{u.underlying}</div>
+                              <div className="de-suggest-name">{u.exchange}{u.assetClass === "COMMODITY" ? " · MCX" : ""}</div>
+                            </div>
+                            <span className={`de-type-pill de-type-${u.assetClass.toLowerCase()}`}>{u.assetClass}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+                <div className="de-info-note">Same live search as the Symbol box above — covers every underlying this app can price options for: indices, MCX commodities, and the ~200 curated equities.</div>
 
                 <label className="de-label" style={{ marginTop: 16 }}>Expiry</label>
                 <select value={bulkExpiry} onChange={(e) => setBulkExpiry(e.target.value)} disabled={!bulkUnderlying || expiriesLoading}>
@@ -493,6 +732,24 @@ export default function DataExportPage() {
               </div>
             </div>
             {!dateRangeValid && <div className="de-info-note de-warn">"From" date must be on or before "To" date.</div>}
+            {showRangeHint && (
+              <div className="de-smart-hint">
+                <ClockIcon />
+                <span>Options usually only trade for a few weeks before expiry — {fromDate} is likely before this contract even existed.</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const d = new Date(toDate || todayISO());
+                    d.setDate(d.getDate() - 21);
+                    setFromDate(d.toISOString().slice(0, 10));
+                    setRangeHintDismissed(true);
+                  }}
+                >
+                  Use last 3 weeks
+                </button>
+                <span className="de-chip-clear" onClick={() => setRangeHintDismissed(true)}>✕</span>
+              </div>
+            )}
           </fieldset>
 
           {segment === "option" && downloadMode === "bulk" ? (
@@ -508,12 +765,23 @@ export default function DataExportPage() {
                 </div>
               )}
 
+              {bulkError && (
+                <div className="de-error-card show">
+                  <div className="de-error-title">
+                    <WarnIcon />
+                    Bulk download didn't go through
+                    <span className="de-error-close" onClick={() => setBulkError(null)}>✕</span>
+                  </div>
+                  <div className="de-error-body">{bulkError}</div>
+                </div>
+              )}
+
               <div className="de-submit-row">
                 {canDownloadBulk ? (
-                  <a className="de-download-btn" href={bulkDownloadUrl} onClick={startBulkRun}>
+                  <button type="button" className="de-download-btn" disabled={bulkRunning} onClick={startBulkRun}>
                     <DownloadIcon />
-                    Download .xlsx
-                  </a>
+                    {bulkRunning ? "Downloading…" : "Download .xlsx"}
+                  </button>
                 ) : (
                   <button type="button" className="de-download-btn de-download-disabled" disabled title={
                     !auth.authenticated ? "Generate a valid Fyers token first" :
@@ -551,24 +819,64 @@ export default function DataExportPage() {
               )}
             </>
           ) : (
-            <div className="de-submit-row">
-              {canDownload ? (
-                <a className="de-download-btn" href={downloadUrl}>
-                  <DownloadIcon />
-                  Download .xlsx
-                </a>
-              ) : (
-                <button type="button" className="de-download-btn de-download-disabled" disabled title={
-                  !auth.authenticated ? "Generate a valid Fyers token first" :
-                    !selected ? "Pick a symbol from the search results first" :
-                      "Fix the date range first"
-                }>
-                  <DownloadIcon />
-                  Download .xlsx
-                </button>
+            <>
+              {multiRunning && (
+                <div className="de-progress-wrap">
+                  <div className="de-progress-bar-wrap">
+                    <div className="de-progress-bar" style={{ width: `${multiProgressPct}%` }} />
+                  </div>
+                  <div className="de-info-note">
+                    {multiProgress ? `Downloading ${multiProgress.done} of ${multiProgress.total} (${multiProgress.symbol})…` : "Starting…"}
+                  </div>
+                </div>
               )}
-              <div className="de-format-badge">Excel (.xlsx)</div>
-            </div>
+
+              {multiErrors.length > 0 && (
+                <div className="de-error-card show">
+                  <div className="de-error-title">
+                    <WarnIcon />
+                    {multiErrors.length === 1 ? "1 symbol didn't download" : `${multiErrors.length} symbols didn't download`}
+                    <span className="de-error-close" onClick={() => setMultiErrors([])}>✕</span>
+                  </div>
+                  <div className="de-error-body">
+                    {multiErrors.map((e) => (
+                      <div key={e.symbol}><b>{e.symbol}</b> — {e.message}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="de-submit-row">
+                {canDownload ? (
+                  <button
+                    type="button"
+                    className="de-download-btn"
+                    disabled={multiRunning}
+                    onClick={() => triggerMultiDownload(selectedList)}
+                  >
+                    <DownloadIcon />
+                    {multiRunning
+                      ? "Downloading…"
+                      : `Download .xlsx${selectedList.length > 1 ? ` (${selectedList.length} files)` : ""}`}
+                  </button>
+                ) : (
+                  <button type="button" className="de-download-btn de-download-disabled" disabled title={
+                    !auth.authenticated ? "Generate a valid Fyers token first" :
+                      selectedList.length === 0 ? "Pick at least one symbol from the search results first" :
+                        "Fix the date range first"
+                  }>
+                    <DownloadIcon />
+                    Download .xlsx
+                  </button>
+                )}
+                <div className="de-format-badge">Excel (.xlsx)</div>
+              </div>
+              {selectedList.length > 1 && (
+                <div className="de-info-note">
+                  {selectedList.length} separate .xlsx files will download, one per symbol — not merged into one file.
+                </div>
+              )}
+            </>
           )}
         </form>
       </main>
@@ -584,5 +892,15 @@ function SearchIcon() {
 function DownloadIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+  );
+}
+function ClockIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><path d="M12 8v4l3 3" /></svg>
+  );
+}
+function WarnIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
   );
 }
