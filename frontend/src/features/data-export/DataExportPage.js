@@ -137,6 +137,15 @@ export default function DataExportPage() {
 
   // ── Search state ─────────────────────────────────────────────────────
   const [segment, setSegment] = useState("spot");
+  // OI only exists for derivatives (Fyers' oi_flag — confirmed live via
+  // test-oi-flag.js, see oi-iv-data-export-handoff.md) — meaningless for
+  // spot equities/indices, so this only ever shows/applies when segment
+  // is "future" or "option". One shared state covers both single-contract
+  // and bulk download modes since the concept is identical either way.
+  // Declared here (not near optCE/optPE further down) because
+  // buildDownloadUrl, below, needs it in scope — declaring it after that
+  // point caused "Cannot access 'includeOI' before initialization".
+  const [includeOI, setIncludeOI] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
@@ -271,8 +280,11 @@ export default function DataExportPage() {
       to: toDate,
       timeframe,
     });
+    // Only ever sent for derivatives — see includeOI's own declaration
+    // comment for why spot never gets this param.
+    if (includeOI && (segment === "future" || segment === "option")) params.set("includeOI", "true");
     return `${BACKEND}/api/data-export/download?${params.toString()}`;
-  }, [fromDate, toDate, timeframe]);
+  }, [fromDate, toDate, timeframe, includeOI, segment]);
 
   const [multiRunning, setMultiRunning] = useState(false);
   const [multiProgress, setMultiProgress] = useState(null); // {done,total,symbol}
@@ -434,8 +446,9 @@ export default function DataExportPage() {
     }
     if (bulkExpiry) params.set("expiryDate", bulkExpiry);
     if (socketId) params.set("socketId", socketId);
+    if (includeOI) params.set("includeOI", "true");
     return `${BACKEND}/api/data-export/bulk-options?${params.toString()}`;
-  }, [bulkUnderlying, strikeMode, fromDate, toDate, timeframe, optCE, optPE, bulkEntry, atmWidth, atmBandDefault, strikesText, bulkExpiry, socketId]);
+  }, [bulkUnderlying, strikeMode, fromDate, toDate, timeframe, optCE, optPE, bulkEntry, atmWidth, atmBandDefault, strikesText, bulkExpiry, socketId, includeOI]);
 
   // Same fetch()-first approach as triggerMultiDownload above (see the
   // module-level comment on triggerBlobDownload): only ever hand the
@@ -711,6 +724,24 @@ export default function DataExportPage() {
               </div>
             )}
           </fieldset>
+
+          {/* ── Include OI ───────────────────────────────────────────
+              Only meaningful for derivatives — see includeOI's own
+              declaration comment. Placed outside the segment/mode
+              conditionals above since it applies the same way whether
+              you're in single-contract or bulk mode. */}
+          {(segment === "future" || segment === "option") && (
+            <fieldset>
+              <div className="de-checkbox-row">
+                <label className="de-checkbox">
+                  <input type="checkbox" checked={includeOI} onChange={(e) => setIncludeOI(e.target.checked)} /> Include OI
+                </label>
+              </div>
+              <div className="de-info-note">
+                Adds an Open Interest column, sourced live from Fyers per candle.
+              </div>
+            </fieldset>
+          )}
 
           {/* ── Date range + timeframe ────────────────────────────── */}
           <fieldset>

@@ -78,6 +78,7 @@ async function runBulkOptionFetch(params) {
   const {
     underlying, exchange, mode, atmWidth, strikes: requestedStrikes,
     optionTypes = ["CE", "PE"], expiryDate, from, to, timeframe = "1day",
+    includeOI = false,
     onProgress,
   } = params;
 
@@ -180,7 +181,7 @@ async function runBulkOptionFetch(params) {
   for (let i = 0; i < contracts.length; i++) {
     const c = contracts[i];
     try {
-      const { rows: candleRows } = await fetchCandleRows(c.symbol, from, timeframe);
+      const { rows: candleRows } = await fetchCandleRows(c.symbol, from, timeframe, includeOI);
       const trimmed = to ? candleRows.filter((r) => r.Date <= to) : candleRows;
 
       if (trimmed.length === 0) {
@@ -199,6 +200,7 @@ async function runBulkOptionFetch(params) {
             Low: r.Low,
             Close: r.Close,
             Volume: r.Volume,
+            ...(includeOI ? { OI: r.OI } : {}),
             "Steps from ATM": strikeGap ? Math.round((c.strike_price - atmStrike) / strikeGap) : "",
           });
         }

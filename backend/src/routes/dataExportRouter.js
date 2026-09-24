@@ -43,13 +43,15 @@
  *   Returns up to 50 matches: [{ symbol, name, exchange, type,
  *   underlying, expiryDate, strike, optionType }, ...]
  *
- * GET /api/data-export/download?symbol=&from=&timeframe=[&to=]
+ * GET /api/data-export/download?symbol=&from=&timeframe=[&to=][&includeOI=true]
  *   Streams an .xlsx attachment for ONE exact contract. `to` is accepted
  *   for forward-compat with the UI's date pickers but candles are always
  *   fetched through today — same "from a date through today" behavior
  *   fetchSpotCandles.js always had; rows after `to` (if given) are trimmed
  *   out before export so an earlier `to` date still does something useful
- *   rather than being silently ignored.
+ *   rather than being silently ignored. `includeOI=true` adds an OI column,
+ *   sourced from Fyers' own oi_flag (off by default — see
+ *   candleExport.js's fetchCandleRows() header for details).
  *
  * GET /api/data-export/curated-underlyings
  *   Returns [{underlying, exchange, assetClass}], plus the app-wide
@@ -62,10 +64,11 @@
  *
  * GET /api/data-export/bulk-options?underlying=&mode=atm|strikes[&exchange=]
  *     [&atmWidth=][&strikes=23100,23150][&optionTypes=CE,PE][&expiryDate=]
- *     &from=&timeframe=[&to=][&socketId=]
+ *     &from=&timeframe=[&to=][&includeOI=true][&socketId=]
  *   Streams ONE .xlsx attachment covering every matched strike/expiry
  *   combination, one flat sheet (see services/bulkOptionFetch.js's header
- *   for the exact row shape). If `socketId` is given and that socket is
+ *   for the exact row shape). `includeOI=true` adds an OI column to every
+ *   row, same source/convention as the single-symbol route above. If `socketId` is given and that socket is
  *   currently connected, "bulk_options_progress" ({done,total,symbol})
  *   fires after each contract, and "bulk_options_summary"
  *   ({fetched,skipped,clipped,clipMessage,expiryUsed}) fires once, right
@@ -210,10 +213,10 @@ module.exports = function createDataExportRouter({ io } = {}) {
     }
   });
 
-  /** GET /api/data-export/download?symbol=&from=&timeframe=[&to=] */
+  /** GET /api/data-export/download?symbol=&from=&timeframe=[&to=][&includeOI=true] */
   router.get("/download", async (req, res) => {
     try {
-      const { symbol, from, to, timeframe } = req.query;
+      const { symbol, from, to, timeframe, includeOI } = req.query;
       if (!symbol || !from) {
         return res.status(400).json({ error: "missing_params", message: "symbol and from are required" });
       }
@@ -224,7 +227,12 @@ module.exports = function createDataExportRouter({ io } = {}) {
       if (!(await requireValidToken(res))) return;
 
       const timeframeLabel = timeframe || "1day";
-      const { rows: allRows } = await fetchCandleRows(symbol, from, timeframeLabel);
+      // "true"/"1" from a query string — same loose-boolean parsing
+      // convention scannerRouter.js's found==="true" filter already uses
+      // elsewhere in this codebase. Anything else (undefined, "false")
+      // stays off.
+      const wantOI = includeOI === "true" || includeOI === "1";
+      const { rows: allRows } = await fetchCandleRows(symbol, from, timeframeLabel, wantOI);
 
       // `to` narrows the already-fetched range (fetchCandleRows always goes
       // through today) — trimmed here rather than passed down, so
@@ -318,7 +326,7 @@ module.exports = function createDataExportRouter({ io } = {}) {
     try {
       const {
         underlying, exchange, mode, atmWidth, strikes, optionTypes,
-        expiryDate, from, to, timeframe, socketId,
+        expiryDate, from, to, timeframe, includeOI, socketId,
       } = req.query;
 
       if (!underlying || !mode || !from) {
@@ -341,6 +349,7 @@ module.exports = function createDataExportRouter({ io } = {}) {
         : ["CE", "PE"];
 
       const targetSocket = socketId && io ? io.sockets.sockets.get(socketId) : null;
+      const wantOI = includeOI === "true" || includeOI === "1";
 
       const result = await runBulkOptionFetch({
         underlying, exchange, mode,
@@ -350,6 +359,7 @@ module.exports = function createDataExportRouter({ io } = {}) {
         expiryDate: expiryDate || undefined,
         from, to: to || undefined,
         timeframe: timeframe || "1day",
+        includeOI: wantOI,
         onProgress: targetSocket
           ? (p) => targetSocket.emit("bulk_options_progress", p)
           : undefined,
