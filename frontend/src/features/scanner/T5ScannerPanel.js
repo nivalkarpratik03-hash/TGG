@@ -37,6 +37,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import React, { useState, useMemo, useEffect, useRef } from "react";
+import * as XLSX from "xlsx";
 import { tickerOf } from "../../utils/symbolMeta";
 import { fmtTime } from "./mwScanHelpers";
 import HistoryLookbackFilter from "./HistoryLookbackFilter";
@@ -335,6 +336,75 @@ export default function T5ScannerPanel({
     return out.filter((r) => matchesSymbol(r.symbol, query));
   }, [history, historyTagFilter, query]);
 
+  const hasAnyRows = results.length > 0 || upcoming.length > 0 || history.length > 0;
+
+  // Points formed (P1..P6) as plain text for the export — same info the
+  // PointsRow badges show on screen, just flattened to a string.
+  function pointsSummary(done) {
+    return done > 0 ? Array.from({ length: done }, (_, i) => `P${i + 1}`).join(", ") : "—";
+  }
+
+  // ── Download — Results / Upcoming / History as three sheets in one
+  // .xlsx, columns mirroring what's on screen in each tab. Always exports
+  // the FULL rows, not the search/tag-filtered view — same rule as
+  // CeilingBreakScannerPanel.js's handleDownload. ────────────────────────
+  function handleDownload() {
+    if (!hasAnyRows) return;
+
+    const resultsRows = results.map((r, i) => ({
+      "Sr": i + 1,
+      "Symbol": r.symbol,
+      "Side": r.side,
+      "Points formed": pointsSummary(r.done),
+      "Tag": r.tag || "",
+      "Status": r.status || "",
+      "Status note": r.statusNote || "",
+      "Flipped": r.flipped ? (r.flippedTag || "yes") : "",
+      "Time": r.time || "",
+    }));
+
+    const upcomingRows = upcoming.map((r, i) => ({
+      "Sr": i + 1,
+      "Symbol": r.symbol,
+      "Side": r.side,
+      "Stage": r.stageText ? `stage ${r.stage} · ${r.stageText}` : (r.stage ?? ""),
+      "Flip watch": r.flip ? (r.flipName || "yes") : "",
+      "Time": r.time || "",
+    }));
+
+    const historyRows = history.map((r, i) => ({
+      "Sr": i + 1,
+      "Symbol": r.symbol,
+      "Side": r.side,
+      "Points formed": pointsSummary(r.done),
+      "Tag": r.tag || "",
+      "Status": r.status || "",
+      "Status note": r.statusNote || "",
+      "Flipped": r.flipped ? (r.flippedTag || "yes") : "",
+      "Time": r.time || "",
+    }));
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(resultsRows.length ? resultsRows : [{ "Info": "Nothing live right now." }]),
+      "Results"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(upcomingRows.length ? upcomingRows : [{ "Info": "Nothing forming right now." }]),
+      "Upcoming"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(historyRows.length ? historyRows : [{ "Info": "No closed cycles from earlier days yet." }]),
+      "History"
+    );
+
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    XLSX.writeFile(wb, `t5_scanner_${resolution}_${stamp}.xlsx`);
+  }
+
   return (
     <div className="t5-wrap">
       <div className="t5-stats">
@@ -403,6 +473,15 @@ export default function T5ScannerPanel({
               </button>
             )}
           </div>
+
+          <button
+            className="t5-download-btn"
+            onClick={handleDownload}
+            disabled={!hasAnyRows}
+            title="Download Results, Upcoming & History as one Excel file"
+          >
+            ⬇ Download
+          </button>
         </div>
       </div>
 
