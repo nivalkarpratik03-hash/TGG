@@ -24,8 +24,15 @@
 const express = require("express");
 const router = express.Router();
 const { scanner, buildComboKey } = require("../services/scannerRunner");
+const { DEFAULT_LOOKBACK_DAYS } = require("../services/candleFetch");
 const symbolsRouter = require("./symbolsRouter");
 const instrumentTypeResolver = require("../services/instrumentTypeResolver");
+
+// Preset windows the Scanner UI's per-strategy History "Lookback" dropdown
+// offers (see HistoryLookbackFilter.js) — the single source of truth for
+// what POST /trigger will accept in lookbackDays, so the frontend's option
+// list and this validation can never drift apart silently.
+const ALLOWED_LOOKBACK_DAYS = [30, DEFAULT_LOOKBACK_DAYS, 180, 365];
 
 // Maps the Scanner UI's category dropdown value to the `type` field
 // getSymbols() already tags every symbol with. "commodity" intentionally
@@ -173,6 +180,12 @@ router.get("/result/:strategyId/:symbol", (req, res) => {
 //   strategyId: one of the registered strategy ids (NEW) — scopes this
 //     scan pass to just that strategy family instead of all 7. Omitted →
 //     unscoped full scan, unchanged prior behavior.
+//   lookbackDays: one of ALLOWED_LOOKBACK_DAYS (NEW) — how many days of
+//     candles to fetch (see candleFetch.js / fyers/client.js's existing
+//     chunked-fetch support). Omitted → DEFAULT_LOOKBACK_DAYS (90),
+//     byte-identical to prior behavior. Sent by the Scanner UI's
+//     per-strategy History "Scan this range" button — see
+//     HistoryLookbackFilter.js.
 // }
 // NEW 2026-08-02 — assetClass scopes the scan to one category instead of
 // the full symbol list, without changing the persistent list any other
@@ -206,6 +219,19 @@ router.post("/trigger", async (req, res) => {
         return res.status(400).json({ error: `Unknown strategyId "${strategyIdRaw}" — expected one of: ${knownIds.join(", ")}` });
       }
       strategyId = strategyIdRaw;
+    }
+
+    // NEW — lookbackDays, validated against the same preset list the
+    // frontend dropdown offers (ALLOWED_LOOKBACK_DAYS above). Omitted →
+    // DEFAULT_LOOKBACK_DAYS, unchanged prior behavior.
+    const lookbackDaysRaw = req.body?.lookbackDays;
+    let lookbackDays = DEFAULT_LOOKBACK_DAYS;
+    if (lookbackDaysRaw != null) {
+      const parsed = parseInt(lookbackDaysRaw, 10);
+      if (!ALLOWED_LOOKBACK_DAYS.includes(parsed)) {
+        return res.status(400).json({ error: `Unknown lookbackDays "${lookbackDaysRaw}" — expected one of: ${ALLOWED_LOOKBACK_DAYS.join(", ")}` });
+      }
+      lookbackDays = parsed;
     }
 
     let scopedSymbols;
@@ -253,7 +279,7 @@ router.post("/trigger", async (req, res) => {
     // matches the default ASSET_TO_INSTRUMENT_TYPES value the frontend
     // would have shown for that assetClass anyway.
     const instrumentTypeForCombo = instrumentTypeRaw != null ? String(instrumentTypeRaw).toLowerCase() : "all";
-    const out = await scanner.triggerNow(resolution, scopedSymbols, assetClass, instrumentTypeForCombo, strategyId);
+    const out = await scanner.triggerNow(resolution, scopedSymbols, assetClass, instrumentTypeForCombo, strategyId, lookbackDays);
     res.json(out);
   } catch (err) {
     res.status(500).json({ error: err.message });

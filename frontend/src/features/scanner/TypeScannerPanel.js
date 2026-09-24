@@ -39,6 +39,7 @@ import { formatDateTimeIST } from "../../utils/istUtils";
 import { fmtTime } from "./mwScanHelpers";
 import { fmt } from "../../utils/format";
 import { tickerOf } from "../../utils/symbolMeta";
+import HistoryLookbackFilter from "./HistoryLookbackFilter";
 import "./ScannerPage.css";
 import "./TypeScannerPanel.css";
 
@@ -120,8 +121,52 @@ function TypeSignalsTable({ rows, showExit, emptyLabel, onRowClick }) {
   );
 }
 
+// ── History table — every past completed E/R/F event, its own row ──────
+// Deliberately no DW column here — see typeResultShape.js's header for why
+// (each event only carries when it happened, not what the wave direction
+// was at that time; showing today's current direction next to an old
+// event would misrepresent what was true then).
+function TypeHistoryTable({ rows, emptyLabel, onRowClick }) {
+  if (rows.length === 0) {
+    return <div className="scanner-signals-empty">{emptyLabel}</div>;
+  }
+  return (
+    <div className="scanner-signals-table-wrap">
+      <table className="scanner-signals-table">
+        <thead>
+          <tr>
+            <th>Sr.No</th>
+            <th>Symbol</th>
+            <th>Type</th>
+            <th>Entry</th>
+            <th>Exit</th>
+            <th>Timestamp</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr
+              key={`${r.symbol}-${r.type}-${r.timeMs}-${i}`}
+              className="scanner-signals-row"
+              onClick={() => onRowClick(r.symbol)}
+              title="Open chart with Fib drawn"
+            >
+              <td>{i + 1}</td>
+              <td className="scanner-signals-sym">{tickerOf(r.symbol)}</td>
+              <td>{r.type || "—"}</td>
+              <td>{r.entry != null ? fmt(r.entry) : "—"}</td>
+              <td>{r.exit != null ? fmt(r.exit) : "—"}</td>
+              <td className="scanner-signals-ts">{formatDateTimeIST(r.exitTime || r.entryTime)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function TypeScannerPanel({
-  rows = { results: [], upcoming: [] },
+  rows = { results: [], upcoming: [], history: [] },
   counts = { signals: 0, partial: 0, s1: 0 },
   scannedCount = 0,
   resolution = "15m",
@@ -131,6 +176,10 @@ export default function TypeScannerPanel({
   typeSubFilter = "all",
   onTypeSubFilterChange = () => { },
   onRowClick = () => { },
+  lookbackDays,
+  onLookbackDaysChange = () => { },
+  onScanRange = () => { },
+  lookbackDisabled = false,
 }) {
   const [tab, setTab] = useState("results");
   const [query, setQuery] = useState("");
@@ -142,6 +191,10 @@ export default function TypeScannerPanel({
   const filteredUpcoming = useMemo(
     () => (rows.upcoming || []).filter((r) => matchesSymbol(r.symbol, query)),
     [rows.upcoming, query]
+  );
+  const filteredHistory = useMemo(
+    () => (rows.history || []).filter((r) => matchesSymbol(r.symbol, query)),
+    [rows.history, query]
   );
 
   return (
@@ -168,6 +221,12 @@ export default function TypeScannerPanel({
           onClick={() => setTab("upcoming")}
         >
           Upcoming
+        </button>
+        <button
+          className={`scanner-signals-tab ${tab === "history" ? "active" : ""}`}
+          onClick={() => setTab("history")}
+        >
+          History
         </button>
 
         <div className="scanner-signals-typefilter">
@@ -214,7 +273,7 @@ export default function TypeScannerPanel({
             onRowClick={onRowClick}
           />
         </div>
-      ) : (
+      ) : tab === "upcoming" ? (
         <div className="scanner-signals-col">
           <div className="scanner-signals-col-header">
             <span className="scanner-signals-col-title">Upcoming</span>
@@ -224,6 +283,25 @@ export default function TypeScannerPanel({
             rows={filteredUpcoming}
             showExit={false}
             emptyLabel={query ? `No upcoming rows match "${query}"` : "No active signals yet"}
+            onRowClick={onRowClick}
+          />
+        </div>
+      ) : (
+        <div className="scanner-signals-col">
+          <div className="scanner-signals-col-header scanner-history-subrow">
+            <span className="scanner-signals-col-sub">
+              Every past completed E/R/F event, one row per signal — newest first
+            </span>
+            <HistoryLookbackFilter
+              value={lookbackDays}
+              onChange={onLookbackDaysChange}
+              onScan={onScanRange}
+              disabled={lookbackDisabled}
+            />
+          </div>
+          <TypeHistoryTable
+            rows={filteredHistory}
+            emptyLabel={query ? `No history rows match "${query}"` : "No past signals yet"}
             onRowClick={onRowClick}
           />
         </div>

@@ -64,7 +64,7 @@ const { detectMotherWaveForAPI, calcTrapZone, classifyZone } = require("./mother
 // shared implementation in candleFetch.js, used by both this file and
 // analyticsRouter.js — see candleFetch.js's own header comment and
 // sanity_candleFetch.js for proof the extraction is byte-equivalent.
-const { fetchCandlesDbFirst, CONCURRENCY, BATCH_DELAY_MS } = require("./candleFetch");
+const { fetchCandlesDbFirst, CONCURRENCY, BATCH_DELAY_MS, DEFAULT_LOOKBACK_DAYS } = require("./candleFetch");
 const DEFAULT_RESOLUTION = parseInt(process.env.SCANNER_RESOLUTION || "15");
 const RETRY_LIMIT = 5;
 
@@ -202,15 +202,22 @@ class ScannerRunner extends EventEmitter {
   // NEW (2026-08-18) — assetClass/instrumentType are now also used to build
   // this scan's comboKey (see buildComboKey above), which determines WHICH
   // per-strategy result bucket this scan's results get written into. This
-  // is what makes results per-filter-combo instead of one giant shared pile
-  // — see file header FIX note.
   // NEW — optional `strategyId` (from the Scanner UI's Strategy dropdown).
   // When provided, scopes this scan pass to just that strategy family (or
   // the type-e/type-r/type-f trio + type-ref itself, when "type-ref" is
   // selected) via resolveStrategiesToRun() above, instead of running all 7
   // registered strategies against every symbol. Omitted → full scan across
   // every registered strategy, unchanged prior behavior.
-  async triggerNow(resolution, scanSymbols, assetClass = "all", instrumentType = "all", strategyId = null) {
+  // NEW — optional `lookbackDays` (from the Scanner UI's per-strategy
+  // History "Scan this range" filter — see HistoryLookbackFilter.js on the
+  // frontend). Defaults to DEFAULT_LOOKBACK_DAYS (90), so every existing
+  // caller (the main "Scan Now" button, StrategiesPage.js, any script)
+  // gets the exact same 90-day window it always did. Only a scoped History
+  // rescan passes a wider value — it re-runs the SAME strategiesToRun /
+  // comboKey this function already scopes to, just fed a deeper candle
+  // window, so Results/Upcoming/History for that combo all refresh
+  // together from one real scan(), not a second parallel code path.
+  async triggerNow(resolution, scanSymbols, assetClass = "all", instrumentType = "all", strategyId = null, lookbackDays = DEFAULT_LOOKBACK_DAYS) {
     if (this._running) return { status: "already_running", progress: this._progress };
     if (resolution != null) this._resolution = parseInt(resolution) || DEFAULT_RESOLUTION;
     this._aborted = false;
@@ -227,7 +234,7 @@ class ScannerRunner extends EventEmitter {
     const comboKey = buildComboKey(this._resolution, assetClass, instrumentType);
     this._lastComboKey = comboKey;
 
-    await this._runScan(scopedSymbols, comboKey, strategyId);
+    await this._runScan(scopedSymbols, comboKey, strategyId, lookbackDays);
     return {
       status: "triggered",
       symbols: (scopedSymbols || this._symbolList).length,
@@ -236,6 +243,7 @@ class ScannerRunner extends EventEmitter {
       assetClass,
       instrumentType,
       strategyId: strategyId || null,
+      lookbackDays,
       comboKey,
     };
   }
@@ -251,7 +259,7 @@ class ScannerRunner extends EventEmitter {
   }
 
   // ── Core scan loop ────────────────────────────────────────────────────────────
-  async _runScan(scopedSymbols = null, comboKey = null, strategyId = null) {
+  async _runScan(scopedSymbols = null, comboKey = null, strategyId = null, lookbackDays = DEFAULT_LOOKBACK_DAYS) {
     // Legacy/internal callers that don't pass a comboKey (there are none
     // left in this codebase, but stay defensive) fall back to the
     // resolution-only "all|all" bucket rather than throwing.
@@ -288,7 +296,7 @@ class ScannerRunner extends EventEmitter {
     if (!isScoped) this._retryQueue = [];
     this._progress = { total: toScan.length, done: 0, found: 0 };
 
-    console.log(`[Scanner #${scanId}] ${toScan.length} symbols × ${strategiesToRun.length} strategies @ res=${resolution}m${isScoped ? " (scoped)" : ""} combo=${effectiveComboKey}${strategyId ? ` strategyId=${strategyId}` : ""}`);
+    console.log(`[Scanner #${scanId}] ${toScan.length} symbols × ${strategiesToRun.length} strategies @ res=${resolution}m${isScoped ? " (scoped)" : ""} combo=${effectiveComboKey}${strategyId ? ` strategyId=${strategyId}` : ""}${lookbackDays !== DEFAULT_LOOKBACK_DAYS ? ` lookbackDays=${lookbackDays}` : ""}`);
     this.emit("scan_start", {
       scanId,
       total: toScan.length,
@@ -296,6 +304,7 @@ class ScannerRunner extends EventEmitter {
       scoped: isScoped,
       comboKey: effectiveComboKey,
       strategyId: strategyId || null,
+      lookbackDays,
       // Trimmed to the strategies actually running this pass, not the
       // full registry — see resolveStrategiesToRun().
       strategies: strategiesToRun.map(s => ({ id: s.id, name: s.name })),
@@ -307,7 +316,7 @@ class ScannerRunner extends EventEmitter {
         break;
       }
       const batch = toScan.slice(i, i + CONCURRENCY);
-      await Promise.allSettled(batch.map((sym) => this._processSymbol(sym, false, resolution, retryTarget, effectiveComboKey, strategiesToRun)));
+      await Promise.allSettled(batch.map((sym) => this._processSymbol(sym, false, resolution, retryTarget, effectiveComboKey, strategiesToRun, lookbackDays)));
       this._progress.done = Math.min(i + CONCURRENCY, toScan.length);
       this.emit("scan_progress", { ...this._progress, scanId });
       if (i + CONCURRENCY < toScan.length) await delay(BATCH_DELAY_MS);
@@ -320,7 +329,7 @@ class ScannerRunner extends EventEmitter {
       console.log(`[Scanner #${scanId}] Retrying ${retries.length} symbols...`);
       for (const sym of retries) {
         if (this._aborted) break;
-        await this._processSymbol(sym, true, resolution, retryTarget, effectiveComboKey, strategiesToRun);
+        await this._processSymbol(sym, true, resolution, retryTarget, effectiveComboKey, strategiesToRun, lookbackDays);
         await delay(600);
       }
     }
@@ -396,13 +405,13 @@ class ScannerRunner extends EventEmitter {
   // `strategiesToRun` — the resolved subset for this scan pass (see
   // resolveStrategiesToRun()). Defaults to the full registry for any
   // internal/legacy caller that doesn't pass it, unchanged prior behavior.
-  async _processSymbol(symbol, isRetry = false, resolution = DEFAULT_RESOLUTION, retryTarget = null, comboKey = null, strategiesToRun = strategies) {
+  async _processSymbol(symbol, isRetry = false, resolution = DEFAULT_RESOLUTION, retryTarget = null, comboKey = null, strategiesToRun = strategies, lookbackDays = DEFAULT_LOOKBACK_DAYS) {
     const effectiveComboKey = comboKey || buildComboKey(resolution, "all", "all");
     const retryQueue = retryTarget || this._retryQueue;
     try {
       // DB-first-then-Fyers-fallback — see candleFetch.js. logPrefix kept
       // as "[Scanner]" so existing log output reads exactly as before.
-      let candles = await fetchCandlesDbFirst(symbol, resolution, { logPrefix: "[Scanner]" });
+      let candles = await fetchCandlesDbFirst(symbol, resolution, { logPrefix: "[Scanner]", lookbackDays });
 
       this._errors.delete(symbol);
 

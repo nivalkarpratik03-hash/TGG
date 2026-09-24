@@ -30,6 +30,7 @@ import * as XLSX from "xlsx";
 import { formatDateTimeIST } from "../../utils/istUtils";
 import { fmtTime } from "./mwScanHelpers";
 import { tickerOf, exchangeOf } from "../../utils/symbolMeta";
+import HistoryLookbackFilter from "./HistoryLookbackFilter";
 import "./ScannerPage.css";
 
 const TYPE_META = {
@@ -207,6 +208,10 @@ export default function PinakaScannerPanel({
   lastScan = null,
   durationMs = null,
   onRowClick = () => { },
+  lookbackDays,
+  onLookbackDaysChange = () => { },
+  onScanRange = () => { },
+  lookbackDisabled = false,
 }) {
   const [mainTab, setMainTab] = useState("results"); // results | upcoming | history
   const [query, setQuery] = useState("");
@@ -382,10 +387,16 @@ export default function PinakaScannerPanel({
 
       {mainTab === "history" && (
         <div className="scanner-signals-col">
-          <div className="scanner-signals-col-header">
+          <div className="scanner-signals-col-header scanner-history-subrow">
             <span className="scanner-signals-col-sub">
               Every past A1/A2/B/B2 trigger, one row per signal — newest first
             </span>
+            <HistoryLookbackFilter
+              value={lookbackDays}
+              onChange={onLookbackDaysChange}
+              onScan={onScanRange}
+              disabled={lookbackDisabled}
+            />
           </div>
           <HistoryTable
             rows={filteredHistory}

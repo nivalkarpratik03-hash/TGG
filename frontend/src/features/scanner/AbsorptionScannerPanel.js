@@ -56,6 +56,7 @@ import * as XLSX from "xlsx";
 import { tickerOf, exchangeOf } from "../../utils/symbolMeta";
 import { fmt } from "../../utils/format";
 import { fmtTime } from "./mwScanHelpers";
+import HistoryLookbackFilter from "./HistoryLookbackFilter";
 import "./AbsorptionScannerPanel.css";
 
 // Symbol search — matches against the raw symbol string and its clean
@@ -354,6 +355,10 @@ export default function AbsorptionScannerPanel({
   lastScan = null,
   durationMs = null,
   onRowClick = () => { },
+  lookbackDays,
+  onLookbackDaysChange = () => { },
+  onScanRange = () => { },
+  lookbackDisabled = false,
 }) {
   const [tab, setTab] = useState("results");
 
@@ -577,8 +582,14 @@ export default function AbsorptionScannerPanel({
 
       {tab === "history" && (
         <div className="af-panel active">
-          <div className="af-subrow">
+          <div className="af-subrow scanner-history-subrow">
             <span className="af-sub">Same events, from earlier days &middot; kept, not deleted, just out of today's feed</span>
+            <HistoryLookbackFilter
+              value={lookbackDays}
+              onChange={onLookbackDaysChange}
+              onScan={onScanRange}
+              disabled={lookbackDisabled}
+            />
           </div>
           <EventTable
             rows={filteredHistory}

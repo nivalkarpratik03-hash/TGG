@@ -40,6 +40,8 @@ import PinakaScannerPanel from "./PinakaScannerPanel";
 import { buildPinakaRows } from "./pinakaResultShape";
 import S1S2S3ScannerPanel from "./S1S2S3ScannerPanel";
 import TypeScannerPanel from "./TypeScannerPanel";
+import { buildTypeHistoryRows } from "./typeResultShape";
+import { DEFAULT_LOOKBACK_DAYS } from "./HistoryLookbackFilter";
 import "./ScannerPage.css";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -253,6 +255,13 @@ export default function ScannerPage() {
   // r.type — a symbol can have an R event that isn't its most-recent
   // trigger, and the combined view would hide it).
   const [typeSubFilter, setTypeSubFilter] = useState("all");
+  // NEW — Scanner History lookback filter (see HistoryLookbackFilter.js).
+  // One shared value, not per-panel state, since only one strategy panel
+  // is ever rendered at a time (the strategy dropdown picks exactly one).
+  // Resets to the default whenever the active strategy changes — see the
+  // effectiveStrategyId reset effect below — so switching strategies never
+  // silently carries over a wide range from a different strategy.
+  const [lookbackDays, setLookbackDays] = useState(DEFAULT_LOOKBACK_DAYS);
 
   // ── Fetch ─────────────────────────────────────────────────────────────────
   const fetchStatus = useCallback(async () => {
@@ -403,6 +412,10 @@ export default function ScannerPage() {
     // switching strategies could briefly show the PREVIOUS strategy's
     // comboScannedAt next to the new (empty) results for one tick.
     setComboScannedAt(null);
+    // NEW — see lookbackDays state comment above: switching strategies
+    // resets the History lookback filter back to the default, rather than
+    // carrying over e.g. a 365-day selection made on a different strategy.
+    setLookbackDays(DEFAULT_LOOKBACK_DAYS);
   }, [effectiveStrategyId]);
 
   // FIX (2026-08-18) — previously only depended on [effectiveStrategyId,
@@ -454,26 +467,49 @@ export default function ScannerPage() {
   }
 
   // ── Trigger / Stop ────────────────────────────────────────────────────────
-  async function handleTrigger() {
+  // Single shared POST /api/scanner/trigger call. Both the main "Scan Now"
+  // button and every panel's scoped "Scan this range" button (see
+  // HistoryLookbackFilter.js) call THIS — not a second independent fetch —
+  // so there is exactly one place in the frontend that knows how to talk to
+  // /api/scanner/trigger.
+  async function triggerScan({ strategyId, lookbackDays: lbDays = DEFAULT_LOOKBACK_DAYS } = {}) {
     if (loading || isRunning) return;
     setLoading(true);
     try {
+      const body = { resolution: timeframe, assetClass, instrumentType, strategyId };
+      // Only sent when non-default — omitting it entirely for the default
+      // case keeps every existing "Scan Now" request byte-identical to
+      // before this feature existed (scannerRouter.js defaults to 90
+      // itself when the field is absent — see its own comment).
+      if (lbDays !== DEFAULT_LOOKBACK_DAYS) body.lookbackDays = lbDays;
       await fetch(`${BACKEND}/api/scanner/trigger`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // NEW — strategyId scopes this scan to just the dropdown's
-        // selected strategy family (see scannerRunner.js's
-        // resolveStrategiesToRun). Sends `activeStrategy` (the actual
-        // dropdown selection, e.g. "type-ref"), NOT `effectiveStrategyId`
-        // — if an R/E/F tab is active, effectiveStrategyId would be e.g.
-        // "type-e" alone, which would scan ONLY Type E and leave type-r/
-        // type-f/type-ref stale. The dropdown's strategy is always the
-        // right scope for what "Scan Now" should run.
-        body: JSON.stringify({ resolution: timeframe, assetClass, instrumentType, strategyId: activeStrategy }),
+        body: JSON.stringify(body),
       });
       setProgress({ total: status?.symbolCount || 0, done: 0 });
     } catch { }
     finally { setLoading(false); }
+  }
+
+  // "Scan Now" — full scope, dropdown's selected strategy family. Sends
+  // `activeStrategy` (the actual dropdown selection, e.g. "type-ref"), NOT
+  // `effectiveStrategyId` — if an R/E/F tab is active, effectiveStrategyId
+  // would be e.g. "type-e" alone, which would scan ONLY Type E and leave
+  // type-r/type-f/type-ref stale. The dropdown's strategy is always the
+  // right scope for what "Scan Now" should run.
+  async function handleTrigger() {
+    return triggerScan({ strategyId: activeStrategy });
+  }
+
+  // "Scan this range" — same scope (activeStrategy) as handleTrigger above,
+  // just with the wider lookbackDays the panel's dropdown picked. Re-runs
+  // the SAME scan() pass for that one strategy+combo, so Results/Upcoming/
+  // History for it all refresh together from real data, not a second
+  // parallel History-only code path — see scannerRunner.js's triggerNow
+  // comment for why that's the deliberate design.
+  async function handleLookbackScan(days) {
+    return triggerScan({ strategyId: activeStrategy, lookbackDays: days });
   }
   async function handleStop() {
     try {
@@ -568,6 +604,15 @@ export default function ScannerPage() {
   const ceilingBreakRows = useMemo(
     () => (isCeilingBreak ? buildCeilingBreakRows(results) : { results: [], upcoming: [], history: [] }),
     [results, isCeilingBreak]
+  );
+
+  // Type E/R/F — History tab. Results/Upcoming stay as resultsTable/
+  // upcomingTable above (unchanged); this only adds the flattened past-
+  // events list — see typeResultShape.js. No-op (empty array) whenever
+  // isTypeGroup is false, same guard pattern as the other rows above.
+  const typeHistoryRows = useMemo(
+    () => (isTypeGroup ? buildTypeHistoryRows(results) : []),
+    [results, isTypeGroup]
   );
 
   // Pinaka — reshape raw scan() results (signals[]/tag/side) into a flat
@@ -723,6 +768,10 @@ export default function ScannerPage() {
                 lastScan={comboScannedAt}
                 durationMs={status?.lastScanDurationMs}
                 onRowClick={(symbol) => openT5Chart(symbol, timeframe)}
+                lookbackDays={lookbackDays}
+                onLookbackDaysChange={setLookbackDays}
+                onScanRange={handleLookbackScan}
+                lookbackDisabled={isRunning || loading}
               />
             ) : isAbsorption ? (
               <AbsorptionScannerPanel
@@ -732,6 +781,10 @@ export default function ScannerPage() {
                 lastScan={comboScannedAt}
                 durationMs={status?.lastScanDurationMs}
                 onRowClick={(symbol) => openAbsorptionChart(symbol, timeframe)}
+                lookbackDays={lookbackDays}
+                onLookbackDaysChange={setLookbackDays}
+                onScanRange={handleLookbackScan}
+                lookbackDisabled={isRunning || loading}
               />
             ) : isCeilingBreak ? (
               <CeilingBreakScannerPanel
@@ -741,6 +794,10 @@ export default function ScannerPage() {
                 lastScan={comboScannedAt}
                 durationMs={status?.lastScanDurationMs}
                 onRowClick={(symbol) => openCeilingBreakChart(symbol, timeframe)}
+                lookbackDays={lookbackDays}
+                onLookbackDaysChange={setLookbackDays}
+                onScanRange={handleLookbackScan}
+                lookbackDisabled={isRunning || loading}
               />
             ) : isPinaka ? (
               <PinakaScannerPanel
@@ -750,10 +807,14 @@ export default function ScannerPage() {
                 lastScan={comboScannedAt}
                 durationMs={status?.lastScanDurationMs}
                 onRowClick={(symbol) => openPinakaChart(symbol, timeframe)}
+                lookbackDays={lookbackDays}
+                onLookbackDaysChange={setLookbackDays}
+                onScanRange={handleLookbackScan}
+                lookbackDisabled={isRunning || loading}
               />
             ) : isTypeGroup ? (
               <TypeScannerPanel
-                rows={{ results: resultsTable, upcoming: upcomingTable }}
+                rows={{ results: resultsTable, upcoming: upcomingTable, history: typeHistoryRows }}
                 counts={counts}
                 scannedCount={results.length}
                 resolution={tfLabel}
@@ -763,6 +824,10 @@ export default function ScannerPage() {
                 typeSubFilter={typeSubFilter}
                 onTypeSubFilterChange={setTypeSubFilter}
                 onRowClick={(symbol, mw) => openChart(symbol, timeframe, mw)}
+                lookbackDays={lookbackDays}
+                onLookbackDaysChange={setLookbackDays}
+                onScanRange={handleLookbackScan}
+                lookbackDisabled={isRunning || loading}
               />
             ) : (
               <S1S2S3ScannerPanel

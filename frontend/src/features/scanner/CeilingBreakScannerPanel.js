@@ -40,6 +40,7 @@ import * as XLSX from "xlsx";
 import { tickerOf, exchangeOf } from "../../utils/symbolMeta";
 import { fmt } from "../../utils/format";
 import { fmtTime } from "./mwScanHelpers";
+import HistoryLookbackFilter from "./HistoryLookbackFilter";
 import "./CeilingBreakScannerPanel.css";
 
 // Symbol search — same matching rule as AbsorptionScannerPanel.js:
@@ -258,6 +259,10 @@ export default function CeilingBreakScannerPanel({
   lastScan = null,
   durationMs = null,
   onRowClick = () => { },
+  lookbackDays,
+  onLookbackDaysChange = () => { },
+  onScanRange = () => { },
+  lookbackDisabled = false,
 }) {
   const [tab, setTab] = useState("results");
   const [query, setQuery] = useState("");
@@ -449,8 +454,14 @@ export default function CeilingBreakScannerPanel({
 
       {tab === "history" && (
         <div className="cbr-panel active">
-          <div className="cbr-subrow">
+          <div className="cbr-subrow scanner-history-subrow">
             <span className="cbr-sub">Same events, from earlier days &middot; kept, not deleted, just out of today's feed</span>
+            <HistoryLookbackFilter
+              value={lookbackDays}
+              onChange={onLookbackDaysChange}
+              onScan={onScanRange}
+              disabled={lookbackDisabled}
+            />
           </div>
           <HistoryTable
             rows={filteredHistory}
