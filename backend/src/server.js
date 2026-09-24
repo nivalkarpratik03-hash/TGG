@@ -8,12 +8,11 @@ const { getAuthURL, generateToken, validateToken: _validateToken } = require("./
 const { isLiveMarket, isTradingDay, isAnyMarketLive } = require("./fyers/tickStream");
 const symbolsRouter = require("./routes/symbolsRouter");
 const scannerRouter = require("./routes/scannerRouter");
-const backtestRouter = require("./routes/backtestRouter");
 const analyticsRouter = require("./routes/analyticsRouter");
-const paperTradingRouter = require("./routes/paperTradingRouter");
-const paperTradingConfig = require("./paperTrading/config");
-const { wireAutoEntry } = require("./paperTrading/autoEntryListener");
-const paperTradingEngine = require("./paperTrading/engine");
+// NEW — Data Export feature (homepage "Data Export" card): universal
+// symbol search + .xlsx candle download. See routes/dataExportRouter.js's
+// own header for exactly what it reuses vs. what's new.
+const dataExportRouter = require("./routes/dataExportRouter");
 const { detectMotherWaveForAPI } = require("./services/motherwave");
 const createChartRouter = require("./routes/chartRouter");
 const corsMiddleware = require("./middleware/cors");
@@ -31,7 +30,7 @@ const createTickEngine = require("./core/tickEngine");
 const createDataFetch = require("./core/dataFetch");
 const createCatchUp = require("./core/catchUp");
 const createWebSocket = require("./core/websocket");
-const { wireDbJobs, wireScannerAndBacktest } = require("./core/scheduler");
+const { wireDbJobs, wireScannerSymbols } = require("./core/scheduler");
 const symbolCheck = require("./core/symbolCheck");
 
 const app = express();
@@ -103,9 +102,8 @@ app.use(createChartRouter({
 
 app.use("/api/symbols", symbolsRouter);
 app.use("/api/scanner", scannerRouter);
-app.use("/api/backtest", backtestRouter);
 app.use("/api/analytics", analyticsRouter);
-app.use("/api/papertrading", paperTradingRouter);
+app.use("/api/data-export", dataExportRouter({ io }));
 
 // ─── Serve React Frontend ─────────────────────────────────────────────────────
 const FRONTEND_BUILD = path.join(__dirname, "../../frontend/build");
@@ -125,7 +123,7 @@ const PORT = parseInt(process.env.PORT || "5280");
 // 4. startTickWatchdog() — arms watchdog
 // 5. initialRestFetch() — pre-warms backend default (NIFTY50) candles
 // 6. Tick stream start (if market live)
-// 7. wireScannerAndBacktest()
+// 7. wireScannerSymbols()
 // 8. wireDbJobs() — DB health check → Staleness → GapFill → Validator/Recovery
 //    (last, deliberately — it's the slowest stage)
 // No fixed delay between stages — each `await` simply waits for the
@@ -158,26 +156,8 @@ server.listen(PORT, async () => {
   else if (isTradingDay()) { console.log("[INIT] Weekday outside market hours — REST data ready. Tick stream inactive."); }
   else { console.log("[INIT] Weekend/holiday — REST data loaded from last session. No tick stream."); }
 
-  // ── 7. Scanner + Backtest ─────────────────────────────────────────────────
-  wireScannerAndBacktest({ io });
-
-  // ── 7b. Paper Trading — global engine, wired to every strategy's signals ──
-  // Seed strategy_paper_config (disabled by default, fixed-point defaults —
-  // see paperTrading/config.js), subscribe Auto Entry to the scanner's
-  // existing signal_found event, and start the shared SL/Target/EOD monitor
-  // loop that every open trade (auto or manual) is checked against.
-  try {
-    await paperTradingConfig.ensureSeeded();
-    wireAutoEntry();
-    setInterval(() => {
-      paperTradingEngine.monitorOpenTrades().catch((err) =>
-        console.error("[PaperTrading] monitor loop error:", err.message)
-      );
-    }, 30 * 1000); // every 30s — well inside 1-minute candle granularity
-    console.log("[PaperTrading] Global paper trading engine online.");
-  } catch (err) {
-    console.error("[PaperTrading] Failed to initialize:", err.message);
-  }
+  // ── 7. Scanner symbol loading ─────────────────────────────────────────────
+  wireScannerSymbols({ io });
 
   // ── 8. DB: connect, health-check, wire every DB-dependent periodic job ────
   // (prune sweep, recoveryEngine emitter, periodicSync, GapFill scheduler,

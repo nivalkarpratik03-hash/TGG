@@ -39,6 +39,7 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { tickerOf } from "../../utils/symbolMeta";
 import { fmtTime } from "./mwScanHelpers";
+import HistoryLookbackFilter from "./HistoryLookbackFilter";
 import "./T5ScannerPanel.css";
 
 // Symbol search — matches against the raw symbol string and its clean
@@ -280,6 +281,10 @@ export default function T5ScannerPanel({
   lastScan = null,
   durationMs = null,
   onRowClick = () => { },
+  lookbackDays,
+  onLookbackDaysChange = () => { },
+  onScanRange = () => { },
+  lookbackDisabled = false,
 }) {
   const [tab, setTab] = useState("results");
 
@@ -487,10 +492,16 @@ export default function T5ScannerPanel({
 
       {tab === "history" && (
         <div className="t5-panel active">
-          <div className="t5-subrow">
+          <div className="t5-subrow scanner-history-subrow">
             <span className="t5-sub">
               Confirmed / cancelled / flipped closes from earlier days &mdash; kept, not deleted, just out of the live feed
             </span>
+            <HistoryLookbackFilter
+              value={lookbackDays}
+              onChange={onLookbackDaysChange}
+              onScan={onScanRange}
+              disabled={lookbackDisabled}
+            />
           </div>
           <div className="t5-table-wrap">
             <table className="t5-table t5-table-history">

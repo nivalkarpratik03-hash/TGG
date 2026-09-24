@@ -65,6 +65,25 @@
 //                 single value, so the branch is a strict if/else on
 //                 state.state, no double-counting possible.
 //
+//                 SORT ORDER (changed): every row, active or
+//                 fired_today, carries `ceilingBrokenAt` /
+//                 `ceilingBrokenAtMs` — the timestamp of the
+//                 CEILING_BROKEN event that started ITS sequence
+//                 (found by walking each symbol's full `events` array
+//                 forward and remembering the most recent
+//                 CEILING_BROKEN seen so far, so a symbol with
+//                 multiple past sequences still pairs each event with
+//                 the correct one — not just "the last CEILING_BROKEN
+//                 in the array"). Results is sorted purely by
+//                 `ceilingBrokenAtMs` descending — freshest ceiling
+//                 break first, full stop. Whether that sequence is
+//                 still Watching, still Retested, or has already
+//                 resolved (fired_today) plays NO role in ordering
+//                 anymore. Previously "active" rows had no time-based
+//                 order at all (encounter order only) and
+//                 "fired_today" rows sorted by their LAST retest-stage
+//                 event, not the original breakout — both fixed here.
+//
 //   - History   — every event from any EARLIER (non-today) IST day,
 //                 across every symbol, any type. Same
 //                 toISTDate/getTodayIST split flattenEvents() uses in
@@ -93,6 +112,27 @@
 
 import { toISTDate, getTodayIST, formatShortDateTimeIST } from "../../utils/istUtils";
 
+// ── pair every event with ITS sequence's CEILING_BROKEN time ───────────
+// Walks a symbol's full events array (chronological, oldest -> newest —
+// this is exactly the shape ceilingBreakRetest.js's scan() already
+// returns as result.events) and stamps each event with the time of the
+// most recent CEILING_BROKEN seen so far. This correctly handles a
+// symbol that has had several past breakout sequences: an event from
+// sequence #2 gets sequence #2's CEILING_BROKEN time, not sequence #1's
+// or "whatever the last CEILING_BROKEN in the array happens to be."
+// A CEILING_BROKEN event is paired with itself (its own time).
+function attachCeilingBrokenAt(events) {
+  let brokenTime = null;
+  let brokenTimeMs = 0;
+  return events.map((e) => {
+    if (e.type === "CEILING_BROKEN") {
+      brokenTime = e.time;
+      brokenTimeMs = e.time ? new Date(e.time).getTime() : 0;
+    }
+    return { ...e, ceilingBrokenAt: brokenTime, ceilingBrokenAtMs: brokenTimeMs };
+  });
+}
+
 // ── per-event row (shared shape for History and "fired_today" Results) ──
 function toEventRow(symbol, e) {
   return {
@@ -106,6 +146,11 @@ function toEventRow(symbol, e) {
     time: e.time,
     timeMs: e.time ? new Date(e.time).getTime() : 0,
     timeLabel: formatShortDateTimeIST(e.time),
+    // the sequence-level breakout time this event belongs to (see
+    // attachCeilingBrokenAt) — this, not `time`/`timeMs` above, is what
+    // Results is sorted by.
+    ceilingBrokenAt: e.ceilingBrokenAt != null ? e.ceilingBrokenAt : e.time,
+    ceilingBrokenAtMs: e.ceilingBrokenAtMs != null ? e.ceilingBrokenAtMs : (e.time ? new Date(e.time).getTime() : 0),
   };
 }
 
@@ -121,7 +166,8 @@ function splitTodayAndHistory(scanResults) {
 
   for (const r of scanResults || []) {
     if (!r || r.error || !Array.isArray(r.events) || r.events.length === 0) continue;
-    for (const e of r.events) {
+    const pairedEvents = attachCeilingBrokenAt(r.events);
+    for (const e of pairedEvents) {
       const row = toEventRow(r.symbol, e);
       if (e.time && toISTDate(e.time) === today) {
         const list = todayEventsBySymbol.get(r.symbol) || [];
@@ -143,9 +189,9 @@ function splitTodayAndHistory(scanResults) {
 // ── Results tab: "active" (watching/retested right now) rows ───────────
 function buildActiveRow(r, todayEventsForSymbol) {
   const s = r.state;
-  const latest = Array.isArray(r.events) && r.events.length
-    ? toEventRow(r.symbol, r.events[r.events.length - 1])
-    : null;
+  const pairedEvents = Array.isArray(r.events) ? attachCeilingBrokenAt(r.events) : [];
+  const lastPaired = pairedEvents.length ? pairedEvents[pairedEvents.length - 1] : null;
+  const latest = lastPaired ? toEventRow(r.symbol, lastPaired) : null;
   return {
     symbol: r.symbol,
     kind: "active",
@@ -156,6 +202,10 @@ function buildActiveRow(r, todayEventsForSymbol) {
     zoneLo: s.zoneLo != null ? s.zoneLo : null,
     latestEvent: latest,
     firedToday: todayEventsForSymbol && todayEventsForSymbol.length > 0,
+    // the current live sequence's own breakout time, not its latest
+    // retest-stage event's time — this is what Results sorts by.
+    ceilingBrokenAt: lastPaired ? lastPaired.ceilingBrokenAt : null,
+    ceilingBrokenAtMs: lastPaired ? lastPaired.ceilingBrokenAtMs : 0,
   };
 }
 
@@ -204,14 +254,16 @@ export function buildCeilingBreakRows(scanResults) {
     });
   }
 
-  // "active" rows first (live sequence, most actionable), then
-  // "fired_today" rows newest-first; stable sort keeps active rows'
-  // relative order (by symbol, as encountered) since they have no
-  // shared timeMs field to sort by.
+  // Sorted PURELY by ceilingBrokenAtMs, descending — the freshest
+  // ceiling break is always first, regardless of whether that sequence
+  // is still Watching, still Retested, or already resolved
+  // (fired_today). Symbol is a secondary tiebreaker only for
+  // deterministic output when two ceilings broke in the exact same
+  // millisecond (practically never, but keeps the sort well-defined).
   results.sort((a, b) => {
-    if (a.kind !== b.kind) return a.kind === "active" ? -1 : 1;
-    if (a.kind === "fired_today") return b.timeMs - a.timeMs;
-    return 0;
+    const diff = (b.ceilingBrokenAtMs || 0) - (a.ceilingBrokenAtMs || 0);
+    if (diff !== 0) return diff;
+    return a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0;
   });
   upcoming.sort((a, b) => a.distancePct - b.distancePct);
 

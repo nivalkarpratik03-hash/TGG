@@ -1,11 +1,7 @@
-/* StrategiesPage.css
-   Prefix: sp-  (strategies page)
-   Inherits all CSS vars from App.css / index.css — no overrides needed.
-*/
+/* ScannerPage.css — Redesigned with Motherwave + Strategy sections */
 
-/* ─── Shared shell ───────────────────────────────────────────────────────── */
-.sp-picker-page,
-.sp-dash-page {
+/* ─── Page shell ────────────────────────────────────────────────────────── */
+.scanner-page {
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -15,371 +11,8 @@
   overflow: hidden;
 }
 
-/* ─── Shared header elements ─────────────────────────────────────────────── */
-.sp-back-btn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  color: var(--text2);
-  padding: 4px 10px;
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-  font-family: inherit;
-  transition: color 0.15s, border-color 0.15s;
-}
-
-.sp-back-btn:hover {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-.sp-theme-btn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  color: var(--text2);
-  padding: 4px 8px;
-  font-size: 13px;
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.sp-theme-btn:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.sp-loading-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: sp-pulse 0.8s ease infinite;
-}
-
-@keyframes sp-pulse {
-
-  0%,
-  100% {
-    opacity: 1
-  }
-
-  50% {
-    opacity: 0.2
-  }
-}
-
-/* ─── Navbar strategy dropdown ────────────────────────────────────────────── */
-.sp-nav-dropdown-wrap {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 3px 8px 3px 10px;
-  cursor: pointer;
-  transition: border-color 0.15s;
-}
-
-.sp-nav-dropdown-wrap:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent);
-}
-
-.sp-nav-dropdown-icon {
-  font-size: 13px;
-  color: var(--accent);
-  flex-shrink: 0;
-}
-
-.sp-nav-select {
-  appearance: none;
-  -webkit-appearance: none;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: var(--text);
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  min-width: 140px;
-  max-width: 260px;
-}
-
-.sp-nav-select option {
-  background: var(--bg2);
-  color: var(--text);
-}
-
-.sp-nav-dropdown-caret {
-  font-size: 10px;
-  color: var(--text3);
-  flex-shrink: 0;
-  pointer-events: none;
-}
-
-/* ─── Picker header (updated layout) ─────────────────────────────────────── */
-.sp-picker-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 9px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg2);
-  flex-shrink: 0;
-}
-
-.sp-picker-title {
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  color: var(--text);
-}
-
-.sp-picker-header-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-left: auto;
-}
-
-.sp-picker-meta {
-  font-size: 11px;
-  color: var(--text3);
-}
-
-.sp-picker-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 32px 24px;
-}
-
-/* Hero */
-.sp-picker-hero {
-  display: flex;
-  align-items: flex-start;
-  gap: 20px;
-  margin-bottom: 36px;
-}
-
-.sp-picker-hero-icon {
-  font-size: 40px;
-  color: var(--accent);
-  opacity: 0.8;
-  flex-shrink: 0;
-  line-height: 1;
-  margin-top: 4px;
-}
-
-.sp-picker-hero-title {
-  font-size: 22px;
-  font-weight: 800;
-  letter-spacing: 0.5px;
-  color: var(--text);
-  margin: 0 0 6px;
-}
-
-.sp-picker-hero-sub {
-  font-size: 12px;
-  color: var(--text3);
-  line-height: 1.6;
-  max-width: 560px;
-  margin: 0;
-}
-
-/* Strategy card grid */
-.sp-picker-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 14px;
-}
-
-.sp-picker-card {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 18px 20px;
-  cursor: pointer;
-  text-align: left;
-  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
-  animation: sp-card-in 0.35s ease both;
-  font-family: inherit;
-}
-
-@keyframes sp-card-in {
-  from {
-    opacity: 0;
-    transform: translateY(16px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.sp-picker-card:hover {
-  border-color: var(--accent);
-  box-shadow: 0 4px 20px rgba(99, 102, 241, 0.18);
-  transform: translateY(-2px);
-}
-
-.sp-picker-card-icon {
-  font-size: 22px;
-  color: var(--accent);
-  flex-shrink: 0;
-  line-height: 1;
-}
-
-.sp-picker-card-body {
-  flex: 1;
-  min-width: 0;
-}
-
-.sp-picker-card-name {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text);
-  margin-bottom: 4px;
-  letter-spacing: 0.2px;
-}
-
-.sp-picker-card-desc {
-  font-size: 11px;
-  color: var(--text3);
-  line-height: 1.5;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sp-picker-card-arrow {
-  color: var(--text3);
-  flex-shrink: 0;
-  width: 18px;
-  height: 18px;
-  transition: color 0.15s, transform 0.15s;
-}
-
-.sp-picker-card:hover .sp-picker-card-arrow {
-  color: var(--accent);
-  transform: translateX(4px);
-}
-
-/* Empty state */
-.sp-picker-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 20px;
-  gap: 10px;
-  color: var(--text3);
-}
-
-.sp-picker-empty-icon {
-  font-size: 36px;
-}
-
-.sp-picker-empty-title {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--text2);
-}
-
-.sp-picker-empty-sub {
-  font-size: 12px;
-}
-
-.sp-picker-goto-scanner {
-  margin-top: 8px;
-  background: var(--accent);
-  border: none;
-  border-radius: 6px;
-  color: #fff;
-  padding: 8px 20px;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  font-family: inherit;
-}
-
-/* ─── Dropdown picker ──────────────────────────────────────────────────────── */
-.sp-picker-dropdown-wrap {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 32px 0 0;
-  max-width: 480px;
-}
-
-.sp-picker-dropdown-label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text3);
-}
-
-.sp-picker-dropdown-row {
-  position: relative;
-  width: 100%;
-}
-
-.sp-picker-select {
-  width: 100%;
-  appearance: none;
-  -webkit-appearance: none;
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  font-family: inherit;
-  font-size: 13px;
-  padding: 10px 40px 10px 14px;
-  cursor: pointer;
-  transition: border-color 0.15s, box-shadow 0.15s;
-  outline: none;
-}
-
-.sp-picker-select:hover,
-.sp-picker-select:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent);
-}
-
-.sp-picker-select option {
-  background: var(--bg2);
-  color: var(--text);
-}
-
-.sp-picker-dropdown-arrow {
-  position: absolute;
-  right: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--text3);
-  pointer-events: none;
-  display: flex;
-  align-items: center;
-}
-
-.sp-picker-dropdown-hint {
-  font-size: 11px;
-  color: var(--text3);
-  margin: 0;
-}
-
-
-.sp-dash-header {
+/* ─── Header ────────────────────────────────────────────────────────────── */
+.scanner-header {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -388,76 +21,132 @@
   background: var(--bg2);
   flex-shrink: 0;
   min-height: 48px;
-  overflow-x: auto;
   flex-wrap: nowrap;
+  overflow-x: auto;
 }
 
-.sp-dash-header-title-group {
-  display: flex;
-  align-items: center;
-  gap: 7px;
+.scanner-header-back {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text2);
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
   white-space: nowrap;
 }
 
-.sp-dash-header-icon {
-  font-size: 16px;
+.scanner-header-back:hover {
   color: var(--accent);
+  border-color: var(--accent);
 }
 
-.sp-dash-header-name {
+.scanner-header-title {
   font-size: 14px;
   font-weight: 700;
-  letter-spacing: 0.8px;
+  letter-spacing: 1.5px;
   color: var(--text);
+  white-space: nowrap;
   text-transform: uppercase;
 }
 
-.sp-dash-header-spacer {
+.scanner-header-spacer {
   flex: 1 1 auto;
 }
 
-/* TF group */
-.sp-tf-group {
+/* Symbol / category scope dropdown — NEW 2026-08-02 */
+.scanner-assetclass-group {
   display: flex;
-  gap: 2px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 2px;
   flex-shrink: 0;
 }
 
-.sp-tf-btn {
-  background: none;
-  border: none;
-  border-radius: 4px;
+.scanner-assetclass-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
   color: var(--text2);
-  padding: 3px 9px;
+  padding: 4px 8px;
   font-size: 11px;
   font-weight: 600;
+  letter-spacing: 0.3px;
   cursor: pointer;
-  font-family: inherit;
-  transition: background 0.12s, color 0.12s;
 }
 
-.sp-tf-btn:hover {
-  background: var(--bg2);
+.scanner-assetclass-select:hover:not(:disabled) {
   color: var(--text);
+  border-color: var(--accent);
 }
 
-.sp-tf-btn.active {
-  background: var(--accent);
-  color: #fff;
+.scanner-assetclass-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Instrument type scope dropdown — NEW 2026-08-03, gated by asset class */
+.scanner-instrumenttype-group {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.scanner-instrumenttype-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text2);
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+}
+
+.scanner-instrumenttype-select:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.scanner-instrumenttype-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Timeframe — NEW 2026-08-03: converted from a 7-button group to a single
+   dropdown, styled to match the other control-bar selects. */
+.scanner-tf-group {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.scanner-tf-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text2);
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+}
+
+.scanner-tf-select:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.scanner-tf-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* Search */
-.sp-search-wrap {
+.scanner-header-search-wrap {
   position: relative;
   display: flex;
   align-items: center;
 }
 
-.sp-search-icon {
+.scanner-search-icon {
   position: absolute;
   left: 8px;
   color: var(--text3);
@@ -465,24 +154,23 @@
   pointer-events: none;
 }
 
-.sp-search-input {
+.scanner-header-search {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
   padding: 5px 10px 5px 26px;
   font-size: 12px;
-  width: 150px;
+  width: 160px;
   outline: none;
-  font-family: inherit;
 }
 
-.sp-search-input:focus {
+.scanner-header-search:focus {
   border-color: var(--accent);
 }
 
 /* View toggle */
-.sp-view-toggle {
+.scanner-view-toggle {
   display: flex;
   gap: 2px;
   border: 1px solid var(--border);
@@ -491,48 +179,221 @@
   background: var(--bg);
 }
 
-.sp-view-btn {
+.scanner-view-btn {
   background: none;
   border: none;
   border-radius: 4px;
   color: var(--text2);
   padding: 4px 7px;
+  font-size: 14px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
+  line-height: 1;
 }
 
-.sp-view-btn:hover {
+.scanner-view-btn svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.scanner-view-btn:hover {
   color: var(--text);
 }
 
-.sp-view-btn.active {
+.scanner-view-btn.active {
   background: var(--accent);
   color: #fff;
 }
 
-/* Stats bar */
-.sp-stats-bar {
+/* ─── Page Nav (replaces flat tabs) ─────────────────────────────────────── */
+.scanner-page-nav-btn {
   display: flex;
-  gap: 1px;
-  background: var(--border);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-  overflow-x: auto;
+  align-items: center;
+  gap: 7px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text2);
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  letter-spacing: 0.2px;
+  transition: all 0.15s;
+  position: relative;
 }
 
-.sp-stat {
+.scanner-page-nav-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--bg3, var(--bg));
+}
+
+.scanner-page-nav-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.25);
+}
+
+.scanner-page-nav-icon {
+  font-size: 13px;
+  opacity: 0.8;
+  line-height: 1;
+}
+
+.scanner-page-nav-label {
+  line-height: 1;
+}
+
+.scanner-page-nav-arrow {
+  font-size: 16px;
+  font-weight: 300;
+  opacity: 0.7;
+  margin-left: 2px;
+}
+
+/* ─── Slide/page container ───────────────────────────────────────────────── */
+.scanner-pages-wrap {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: 7px 18px;
-  background: var(--bg2);
-  min-width: 78px;
-  flex: 1;
 }
 
-.sp-stat-label {
+/* Theme + status */
+.scanner-theme-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text2);
+  padding: 4px 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.scanner-theme-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.scanner-header-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text2);
+  white-space: nowrap;
+}
+
+.scanner-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text3);
+}
+
+.scanner-status-dot.running {
+  background: #22c55e;
+  box-shadow: 0 0 6px #22c55e;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+
+  0%,
+  100% {
+    opacity: 1
+  }
+
+  50% {
+    opacity: .4
+  }
+}
+
+.scanner-stop-btn {
+  background: #ef4444;
+  border: none;
+  border-radius: 5px;
+  color: #fff;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.scanner-trigger-btn {
+  background: var(--accent);
+  border: none;
+  border-radius: 5px;
+  color: #fff;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  letter-spacing: 0.4px;
+  transition: opacity 0.15s;
+}
+
+.scanner-trigger-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scanner-trigger-btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+/* ─── Progress bar ──────────────────────────────────────────────────────── */
+.scanner-progress-bar-wrap {
+  height: 2px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.scanner-progress-bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+
+/* ─── Stats row ─────────────────────────────────────────────────────────── */
+/* NEW — replaces the old page-wide `.scanner-stats-bar` (removed
+   entirely, see project notes). Every strategy panel (S1S2S3ScannerPanel,
+   TypeScannerPanel, T5ScannerPanel, AbsorptionScannerPanel) now bakes
+   its own stats row into itself instead of sharing one universal bar —
+   S1S2S3ScannerPanel.js and TypeScannerPanel.js use this
+   `.scanner-stats-row` + `.stat-chip` pair (imported from this file);
+   T5/Absorption use their own `.t5-stats`/`.af-stats` equivalents in
+   their own CSS files. Uptrend/Downtrend/No Valid MW (previously here)
+   are gone for good — Uptrend/Downtrend counts are still visible in the
+   Motherwave Dashboard section's own column headers below. */
+.scanner-stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.stat-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 8px 14px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 88px;
+}
+
+.stat-chip-label {
   font-size: 9px;
   color: var(--text3);
   text-transform: uppercase;
@@ -540,52 +401,64 @@
   margin-bottom: 2px;
 }
 
-.sp-stat-val {
+.stat-chip-val {
   font-size: 18px;
   font-weight: 700;
   color: var(--text);
   line-height: 1;
 }
 
-.sp-stat-val.accent {
+.stat-chip-val.accent {
   color: var(--accent);
 }
 
-.sp-stat-val.green {
+.stat-chip-val.green {
   color: #22c55e;
 }
 
-.sp-stat-val.orange {
+.stat-chip-val.orange {
   color: #f97316;
 }
 
-.sp-stat-val.red {
+.stat-chip-val.red {
   color: #ef4444;
 }
 
-/* Strategy description pill */
-.sp-strategy-desc {
-  font-size: 11px;
-  color: var(--text3);
-  padding: 6px 16px;
+/* ─── Control bar — NEW 2026-08-03 ──────────────────────────────────────── */
+/* Relocated here from .scanner-header: Asset Class → Strategy →
+   Instrument Type → Timeframe → Scan Now/Stop. Sits between the stats bar
+   and the Motherwave Dashboard section. */
+.scanner-control-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
   flex-shrink: 0;
+  min-height: 44px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
 }
 
-/* Body */
-.sp-dash-body {
+.scanner-control-bar-spacer {
+  flex: 1 1 auto;
+}
+
+/* ─── Scrollable body ───────────────────────────────────────────────────── */
+.scanner-body {
   flex: 1;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  animation: sp-slide-in 0.18s ease;
+  gap: 0;
+  animation: page-slide-in 0.18s ease;
 }
 
-@keyframes sp-slide-in {
+@keyframes page-slide-in {
   from {
     opacity: 0;
-    transform: translateX(14px);
+    transform: translateX(18px);
   }
 
   to {
@@ -594,12 +467,18 @@
   }
 }
 
-.sp-dash-section {
-  padding: 16px 16px 24px;
+/* ─── Section ───────────────────────────────────────────────────────────── */
+.scanner-section {
+  border-bottom: 2px solid var(--border);
+  padding: 16px 16px 20px;
+}
+
+.scanner-section:last-child {
+  border-bottom: none;
 }
 
 /* Section header */
-.sp-dash-section-header {
+.section-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -608,13 +487,13 @@
   flex-wrap: wrap;
 }
 
-.sp-dash-section-left {
+.section-header-left {
   display: flex;
   align-items: baseline;
   gap: 12px;
 }
 
-.sp-dash-section-title {
+.section-title {
   font-size: 13px;
   font-weight: 700;
   color: var(--text);
@@ -622,18 +501,53 @@
   text-transform: uppercase;
 }
 
-.sp-dash-section-sub {
+.section-sub {
   font-size: 11px;
   color: var(--text3);
 }
 
-/* MW direction filter */
-.sp-mw-dir-filter {
+.section-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ─── MW section header ─────────────────────────────────────────────────── */
+.mw-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mw-section-header-left {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.mw-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.mw-section-sub {
+  font-size: 11px;
+  color: var(--text3);
+}
+
+/* ─── MW direction filter ────────────────────────────────────────────────── */
+.mw-dir-filter {
   display: flex;
   gap: 4px;
 }
 
-.sp-mw-dir-btn {
+.mw-dir-btn {
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 5px;
@@ -642,23 +556,23 @@
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
-  font-family: inherit;
   transition: all 0.12s;
 }
 
-.sp-mw-dir-btn:hover {
+.mw-dir-btn:hover {
   border-color: var(--accent);
   color: var(--text);
 }
 
-.sp-mw-dir-btn.active {
+.mw-dir-btn.active {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
 }
 
-/* ─── Trend columns ───────────────────────────────────────────────────────── */
-.sp-trend-columns {
+/* ─── Trend columns layout ───────────────────────────────────────────────── */
+.mw-trend-columns,
+.scanner-trends {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
@@ -666,12 +580,14 @@
 }
 
 @media (max-width: 900px) {
-  .sp-trend-columns {
+
+  .mw-trend-columns,
+  .scanner-trends {
     grid-template-columns: 1fr;
   }
 }
 
-.sp-trend-col {
+.trend-column {
   border-radius: 8px;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -680,17 +596,17 @@
   max-height: 500px;
 }
 
-.sp-uptrend-col {
-  border-color: rgba(34, 197, 94, .25);
-  background: rgba(34, 197, 94, .03);
+.uptrend-col {
+  border-color: rgba(34, 197, 94, 0.25);
+  background: rgba(34, 197, 94, 0.03);
 }
 
-.sp-downtrend-col {
-  border-color: rgba(239, 68, 68, .25);
-  background: rgba(239, 68, 68, .03);
+.downtrend-col {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.03);
 }
 
-.sp-trend-col-header {
+.trend-col-header {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -700,26 +616,26 @@
   flex-shrink: 0;
 }
 
-.sp-trend-col-arrow {
+.trend-col-arrow {
   font-size: 12px;
 }
 
-.sp-uptrend-col .sp-trend-col-arrow {
+.uptrend-col .trend-col-arrow {
   color: #22c55e;
 }
 
-.sp-downtrend-col .sp-trend-col-arrow {
+.downtrend-col .trend-col-arrow {
   color: #ef4444;
 }
 
-.sp-trend-col-title {
+.trend-col-title {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 1px;
   color: var(--text);
 }
 
-.sp-trend-col-count {
+.trend-col-count {
   margin-left: auto;
   font-size: 10px;
   color: var(--text3);
@@ -729,7 +645,7 @@
   padding: 1px 8px;
 }
 
-.sp-trend-col-body {
+.trend-col-body {
   flex: 1;
   overflow-y: auto;
   padding: 8px;
@@ -738,7 +654,7 @@
   gap: 6px;
 }
 
-.sp-trend-col-empty {
+.trend-col-empty {
   padding: 24px;
   text-align: center;
   color: var(--text3);
@@ -746,7 +662,7 @@
 }
 
 /* ─── MWCard ──────────────────────────────────────────────────────────────── */
-.sp-mw-card {
+.mw-card {
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -755,63 +671,63 @@
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.sp-mw-card:hover {
+.mw-card:hover {
   border-color: var(--accent);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, .2);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
-.sp-mw-bull {
+.mw-card.mw-bull {
   border-left: 3px solid #22c55e;
 }
 
-.sp-mw-bear {
+.mw-card.mw-bear {
   border-left: 3px solid #ef4444;
 }
 
-.sp-mw-card-top {
+.mw-card-top {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   margin-bottom: 4px;
 }
 
-.sp-mw-card-sym {
+.mw-card-sym {
   display: flex;
   flex-direction: column;
   gap: 1px;
 }
 
-.sp-mw-card-ticker {
+.mw-card-ticker {
   font-size: 13px;
   font-weight: 700;
   color: var(--text);
 }
 
-.sp-mw-card-exch {
+.mw-card-exch {
   font-size: 9px;
   color: var(--text3);
 }
 
-.sp-mw-card-price {
+.mw-card-price {
   font-size: 16px;
   font-weight: 700;
   color: var(--text);
   margin: 2px 0;
 }
 
-.sp-mw-card-wave {
+.mw-card-wave {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-top: 4px;
 }
 
-.sp-mw-card-size {
+.mw-card-size {
   font-size: 10px;
   color: var(--text3);
 }
 
-.sp-mw-card-zone {
+.mw-card-zone {
   font-size: 10px;
   color: var(--text3);
   margin-top: 4px;
@@ -819,70 +735,169 @@
   padding-top: 4px;
 }
 
-/* ─── Wave dir + stage pill ───────────────────────────────────────────────── */
-.sp-wave-dir {
+/* ─── StockCard (strategy section) ──────────────────────────────────────── */
+.stock-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.stock-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.stock-card.bull {
+  border-left: 3px solid #22c55e;
+}
+
+.stock-card.bear {
+  border-left: 3px solid #ef4444;
+}
+
+.stock-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.stock-card-symbol {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.stock-card-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.stock-card-exchange {
+  font-size: 9px;
+  color: var(--text3);
+}
+
+.stock-card-price {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 2px 0;
+}
+
+.stock-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+
+.stock-card-zone {
+  font-size: 10px;
+  color: var(--text3);
+  margin-top: 4px;
+  display: flex;
+  gap: 6px;
+}
+
+.stock-card-zone-label {
+  color: var(--text3);
+}
+
+/* ─── Wave direction badges ──────────────────────────────────────────────── */
+.wave-dir {
   font-size: 11px;
   font-weight: 700;
 }
 
-.sp-wave-dir.bull {
+.wave-dir.bull {
   color: #22c55e;
 }
 
-.sp-wave-dir.bear {
+.wave-dir.bear {
   color: #ef4444;
 }
 
-.sp-stage-pill {
+/* ─── Stage pills ────────────────────────────────────────────────────────── */
+.stage-pill {
   display: inline-block;
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: .5px;
+  letter-spacing: 0.5px;
   padding: 2px 7px;
   border-radius: 3px;
   text-transform: uppercase;
 }
 
-.sp-stage-pill.s3 {
+.stage-pill.s3 {
   background: rgba(34, 197, 94, .18);
   color: #22c55e;
 }
 
-.sp-stage-pill.s2 {
+.stage-pill.s2 {
   background: rgba(249, 115, 22, .18);
   color: #f97316;
 }
 
-.sp-stage-pill.s1 {
+.stage-pill.s1 {
   background: rgba(99, 102, 241, .18);
   color: #818cf8;
 }
 
-.sp-stage-pill.mw {
+.stage-pill.mw {
   background: rgba(168, 85, 247, .18);
   color: #c084fc;
 }
 
-.sp-stage-pill.error {
+.stage-pill.error {
   background: rgba(239, 68, 68, .18);
   color: #f87171;
 }
 
-.sp-stage-pill.none {
+.stage-pill.none {
   background: var(--bg);
   color: var(--text3);
 }
 
-/* ─── Zone section ────────────────────────────────────────────────────────── */
-.sp-zone-section {
+/* ─── Zone badges ────────────────────────────────────────────────────────── */
+.zone-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.5px;
+}
+
+.zone-badge.zone-hot {
+  background: rgba(234, 179, 8, .2);
+  color: #facc15;
+}
+
+.zone-badge.zone-382 {
+  background: rgba(99, 102, 241, .2);
+  color: #818cf8;
+}
+
+.zone-badge.zone-trap {
+  background: var(--bg);
+  color: var(--text3);
+  border: 1px solid var(--border);
+}
+
+/* ─── Zone section ───────────────────────────────────────────────────────── */
+.zone-section {
   margin-top: 4px;
 }
 
-.sp-zone-section-title {
+.zone-section-title {
   font-size: 12px;
   font-weight: 700;
   color: var(--text);
-  letter-spacing: .5px;
+  letter-spacing: 0.5px;
   text-transform: uppercase;
   margin-bottom: 10px;
   display: flex;
@@ -890,7 +905,7 @@
   gap: 12px;
 }
 
-.sp-zone-section-sub {
+.zone-section-sub {
   font-size: 10px;
   color: var(--text3);
   font-weight: 400;
@@ -898,19 +913,22 @@
   letter-spacing: 0;
 }
 
-.sp-zone-trays {
+.zone-trays,
+.scanner-zone-trays {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
   gap: 10px;
 }
 
 @media (max-width: 900px) {
-  .sp-zone-trays {
+
+  .zone-trays,
+  .scanner-zone-trays {
     grid-template-columns: 1fr;
   }
 }
 
-.sp-zone-tray {
+.zone-tray {
   border-radius: 8px;
   border: 1px solid var(--border);
   overflow: hidden;
@@ -918,48 +936,88 @@
   flex-direction: column;
 }
 
-.sp-tray-trap {
-  border-color: rgba(148, 163, 184, .25);
+.tray-trap {
+  border-color: rgba(148, 163, 184, 0.25);
 }
 
-.sp-tray-382 {
-  border-color: rgba(99, 102, 241, .3);
+.tray-236 {
+  border-color: rgba(34, 211, 238, 0.3);
 }
 
-.sp-tray-618 {
-  border-color: rgba(234, 179, 8, .35);
+.tray-236 .zone-tray-title {
+  color: #22d3ee;
 }
 
-.sp-zone-tray-header {
+.tray-382 {
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.tray-500 {
+  border-color: rgba(168, 85, 247, 0.3);
+}
+
+.tray-500 .zone-tray-title {
+  color: #a855f7;
+}
+
+.tray-618 {
+  border-color: rgba(234, 179, 8, 0.35);
+}
+
+.tray-786 {
+  border-color: rgba(249, 115, 22, 0.35);
+}
+
+.tray-786 .zone-tray-title {
+  color: #f97316;
+}
+
+.tray-100 {
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.tray-100 .zone-tray-title {
+  color: #ef4444;
+}
+
+.tray-retracing {
+  border-color: rgba(100, 116, 139, 0.2);
+}
+
+.tray-retracing .zone-tray-title {
+  color: var(--text3);
+}
+
+.zone-tray-header {
   padding: 9px 12px;
   background: var(--bg2);
   border-bottom: 1px solid var(--border);
 }
 
-.sp-zone-tray-title {
+.zone-tray-title {
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: .8px;
+  letter-spacing: 0.8px;
   text-transform: uppercase;
-  margin-bottom: 2px;
   color: var(--text);
+  margin-bottom: 2px;
 }
 
-.sp-tray-618 .sp-zone-tray-title {
+.tray-618 .zone-tray-title {
   color: #facc15;
 }
 
-.sp-tray-382 .sp-zone-tray-title {
+.tray-382 .zone-tray-title {
   color: #818cf8;
 }
 
-.sp-zone-tray-sub {
+.zone-tray-sub {
   font-size: 9px;
   color: var(--text3);
   margin-bottom: 4px;
 }
 
-.sp-zone-tray-count {
+.zone-tray-count {
   display: inline-block;
   background: var(--accent);
   color: #fff;
@@ -971,20 +1029,20 @@
   text-align: center;
 }
 
-.sp-zone-tray-body {
+.zone-tray-body {
   flex: 1;
   overflow-y: auto;
   max-height: 260px;
 }
 
-.sp-zone-tray-empty {
+.zone-tray-empty {
   padding: 20px;
   text-align: center;
   color: var(--text3);
   font-size: 11px;
 }
 
-.sp-zone-tray-item {
+.zone-tray-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -994,39 +1052,86 @@
   transition: background 0.1s;
 }
 
-.sp-zone-tray-item:hover {
+.zone-tray-item:hover {
   background: var(--bg2);
 }
 
-.sp-zone-tray-item:last-child {
+.zone-tray-item:last-child {
   border-bottom: none;
 }
 
-.sp-zone-tray-item-left {
+.zone-tray-item-left {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
-.sp-zone-tray-item-right {
+.zone-tray-item-right {
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-.sp-zone-tray-sym {
+.zone-tray-sym {
   font-size: 12px;
   font-weight: 700;
   color: var(--text);
 }
 
-.sp-zone-tray-price {
+.zone-tray-price {
   font-size: 10px;
   color: var(--text2);
 }
 
-/* ─── Table controls ──────────────────────────────────────────────────────── */
-.sp-table-controls {
+/* ─── Strategy section ───────────────────────────────────────────────────── */
+.strat-section {
+  padding-top: 14px;
+}
+
+.scanner-strategy-tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  margin-bottom: 4px;
+}
+
+.scanner-strategy-tab {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px 6px 0 0;
+  color: var(--text2);
+  padding: 6px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  border-bottom: none;
+  transition: all 0.12s;
+}
+
+.scanner-strategy-tab:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.scanner-strategy-tab.active {
+  background: var(--bg2);
+  color: var(--accent);
+  border-color: var(--accent);
+  border-bottom: 2px solid var(--bg2);
+}
+
+.scanner-strategy-desc {
+  font-size: 11px;
+  color: var(--text3);
+  padding: 6px 0 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+
+/* ─── Controls bar ────────────────────────────────────────────────────────── */
+.scanner-controls {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1034,7 +1139,7 @@
   margin-bottom: 12px;
 }
 
-.sp-filter-btn {
+.scanner-filter-btn {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 5px;
@@ -1046,23 +1151,22 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-family: inherit;
   transition: all 0.12s;
 }
 
-.sp-filter-btn:hover {
+.scanner-filter-btn:hover {
   border-color: var(--accent);
   color: var(--text);
 }
 
-.sp-filter-btn.active {
+.scanner-filter-btn.active {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
 }
 
-.sp-count-badge {
-  background: rgba(255, 255, 255, .15);
+.scanner-count-badge {
+  background: rgba(255, 255, 255, 0.15);
   border-radius: 8px;
   padding: 1px 6px;
   font-size: 10px;
@@ -1070,48 +1174,83 @@
   text-align: center;
 }
 
-.sp-count-badge.green {
+.scanner-count-badge.green {
   background: rgba(34, 197, 94, .25);
 }
 
-.sp-count-badge.orange {
+.scanner-count-badge.orange {
   background: rgba(249, 115, 22, .25);
 }
 
-.sp-last-scan-label {
+.scanner-controls-spacer {
+  flex: 1;
+}
+
+.scanner-last-scan {
   font-size: 11px;
   color: var(--text3);
 }
 
-.sp-res-badge {
+.scanner-res-badge {
   background: var(--accent);
   color: #fff;
   font-size: 10px;
   font-weight: 700;
   border-radius: 4px;
   padding: 2px 8px;
-  letter-spacing: .5px;
+  letter-spacing: 0.5px;
 }
 
-/* ─── Table ───────────────────────────────────────────────────────────────── */
-.sp-table-wrap {
+/* ─── Dashboard inside strategy section ──────────────────────────────────── */
+.scanner-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.scanner-zones-section {
+  margin-top: 4px;
+}
+
+.scanner-zones-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.scanner-zones-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.scanner-zones-sub {
+  font-size: 10px;
+  color: var(--text3);
+}
+
+/* ─── Table view ─────────────────────────────────────────────────────────── */
+.scanner-table-wrap {
   overflow-x: auto;
   border-radius: 8px;
   border: 1px solid var(--border);
 }
 
-.sp-table {
+.scanner-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
 }
 
-.sp-table th {
+.scanner-table th {
   background: var(--bg2);
   color: var(--text2);
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: .5px;
+  letter-spacing: 0.5px;
   text-transform: uppercase;
   padding: 8px 12px;
   text-align: left;
@@ -1119,354 +1258,532 @@
   white-space: nowrap;
 }
 
-.sp-table td {
+.scanner-table td {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
 
-.sp-table tr:last-child td {
+.scanner-table tr:last-child td {
   border-bottom: none;
 }
 
-.sp-table-row {
-  cursor: pointer;
-  transition: background 0.1s;
-}
-
-.sp-table-row:hover td {
+.scanner-table tr:hover td {
   background: var(--bg2);
 }
 
-.sp-sym-cell {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--accent);
-}
-
-.sp-sym-exch {
-  font-size: 9px;
-  color: var(--text3);
-  margin-top: 1px;
-}
-
-.sp-price-cell {
+.scanner-table .price-cell {
   font-size: 11px;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
-.sp-price-cell.green {
+.scanner-table .price-cell.green {
   color: #22c55e;
 }
 
-.sp-price-cell.red {
+.scanner-table .price-cell.red {
   color: #ef4444;
 }
 
-/* ─── Empty state ─────────────────────────────────────────────────────────── */
-.sp-empty {
+.scanner-table-row {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.scanner-table-row:hover {
+  background: var(--bg2);
+}
+
+.scanner-table-row:hover .symbol-cell {
+  text-decoration: underline;
+}
+
+.symbol-cell {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.symbol-cell:hover {
+  text-decoration: underline;
+}
+
+
+.symbol-ticker {
+  font-size: 9px;
+  color: var(--text3);
+  margin-top: 1px;
+}
+
+/* ─── Empty state ────────────────────────────────────────────────────────── */
+.scanner-empty {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 48px 20px;
+  padding: 40px 20px;
   color: var(--text3);
   gap: 8px;
 }
 
-.sp-empty-icon {
+.scanner-empty-icon {
   font-size: 32px;
 }
 
-.sp-empty-title {
+.scanner-empty-title {
   font-size: 14px;
   font-weight: 700;
   color: var(--text2);
 }
 
-.sp-empty-sub {
+.scanner-empty-sub {
   font-size: 11px;
   text-align: center;
 }
 
-/* ─── Per-stock assignment dropdown ──────────────────────────────────────────── */
-.sp-assign-wrap {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-}
 
-.sp-assign-select {
-  appearance: none;
-  background: var(--bg2, #1e1e2e);
-  color: var(--text2, #aaa);
-  border: 1px solid var(--border, #333);
-  border-radius: 4px;
-  padding: 2px 6px;
-  font-size: 11px;
-  cursor: pointer;
-  outline: none;
-  min-width: 68px;
-}
-
-.sp-assign-select:hover {
-  border-color: var(--accent, #6c8fff);
-}
-
-.sp-assign-wrap.sp-assign-watch .sp-assign-select {
-  border-color: #6c8fff;
-  color: #6c8fff;
-}
-
-.sp-assign-wrap.sp-assign-s1 .sp-assign-select {
-  border-color: #f5c542;
-  color: #f5c542;
-}
-
-.sp-assign-wrap.sp-assign-s2 .sp-assign-select {
-  border-color: #f5a623;
-  color: #f5a623;
-}
-
-.sp-assign-wrap.sp-assign-s3 .sp-assign-select {
-  border-color: #4caf81;
-  color: #4caf81;
-}
-
-.sp-assign-wrap.sp-assign-skip .sp-assign-select {
-  border-color: #555;
-  color: #555;
-}
-
-/* MWCard assigned highlight */
-.sp-mw-card.sp-mw-assigned-watch {
-  box-shadow: 0 0 0 1.5px #6c8fff44;
-}
-
-.sp-mw-card.sp-mw-assigned-s1 {
-  box-shadow: 0 0 0 1.5px #f5c54244;
-}
-
-.sp-mw-card.sp-mw-assigned-s2 {
-  box-shadow: 0 0 0 1.5px #f5a62344;
-}
-
-.sp-mw-card.sp-mw-assigned-s3 {
-  box-shadow: 0 0 0 1.5px #4caf8144;
-}
-
-.sp-mw-card.sp-mw-assigned-skip {
-  opacity: 0.4;
-}
-
-/* ZoneTray assigned highlight */
-.sp-zone-tray-item.sp-zt-assigned-watch {
-  background: #6c8fff11;
-}
-
-.sp-zone-tray-item.sp-zt-assigned-s1 {
-  background: #f5c54211;
-}
-
-.sp-zone-tray-item.sp-zt-assigned-s2 {
-  background: #f5a62311;
-}
-
-.sp-zone-tray-item.sp-zt-assigned-s3 {
-  background: #4caf8111;
-}
-
-.sp-zone-tray-item.sp-zt-assigned-skip {
-  opacity: 0.4;
-}
-
-/* Watchlist view toggle button */
-.sp-view-watchlist-btn {
-  position: relative;
-  font-size: 14px;
-}
-
-.sp-wl-badge {
-  position: absolute;
-  top: -4px;
-  right: -6px;
-  background: var(--accent, #6c8fff);
-  color: #fff;
-  font-size: 9px;
-  font-weight: 700;
-  border-radius: 8px;
-  padding: 1px 4px;
-  pointer-events: none;
-}
-
-/* ─── Watchlist Panel ─────────────────────────────────────────────────────────── */
-.sp-wl-section {
-  padding: 16px;
-}
-
-.sp-wl-header {
+/* ─── Strategy dropdown ──────────────────────────────────────────────────── */
+.scanner-strategy-group {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 16px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--border, #333);
+  flex-shrink: 0;
 }
 
-.sp-wl-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text1, #eee);
-}
-
-.sp-wl-count {
-  font-size: 12px;
-  color: var(--accent, #6c8fff);
-  font-weight: 600;
-}
-
-.sp-wl-clear-btn {
-  margin-left: auto;
-  background: none;
-  border: 1px solid var(--border, #444);
-  color: var(--text3, #777);
-  border-radius: 4px;
-  padding: 3px 10px;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.sp-wl-clear-btn:hover {
-  border-color: #e55;
-  color: #e55;
-}
-
-.sp-wl-group {
-  margin-bottom: 20px;
-}
-
-.sp-wl-group-label {
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-bottom: 8px;
+.scanner-strategy-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text2);
   padding: 4px 8px;
-  border-radius: 4px;
-}
-
-.sp-wl-group-watch .sp-wl-group-label {
-  color: #6c8fff;
-  background: #6c8fff15;
-}
-
-.sp-wl-group-s1 .sp-wl-group-label {
-  color: #f5c542;
-  background: #f5c54215;
-}
-
-.sp-wl-group-s2 .sp-wl-group-label {
-  color: #f5a623;
-  background: #f5a62315;
-}
-
-.sp-wl-group-s3 .sp-wl-group-label {
-  color: #4caf81;
-  background: #4caf8115;
-}
-
-.sp-wl-group-cards {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.sp-wl-card {
-  background: var(--bg2, #1e1e2e);
-  border: 1px solid var(--border, #333);
-  border-radius: 7px;
-  padding: 10px 12px;
-  min-width: 140px;
-  max-width: 180px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
   cursor: pointer;
-  transition: border-color 0.15s;
+  max-width: 220px;
 }
 
-.sp-wl-card:hover {
-  border-color: var(--accent, #6c8fff);
+.scanner-strategy-select:hover {
+  color: var(--text);
+  border-color: var(--accent);
 }
 
-.sp-wl-card-top {
+/* ─── Results / Upcoming signals tables ──────────────────────────────────── */
+.scanner-signals-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 900px) {
+  .scanner-signals-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Main tabs (Results / Upcoming / History) — same pattern as
+   CeilingBreakScannerPanel.css's .cbr-tabs/.cbr-tab/.cbr-count, using
+   this file's own theme variables. ─────────────────────────────────── */
+.scanner-maintabs {
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 6px;
-  margin-bottom: 5px;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
 }
 
-.sp-wl-card-sym {
+.scanner-maintab {
+  background: none;
+  border: none;
+  color: var(--text2);
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 10px 16px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  font-family: inherit;
+}
+
+.scanner-maintab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.scanner-maintab-count {
+  color: var(--text3, var(--text2));
+  font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  margin-left: 5px;
+  font-size: 12px;
+}
+
+.scanner-maintab.active .scanner-maintab-count {
+  color: var(--accent);
+}
+
+.scanner-signals-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.scanner-signals-tab {
+  padding: 7px 18px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.scanner-signals-tab:hover {
+  background: var(--bg3, var(--bg2));
+}
+
+.scanner-signals-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* R/E/F sub-filter — sits beside Results/Upcoming, only shown when the
+   combined "Type E,R,F" strategy is active (see ScannerPage.js). Smaller
+   and pushed right so it doesn't compete visually with the primary
+   Results/Upcoming tabs. */
+.scanner-signals-typefilter {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+/* Pushes whatever comes after the tabs (+ typefilter, when present) to
+   the far right of the tabs row — currently just the search box, but
+   kept as its own flex-consuming wrapper so a future addition (e.g. a
+   download button) can sit beside it without re-plumbing the margins. */
+.scanner-signals-tabs-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* ── Download — PinakaScannerPanel.js, same visual pattern as
+   CeilingBreakScannerPanel.css's .cbr-download-btn. ─────────────────── */
+.scanner-download-btn {
+  align-self: center;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border2, var(--border));
+  border-radius: 5px;
+  background: var(--bg3);
+  color: var(--text2);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.scanner-download-btn:hover:not(:disabled) {
+  background: var(--bg2);
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.scanner-download-btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+/* ── Symbol search box — S1S2S3ScannerPanel.js / TypeScannerPanel.js ──── */
+.scanner-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg3);
+  border: 1px solid var(--border2, var(--border));
+  border-radius: 6px;
+  padding: 6px 10px;
+  width: 200px;
+}
+
+.scanner-search-icon {
+  flex-shrink: 0;
+  color: var(--text3);
+}
+
+.scanner-search input {
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  width: 100%;
+}
+
+.scanner-search input::placeholder {
+  color: var(--text3);
+}
+
+.scanner-search-clear {
+  background: none;
+  border: none;
+  color: var(--text3);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.scanner-search-clear:hover {
+  color: var(--text);
+}
+
+.scanner-signals-typefilter-btn {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.scanner-signals-typefilter-btn:hover {
+  background: var(--bg3, var(--bg2));
+}
+
+.scanner-signals-typefilter-btn.active {
+  background: var(--accent-soft, var(--accent));
+  border-color: var(--accent);
+  color: var(--accent-text, #fff);
+}
+
+.scanner-signals-col {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
   display: flex;
   flex-direction: column;
 }
 
-.sp-wl-card-ticker {
-  font-size: 13px;
+.scanner-signals-col-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  flex-shrink: 0;
+}
+
+.scanner-signals-col-title {
+  font-size: 12px;
   font-weight: 700;
-  color: var(--text1, #eee);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text);
 }
 
-.sp-wl-card-exch {
-  font-size: 9px;
-  color: var(--text3, #666);
-  margin-top: 1px;
+.scanner-signals-col-sub {
+  font-size: 10.5px;
+  color: var(--text3);
 }
 
-.sp-wl-card-row {
+.scanner-signals-empty {
+  padding: 20px 14px;
+  font-size: 12px;
+  color: var(--text3);
+  text-align: center;
+}
+
+/* Shows ALL rows (no server/client truncation) but keeps the panel a
+   fixed, ~10-row viewport — anything beyond that scrolls inside the
+   wrapper instead of pushing the rest of the page down. Header stays
+   pinned via position:sticky while scrolling. Row height budget below
+   (~38px/row) is sized for the two-line "✓ + timestamp" stage cells
+   used by both SignalsTable and TypeSignalsTable. */
+.scanner-signals-table-wrap {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 412px;
+  /* ~32px header + 10 * ~38px rows */
+}
+
+.scanner-signals-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.scanner-signals-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg2);
+  color: var(--text2);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.scanner-signals-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.scanner-signals-table tr:last-child td {
+  border-bottom: none;
+}
+
+.scanner-signals-row {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.scanner-signals-row:hover td {
+  background: var(--bg2);
+}
+
+.scanner-signals-sym {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.scanner-signals-flag {
+  text-align: center;
+  color: var(--text3);
+  font-weight: 700;
+}
+
+.scanner-signals-flag.on {
+  color: #22c55e;
+}
+
+.scanner-signals-mw {
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.scanner-signals-mw.bull {
+  color: #22c55e;
+}
+
+.scanner-signals-mw.bear {
+  color: #ef4444;
+}
+
+.scanner-signals-ts {
+  font-size: 10.5px;
+  color: var(--text3);
+  white-space: nowrap;
+}
+
+.scanner-signals-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  line-height: 1.2;
+}
+
+.scanner-signals-stage-check {
+  color: #22c55e;
+  font-weight: 700;
+}
+
+.scanner-signals-stage-ts {
+  font-size: 9.5px;
+  color: var(--text3);
+  white-space: nowrap;
+  font-weight: 400;
+}
+/* ─── History Lookback filter (shared) ──────────────────────────────────────
+   Used by HistoryLookbackFilter.js — the ONE dropdown + scoped "Scan this
+   range" button every strategy panel's History sub-header renders, instead
+   of five independent copies. See that file's header comment. */
+.scanner-history-subrow {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 4px;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
-.sp-wl-card-price {
+.scanner-lookback-wrap {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg2);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 5px 10px;
+  flex-shrink: 0;
+}
+
+.scanner-lookback-tag {
+  background: var(--accent);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 5px;
+  border-radius: 3px;
+  letter-spacing: 0.03em;
+}
+
+.scanner-lookback-label {
+  color: var(--text2);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.scanner-lookback-select {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-family: inherit;
   font-size: 12px;
-  color: var(--text1, #eee);
-  font-weight: 500;
+  font-weight: 700;
+  cursor: pointer;
 }
 
-.sp-wl-card-zone {
-  font-size: 10px;
-  color: var(--text3, #777);
-  margin-top: 3px;
+.scanner-lookback-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-.sp-wl-empty {
-  text-align: center;
-  padding: 48px 24px;
-  color: var(--text3, #666);
+.scanner-lookback-select option {
+  background: var(--bg2);
+  color: var(--text);
 }
 
-.sp-wl-empty-icon {
-  font-size: 32px;
-  margin-bottom: 12px;
+.scanner-lookback-scan-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  padding: 5px 11px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
 }
 
-.sp-wl-empty-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text2, #aaa);
-  margin-bottom: 8px;
-}
-
-.sp-wl-empty-sub {
-  font-size: 12px;
-  line-height: 1.6;
-  max-width: 360px;
-  margin: 0 auto;
-}
-
-/* Stats bar watchlist chip */
-.sp-stat .sp-stat-val.accent {
-  color: var(--accent, #6c8fff);
+.scanner-lookback-scan-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

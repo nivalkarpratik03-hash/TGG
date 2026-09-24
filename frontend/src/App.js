@@ -4,12 +4,10 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import HomePage from "./features/home/HomePage";
 import ChartsPage from "./features/charts/ChartsPage";
 import ReportsPage from "./features/reports/ReportsPage";
-import FibDashboardPage from "./features/fib-dashboard/FibDashboardPage";
 import ScannerPage from "./features/scanner/ScannerPage";
-import BacktestPage from "./features/backtest/BacktestPage";
 import AdminPage from "./features/admin/AdminPage";
 import AnalyticsPage from "./features/analytics/AnalyticsPage";
-import PaperTradingPage from "./features/paper-trading/PaperTradingPage";
+import DataExportPage from "./features/data-export/DataExportPage";
 import ErrorBoundary from "./shared/components/ErrorBoundary";
 import { loadPref, savePref } from "./utils/prefs";
 import "./styles/App.css";
@@ -43,11 +41,9 @@ export default function App() {
           <Route path="/" element={<ErrorBoundary label="Home"><HomePage /></ErrorBoundary>} />
           <Route path="/charts" element={<ErrorBoundary label="Charts"><ChartsPage /></ErrorBoundary>} />
           <Route path="/reports" element={<ErrorBoundary label="Reports"><ReportsPage /></ErrorBoundary>} />
-          <Route path="/fib-dashboard" element={<ErrorBoundary label="Fib Dashboard"><FibDashboardPage /></ErrorBoundary>} />
           <Route path="/scanner" element={<ErrorBoundary label="Scanner"><ScannerPage /></ErrorBoundary>} />
-          <Route path="/backtest" element={<ErrorBoundary label="Backtest"><BacktestPage /></ErrorBoundary>} />
           <Route path="/analytics" element={<ErrorBoundary label="Analytics"><AnalyticsPage /></ErrorBoundary>} />
-          <Route path="/paper-trading" element={<ErrorBoundary label="Paper Trading"><PaperTradingPage /></ErrorBoundary>} />
+          <Route path="/data-export" element={<ErrorBoundary label="Data Export"><DataExportPage /></ErrorBoundary>} />
           <Route path="/admin" element={<ErrorBoundary label="Admin"><AdminPage /></ErrorBoundary>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

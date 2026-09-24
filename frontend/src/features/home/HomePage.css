@@ -235,6 +235,17 @@
   background: var(--yellow);
 }
 
+/* NEW — Data Export card's token-status color (red = invalid token, grey =
+   still checking on first load). Same pattern as the green/yellow blocks
+   above, just two more color values, not a new styling approach. */
+.home-card--red::before {
+  background: var(--red);
+}
+
+.home-card--grey::before {
+  background: var(--text3);
+}
+
 .home-card:hover {
   border-color: var(--border2);
   background: var(--bg3);
@@ -270,6 +281,14 @@
   color: var(--yellow);
 }
 
+.home-card--red .home-card-icon {
+  color: var(--red);
+}
+
+.home-card--grey .home-card-icon {
+  color: var(--text3);
+}
+
 .home-card-tag {
   font-size: 9px;
   font-family: var(--font-mono);
@@ -290,6 +309,18 @@
   color: var(--yellow);
   background: var(--yellow-dim);
   border-color: rgba(255, 193, 53, 0.3);
+}
+
+.home-card-tag--red {
+  color: var(--red);
+  background: var(--red-dim);
+  border-color: rgba(255, 69, 96, 0.3);
+}
+
+.home-card-tag--grey {
+  color: var(--text3);
+  background: var(--bg3);
+  border-color: var(--border2);
 }
 
 .home-card-body {
@@ -341,6 +372,14 @@
 
 .home-card--yellow .home-card-stat-dot {
   background: var(--yellow);
+}
+
+.home-card--red .home-card-stat-dot {
+  background: var(--red);
+}
+
+.home-card--grey .home-card-stat-dot {
+  background: var(--text3);
 }
 
 .home-card-arrow {
