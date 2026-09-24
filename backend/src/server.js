@@ -10,6 +10,10 @@ const symbolsRouter = require("./routes/symbolsRouter");
 const scannerRouter = require("./routes/scannerRouter");
 const backtestRouter = require("./routes/backtestRouter");
 const analyticsRouter = require("./routes/analyticsRouter");
+const paperTradingRouter = require("./routes/paperTradingRouter");
+const paperTradingConfig = require("./paperTrading/config");
+const { wireAutoEntry } = require("./paperTrading/autoEntryListener");
+const paperTradingEngine = require("./paperTrading/engine");
 const { detectMotherWaveForAPI } = require("./services/motherwave");
 const createChartRouter = require("./routes/chartRouter");
 const corsMiddleware = require("./middleware/cors");
@@ -101,6 +105,7 @@ app.use("/api/symbols", symbolsRouter);
 app.use("/api/scanner", scannerRouter);
 app.use("/api/backtest", backtestRouter);
 app.use("/api/analytics", analyticsRouter);
+app.use("/api/papertrading", paperTradingRouter);
 
 // ─── Serve React Frontend ─────────────────────────────────────────────────────
 const FRONTEND_BUILD = path.join(__dirname, "../../frontend/build");
@@ -155,6 +160,24 @@ server.listen(PORT, async () => {
 
   // ── 7. Scanner + Backtest ─────────────────────────────────────────────────
   wireScannerAndBacktest({ io });
+
+  // ── 7b. Paper Trading — global engine, wired to every strategy's signals ──
+  // Seed strategy_paper_config (disabled by default, fixed-point defaults —
+  // see paperTrading/config.js), subscribe Auto Entry to the scanner's
+  // existing signal_found event, and start the shared SL/Target/EOD monitor
+  // loop that every open trade (auto or manual) is checked against.
+  try {
+    await paperTradingConfig.ensureSeeded();
+    wireAutoEntry();
+    setInterval(() => {
+      paperTradingEngine.monitorOpenTrades().catch((err) =>
+        console.error("[PaperTrading] monitor loop error:", err.message)
+      );
+    }, 30 * 1000); // every 30s — well inside 1-minute candle granularity
+    console.log("[PaperTrading] Global paper trading engine online.");
+  } catch (err) {
+    console.error("[PaperTrading] Failed to initialize:", err.message);
+  }
 
   // ── 8. DB: connect, health-check, wire every DB-dependent periodic job ────
   // (prune sweep, recoveryEngine emitter, periodicSync, GapFill scheduler,

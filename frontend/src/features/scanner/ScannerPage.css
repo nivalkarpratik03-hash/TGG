@@ -1430,6 +1430,32 @@
   margin-left: auto;
 }
 
+/* ── Download — PinakaScannerPanel.js, same visual pattern as
+   CeilingBreakScannerPanel.css's .cbr-download-btn. ─────────────────── */
+.scanner-download-btn {
+  align-self: center;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border2, var(--border));
+  border-radius: 5px;
+  background: var(--bg3);
+  color: var(--text2);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.scanner-download-btn:hover:not(:disabled) {
+  background: var(--bg2);
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.scanner-download-btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
 /* ── Symbol search box — S1S2S3ScannerPanel.js / TypeScannerPanel.js ──── */
 .scanner-search {
   display: flex;
