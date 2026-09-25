@@ -146,6 +146,11 @@ export default function DataExportPage() {
   // buildDownloadUrl, below, needs it in scope — declaring it after that
   // point caused "Cannot access 'includeOI' before initialization".
   const [includeOI, setIncludeOI] = useState(false);
+  // IV needs a strike price to mean anything (Black-Scholes requires
+  // one) — futures have no strike, so unlike includeOI this is scoped
+  // to segment === "option" ONLY, never "future". Declared here for the
+  // same reason includeOI is — buildDownloadUrl below needs it in scope.
+  const [includeIV, setIncludeIV] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
@@ -283,8 +288,20 @@ export default function DataExportPage() {
     // Only ever sent for derivatives — see includeOI's own declaration
     // comment for why spot never gets this param.
     if (includeOI && (segment === "future" || segment === "option")) params.set("includeOI", "true");
+    // IV only for options — see includeIV's own declaration comment.
+    // entry.underlying/strike/expiryDate/optionType come straight from
+    // the search-result object handleSelect() already stored — no
+    // parsing of the raw symbol string needed (see dataExportRouter.js's
+    // /download route doc comment for why that would've been fragile).
+    if (includeIV && segment === "option" && entry.underlying && entry.strike && entry.expiryDate && entry.optionType) {
+      params.set("includeIV", "true");
+      params.set("underlying", entry.underlying);
+      params.set("strike", entry.strike);
+      params.set("expiryDate", entry.expiryDate);
+      params.set("optionType", entry.optionType);
+    }
     return `${BACKEND}/api/data-export/download?${params.toString()}`;
-  }, [fromDate, toDate, timeframe, includeOI, segment]);
+  }, [fromDate, toDate, timeframe, includeOI, includeIV, segment]);
 
   const [multiRunning, setMultiRunning] = useState(false);
   const [multiProgress, setMultiProgress] = useState(null); // {done,total,symbol}
@@ -447,8 +464,9 @@ export default function DataExportPage() {
     if (bulkExpiry) params.set("expiryDate", bulkExpiry);
     if (socketId) params.set("socketId", socketId);
     if (includeOI) params.set("includeOI", "true");
+    if (includeIV) params.set("includeIV", "true");
     return `${BACKEND}/api/data-export/bulk-options?${params.toString()}`;
-  }, [bulkUnderlying, strikeMode, fromDate, toDate, timeframe, optCE, optPE, bulkEntry, atmWidth, atmBandDefault, strikesText, bulkExpiry, socketId, includeOI]);
+  }, [bulkUnderlying, strikeMode, fromDate, toDate, timeframe, optCE, optPE, bulkEntry, atmWidth, atmBandDefault, strikesText, bulkExpiry, socketId, includeOI, includeIV]);
 
   // Same fetch()-first approach as triggerMultiDownload above (see the
   // module-level comment on triggerBlobDownload): only ever hand the
@@ -725,20 +743,31 @@ export default function DataExportPage() {
             )}
           </fieldset>
 
-          {/* ── Include OI ───────────────────────────────────────────
-              Only meaningful for derivatives — see includeOI's own
-              declaration comment. Placed outside the segment/mode
-              conditionals above since it applies the same way whether
-              you're in single-contract or bulk mode. */}
+          {/* ── Include OI / Include IV ──────────────────────────────
+              OI applies to both derivatives (future + option) — see
+              includeOI's declaration comment. IV only applies to
+              options (needs a strike price for Black-Scholes) — see
+              includeIV's declaration comment, so it's the one checkbox
+              here gated tighter than the fieldset itself. Both placed
+              outside the segment/mode conditionals above since they
+              apply the same way whether you're in single-contract or
+              bulk mode. */}
           {(segment === "future" || segment === "option") && (
             <fieldset>
               <div className="de-checkbox-row">
                 <label className="de-checkbox">
                   <input type="checkbox" checked={includeOI} onChange={(e) => setIncludeOI(e.target.checked)} /> Include OI
                 </label>
+                {segment === "option" && (
+                  <label className="de-checkbox">
+                    <input type="checkbox" checked={includeIV} onChange={(e) => setIncludeIV(e.target.checked)} /> Include IV
+                  </label>
+                )}
               </div>
               <div className="de-info-note">
-                Adds an Open Interest column, sourced live from Fyers per candle.
+                {segment === "option"
+                  ? "OI is sourced live from Fyers per candle. IV is calculated (Black-Scholes) from each candle's own price — Fyers doesn't provide IV directly, and no broker does; every IV figure anywhere is computed this same way."
+                  : "Adds an Open Interest column, sourced live from Fyers per candle."}
               </div>
             </fieldset>
           )}

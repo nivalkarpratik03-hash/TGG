@@ -209,9 +209,27 @@ function loadStockSpotSymbols() {
   return equities.map((e) => ({ name: e.name, symbol: e.symbol }));
 }
 
+/**
+ * Finds the curated entry for `underlying` (optionally scoped to
+ * `exchange`). Moved here from bulkOptionFetch.js (2026-09-24, IV
+ * feature) — this is the natural single home for it alongside
+ * loadCuratedUnderlyings() itself, and dataExportRouter.js's single-
+ * symbol IV path needs the exact same lookup bulkOptionFetch.js already
+ * had, so a second private copy would have been duplicated logic.
+ */
+function findCuratedEntry(underlying, exchange) {
+  const { all } = loadCuratedUnderlyings();
+  const wanted = (underlying || "").toUpperCase();
+  const wantedExchange = exchange ? exchange.toUpperCase() : null;
+  return all.find(
+    (e) => e.underlying.toUpperCase() === wanted && (!wantedExchange || e.exchange === wantedExchange)
+  );
+}
+
 module.exports = {
   loadCuratedUnderlyings,
   loadEquityUnderlyings,
   loadIndexSpotSymbols,
   loadStockSpotSymbols,
+  findCuratedEntry,
 };

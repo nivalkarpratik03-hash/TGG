@@ -36,21 +36,15 @@
 "use strict";
 
 const { fetchOptionChain } = require("../fyers/client");
-const { loadCuratedUnderlyings } = require("../derivatives/curatedUnderlyingsLoader");
+const { loadCuratedUnderlyings, findCuratedEntry } = require("../derivatives/curatedUnderlyingsLoader");
 const { resolveChainLookupSymbol, deriveStrikeGap, INTER_STRIKE_DELAY_MS } = require("../derivatives/derivativesGapFill");
 const { fetchCandleRows } = require("./candleExport");
+const { fetchUnderlyingSpotMap, attachIV } = require("./ivEnrichment");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Finds the curated entry for `underlying` (optionally scoped to `exchange`). */
-function findCuratedEntry(underlying, exchange) {
-  const { all } = loadCuratedUnderlyings();
-  const wanted = (underlying || "").toUpperCase();
-  const wantedExchange = exchange ? exchange.toUpperCase() : null;
-  return all.find(
-    (e) => e.underlying.toUpperCase() === wanted && (!wantedExchange || e.exchange === wantedExchange)
-  );
-}
+// findCuratedEntry() moved to derivatives/curatedUnderlyingsLoader.js
+// (2026-09-24, IV feature) — imported above, single shared copy.
 
 /** Sorted, de-duplicated strike prices from a fetchOptionChain strikes[] array. */
 function uniqueSortedStrikes(strikes) {
@@ -79,6 +73,7 @@ async function runBulkOptionFetch(params) {
     underlying, exchange, mode, atmWidth, strikes: requestedStrikes,
     optionTypes = ["CE", "PE"], expiryDate, from, to, timeframe = "1day",
     includeOI = false,
+    includeIV = false,
     onProgress,
   } = params;
 
@@ -178,11 +173,25 @@ async function runBulkOptionFetch(params) {
   let minActualDate = null;
   let maxActualDate = null;
 
+  // IV needs the underlying's own spot price series — fetched ONCE here
+  // (not once per contract below) since every strike/expiry in this
+  // request shares the same underlying. lookupSymbol is the same symbol
+  // already used for the option-chain lookup above (indices/equities:
+  // real spot; commodities: near-month future, the standard reference
+  // price used for commodity option IV — see ivEnrichment.js's header).
+  const spotMap = includeIV ? await fetchUnderlyingSpotMap(lookupSymbol, from, timeframe) : null;
+  const expiryEpochSeconds = Number(targetExpiry.expiry) || undefined;
+
   for (let i = 0; i < contracts.length; i++) {
     const c = contracts[i];
     try {
       const { rows: candleRows } = await fetchCandleRows(c.symbol, from, timeframe, includeOI);
-      const trimmed = to ? candleRows.filter((r) => r.Date <= to) : candleRows;
+      let trimmed = to ? candleRows.filter((r) => r.Date <= to) : candleRows;
+      if (includeIV && spotMap) {
+        trimmed = attachIV(trimmed, spotMap, {
+          strike: c.strike_price, optionType: c.option_type, expiryEpochSeconds,
+        });
+      }
 
       if (trimmed.length === 0) {
         skipped.push({ symbol: c.symbol, strike: c.strike_price, reason: "no candles in the requested date range" });
@@ -201,6 +210,7 @@ async function runBulkOptionFetch(params) {
             Close: r.Close,
             Volume: r.Volume,
             ...(includeOI ? { OI: r.OI } : {}),
+            ...(includeIV ? { IV: r.IV } : {}),
             "Steps from ATM": strikeGap ? Math.round((c.strike_price - atmStrike) / strikeGap) : "",
           });
         }
