@@ -107,7 +107,7 @@ router.get("/run", async (req, res) => {
       candlesBySymbol[symbol] = raw && raw.length && isLastCandleForming(raw) ? raw.slice(0, -1) : raw;
     }
 
-    const result = runAnalytics({ strategy, candlesBySymbol, params, filters });
+    const result = await runAnalytics({ strategy, candlesBySymbol, params, filters });
     if (Object.keys(fetchErrors).length > 0) {
       result.fetchErrors = fetchErrors; // surfaced, not hidden — some symbols may be missing from the run
     }

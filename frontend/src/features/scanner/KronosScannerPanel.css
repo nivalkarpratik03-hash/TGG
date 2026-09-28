@@ -1,0 +1,110 @@
+/* KronosScannerPanel.css
+   ─────────────────────────────────────────────────────────────────
+   Only the visual elements genuinely NEW to this panel — direction
+   pill, confidence bar, predicted-close coloring, horizon tag. Every
+   other class (scanner-signals-tabs, scanner-signals-table-wrap,
+   scanner-search, scanner-download-btn, stat-chip, etc.) is reused
+   as-is from ScannerPage.css, per the "don't duplicate existing
+   logic/styling" rule this whole feature was built under.
+   ───────────────────────────────────────────────────────────────── */
+
+.kp-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kp-note {
+  font-size: 11px;
+  color: var(--text3, #4a5068);
+  line-height: 1.5;
+  padding: 0 2px;
+}
+
+.kp-conf-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg2, #111318);
+  border: 1px solid var(--border, #1e2230);
+  border-radius: 6px;
+  padding: 5px 12px;
+  color: var(--text2, #7a8099);
+  font-size: 12px;
+}
+.kp-conf-filter input[type="range"] {
+  accent-color: var(--accent, #7c5cfc);
+}
+.kp-conf-filter b {
+  color: var(--accent, #7c5cfc);
+  min-width: 32px;
+  display: inline-block;
+}
+
+.kp-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.kp-table thead th {
+  text-align: left;
+  padding: 8px 12px;
+  color: var(--text3, #4a5068);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-bottom: 1px solid var(--border, #1e2230);
+  white-space: nowrap;
+}
+.kp-table tbody td {
+  padding: 10px 12px;
+  white-space: nowrap;
+}
+
+.kp-dir-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 4px;
+  font-weight: 700;
+  font-size: 11.5px;
+}
+.kp-dir-up { color: var(--green, #22c55e); border: 1px solid var(--green, #22c55e); background: rgba(34,197,94,0.08); }
+.kp-dir-down { color: var(--red, #ef4444); border: 1px solid var(--red, #ef4444); background: rgba(239,68,68,0.08); }
+.kp-dir-neutral { color: var(--text2, #7a8099); border: 1px solid var(--text3, #4a5068); background: rgba(122,128,153,0.08); }
+
+.kp-conf-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.kp-conf-bar-track {
+  width: 60px;
+  height: 5px;
+  background: var(--bg3, #181b22);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.kp-conf-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+}
+.kp-conf-num {
+  font-weight: 700;
+  font-size: 12px;
+  min-width: 42px;
+}
+
+.kp-close {
+  color: var(--text2, #7a8099);
+}
+.kp-pred-close.kp-pred-up { color: var(--green, #22c55e); }
+.kp-pred-close.kp-pred-down { color: var(--red, #ef4444); }
+
+.kp-horizon-tag {
+  color: var(--text2, #7a8099);
+  font-size: 11px;
+  background: var(--bg3, #181b22);
+  border-radius: 4px;
+  padding: 2px 7px;
+}

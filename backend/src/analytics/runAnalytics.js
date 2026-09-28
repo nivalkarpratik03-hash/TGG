@@ -52,7 +52,13 @@ function istDowOf(ms) {
 // the caller's responsibility, same guarantee absorptionFlip.js's own
 // isLastCandleForming() already provides for LIVE scanning; for historical
 // analytics every candle supplied should already be closed by definition.
-function runAnalytics({ strategy, candlesBySymbol, params = {}, filters = {} }) {
+// async (2026-09-26, Kronos integration) — same reasoning as
+// scannerRunner.js's _runOneStrategy(): every strategy before Kronos was
+// synchronous, Kronos calls an external HTTP service. Awaiting a plain
+// return value resolves immediately, so this is a no-op for every
+// existing strategy. This function's only caller, analyticsRouter.js's
+// /run route, is already an async handler — updated to await this too.
+async function runAnalytics({ strategy, candlesBySymbol, params = {}, filters = {} }) {
   if (!strategy || !strategy.id || typeof strategy.scan !== "function") {
     return { error: "invalid_strategy" };
   }
@@ -75,7 +81,7 @@ function runAnalytics({ strategy, candlesBySymbol, params = {}, filters = {} }) 
 
     let scanResult;
     try {
-      scanResult = strategy.scan(symbol, candles);
+      scanResult = await strategy.scan(symbol, candles);
     } catch (e) {
       skipped.scanError++;
       continue;

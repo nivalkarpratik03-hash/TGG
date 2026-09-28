@@ -147,7 +147,7 @@ async function main() {
   console.log(`\n[6] Strategy results:`);
   for (const strat of strategies) {
     try {
-      const result = strat.scan(symbol, candles, context);
+      const result = await strat.scan(symbol, candles, context);
       const extra = result.events ? `events=${result.events.length}` : "";
       console.log(`    ${strat.id.padEnd(10)} found=${String(result.found).padEnd(6)} stage=${(result.patternStage || "").padEnd(14)} ${extra} error=${result.error || "none"}`);
     } catch (err) {

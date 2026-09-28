@@ -12,7 +12,15 @@
  *   id          {string}  — unique key e.g. "s1s2s3"
  *   name        {string}  — display name
  *   description {string}  — one-liner shown in UI
- *   scan        {fn}      — (symbol, candles) => ScanResult
+ *   scan        {fn}      — (symbol, candles) => ScanResult, OR
+ *                           async (symbol, candles) => ScanResult. Every
+ *                           call site (scannerRunner.js, runAnalytics.js,
+ *                           diagnoseScanner.js) awaits this — added
+ *                           2026-09-26 for Kronos, which calls an
+ *                           external HTTP service. Backward compatible:
+ *                           every synchronous strategy's plain return
+ *                           value still works unchanged, awaiting a
+ *                           non-Promise just resolves it immediately.
  *
  * ScanResult shape (minimum required fields):
  *   { symbol, found: bool, patternStage: string, error: string|null, scannedAt: ISO }
@@ -68,6 +76,15 @@ const strategies = [
   // file. This is the single source of truth for A1/A2/B/B2 everywhere
   // in the project — do not inline a second copy here.
   require("./pinaka"),
+
+  // ── Kronos — AI forecast (research/backtest mode) ───────────────────────
+  // The only async strategy in this registry — calls the standalone
+  // Kronos FastAPI service (kronos-service/, Chunk 2) over HTTP, not pure
+  // in-process pattern-matching like everything above. Requires
+  // scannerRunner.js's _runOneStrategy() to be async (already is, see
+  // that file's own comment) — do not add another async strategy without
+  // re-confirming that's still awaited correctly.
+  require("./kronosDirection"),
 
   // ── Add new strategies below ──────────────────────────────────
   // require("./breakoutStrategy"),
