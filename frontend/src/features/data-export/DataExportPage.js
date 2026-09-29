@@ -373,8 +373,10 @@ export default function DataExportPage() {
   const [bulkUnderlying, setBulkUnderlying] = useState("");
   const [bulkQuery, setBulkQuery] = useState("");
   const [bulkDropdownOpen, setBulkDropdownOpen] = useState(false);
-  const [strikeMode, setStrikeMode] = useState("atm"); // "atm" | "strikes"
+  const [strikeMode, setStrikeMode] = useState("atm"); // "atm" | "strikes" | "dynamic"
   const [atmWidth, setAtmWidth] = useState(atmBandDefault);
+  // Dynamic ATM: strikes each side of the ROTATING ATM — 0 (default) = ATM only.
+  const [dynWidth, setDynWidth] = useState(0);
   useEffect(() => { setAtmWidth(atmBandDefault); }, [atmBandDefault]);
   const [strikesText, setStrikesText] = useState("");
   const [optCE, setOptCE] = useState(true);
@@ -443,7 +445,9 @@ export default function DataExportPage() {
     !!bulkUnderlying &&
     dateRangeValid &&
     (optCE || optPE) &&
-    (strikeMode === "atm" ? Number(atmWidth) > 0 : strikesText.trim().length > 0);
+    (strikeMode === "atm" ? Number(atmWidth) > 0
+      : strikeMode === "dynamic" ? (String(dynWidth) !== "" && Number(dynWidth) >= 0)
+        : strikesText.trim().length > 0);
 
   const bulkDownloadUrl = useMemo(() => {
     if (!bulkUnderlying) return null;
@@ -457,6 +461,7 @@ export default function DataExportPage() {
     });
     if (bulkEntry?.exchange) params.set("exchange", bulkEntry.exchange);
     if (strikeMode === "atm") params.set("atmWidth", String(atmWidth || atmBandDefault));
+    if (strikeMode === "dynamic") params.set("atmWidth", String(String(dynWidth) === "" ? 0 : dynWidth));
     if (strikeMode === "strikes") {
       const parsed = strikesText.split(",").map((s) => s.trim()).filter(Boolean).join(",");
       params.set("strikes", parsed);
@@ -466,7 +471,7 @@ export default function DataExportPage() {
     if (includeOI) params.set("includeOI", "true");
     if (includeIV) params.set("includeIV", "true");
     return `${BACKEND}/api/data-export/bulk-options?${params.toString()}`;
-  }, [bulkUnderlying, strikeMode, fromDate, toDate, timeframe, optCE, optPE, bulkEntry, atmWidth, atmBandDefault, strikesText, bulkExpiry, socketId, includeOI, includeIV]);
+  }, [bulkUnderlying, strikeMode, fromDate, toDate, timeframe, optCE, optPE, bulkEntry, atmWidth, atmBandDefault, strikesText, dynWidth, bulkExpiry, socketId, includeOI, includeIV]);
 
   // Same fetch()-first approach as triggerMultiDownload above (see the
   // module-level comment on triggerBlobDownload): only ever hand the
@@ -711,6 +716,7 @@ export default function DataExportPage() {
                 <div className="de-segment-toggle">
                   <div className={`de-segment-btn ${strikeMode === "atm" ? "de-segment-active" : ""}`} onClick={() => setStrikeMode("atm")}>ATM ± N</div>
                   <div className={`de-segment-btn ${strikeMode === "strikes" ? "de-segment-active" : ""}`} onClick={() => setStrikeMode("strikes")}>Specific strikes</div>
+                  <div className={`de-segment-btn ${strikeMode === "dynamic" ? "de-segment-active" : ""}`} onClick={() => setStrikeMode("dynamic")}>Dynamic ATM (follows spot)</div>
                 </div>
 
                 {strikeMode === "atm" ? (
@@ -722,6 +728,18 @@ export default function DataExportPage() {
                       style={{ maxWidth: 120 }}
                     />
                     <div className="de-info-note">Default ({atmBandDefault}) matches what this app already uses everywhere else for ATM bands.</div>
+                  </div>
+                ) : strikeMode === "dynamic" ? (
+                  <div style={{ marginTop: 12 }}>
+                    <label className="de-label">Strikes each side of the rotating ATM (0 = ATM only)</label>
+                    <input
+                      type="number" min="0" max="50" value={dynWidth}
+                      onChange={(e) => setDynWidth(e.target.value)}
+                      style={{ maxWidth: 120 }}
+                    />
+                    <div className="de-info-note">
+                      For every candle, the strike nearest that moment's spot price is picked, so the ATM rotates as the market moves — the whole date range in one file. Adds a Spot column showing the spot used for each row.
+                    </div>
                   </div>
                 ) : (
                   <div style={{ marginTop: 12 }}>
@@ -860,7 +878,7 @@ export default function DataExportPage() {
               {bulkSummary && (
                 <div className="de-bulk-summary">
                   <div className="de-bulk-summary-title">
-                    Expiry used: {bulkSummary.expiryUsed}{bulkSummary.atmStrike ? ` · ATM ${bulkSummary.atmStrike}` : ""}
+                    Expiry used: {bulkSummary.expiryUsed}{bulkSummary.atmStrike ? ` · ATM ${bulkSummary.atmStrike}` : ""}{bulkSummary.atmRange ? ` · ATM moved ${bulkSummary.atmRange}` : ""}
                   </div>
                   {bulkSummary.clipped && (
                     <div className="de-info-note de-warn">{bulkSummary.clipMessage}</div>

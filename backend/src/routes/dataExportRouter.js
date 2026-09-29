@@ -66,7 +66,7 @@
  *   Bulk-mode expiry dropdown (leave blank in bulk-options to auto-pick
  *   the nearest one instead).
  *
- * GET /api/data-export/bulk-options?underlying=&mode=atm|strikes[&exchange=]
+ * GET /api/data-export/bulk-options?underlying=&mode=atm|strikes|dynamic[&exchange=]
  *     [&atmWidth=][&strikes=23100,23150][&optionTypes=CE,PE][&expiryDate=]
  *     &from=&timeframe=[&to=][&includeOI=true][&includeIV=true][&socketId=]
  *   Streams ONE .xlsx attachment covering every matched strike/expiry
@@ -377,8 +377,10 @@ module.exports = function createDataExportRouter({ io } = {}) {
       if (!underlying || !mode || !from) {
         return res.status(400).json({ error: "missing_params", message: "underlying, mode, and from are required" });
       }
-      if (mode !== "atm" && mode !== "strikes") {
-        return res.status(400).json({ error: "invalid_mode", message: 'mode must be "atm" or "strikes"' });
+      // "dynamic" = ATM follows spot candle by candle (atmWidth 0 = ATM only,
+      // N = ATM ± N strikes) — see bulkOptionFetch.js's DYNAMIC ATM MODE.
+      if (mode !== "atm" && mode !== "strikes" && mode !== "dynamic") {
+        return res.status(400).json({ error: "invalid_mode", message: 'mode must be "atm", "strikes" or "dynamic"' });
       }
       if (mode === "strikes" && !strikes) {
         return res.status(400).json({ error: "missing_strikes", message: "strikes is required when mode=strikes (comma-separated numbers)" });
@@ -420,6 +422,7 @@ module.exports = function createDataExportRouter({ io } = {}) {
           clipMessage: result.clipMessage,
           expiryUsed: result.expiryUsed,
           atmStrike: result.atmStrike,
+          atmRange: result.atmRange,
         });
       }
 
