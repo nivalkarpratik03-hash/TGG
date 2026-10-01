@@ -131,6 +131,10 @@ function createTickEngine({ io }) {
     state.lastTickAt = now;
     state.lastTickBySymbol.set(tick.symbol, now);
     getOrCreateBuilder(tick.symbol).processTick(tick);
+    // Global live-tick fan-out (Paper Trading etc.) — same tick the charts get.
+    for (const fn of state.tickListeners) {
+      try { fn(tick); } catch (err) { console.error("[TickListener] error:", err.message); }
+    }
     // If ticks just started flowing (e.g. after a gap/holiday silence),
     // immediately tell all clients — don't wait for the 30s broadcast.
     if (!wasFlowing) io.emit("market_status", { ticksFlowing: true });
@@ -236,6 +240,7 @@ function createTickEngine({ io }) {
     for (const sym of socketSymbols.values()) { if (sym) set.add(sym); }
     for (const sym of socketUnderlyings.values()) { if (sym) set.add(sym); }
     for (const sym of state.getLiveBroadcastSymbols()) { set.add(sym); }
+    for (const sym of state.getExtraTickSymbols()) { set.add(sym); }
     return [...set];
   }
 

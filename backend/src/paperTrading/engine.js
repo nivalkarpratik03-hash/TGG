@@ -9,7 +9,14 @@
  * (monitorOpenTrades()). Nothing here is strategy-specific; strategyId/
  * strategyName are just labels stored on the row.
  *
- * Price data: reads through database/src/store/dataRouter.js (via the
+ * LIVE TRACKING: open trades are checked on EVERY tick from the shared Fyers
+ * stream (liveFeed.js → onTick below) — the same feed the charts use. The first
+ * tick to cross SL or Target decides the exit, so order is exact. The 1m-candle
+ * scan (monitorOpenTrades) remains as reconciliation for anything missed while
+ * the backend was down or a symbol was unsubscribed. Scanner strategies only
+ * supply the ENTRY signal; they are never a price source.
+ *
+ * Price data (candle fallback): reads through database/src/store/dataRouter.js (via the
  * shared `db` object), the SAME router every other part of the app
  * already reads candles through — it auto-detects spot vs NSE/BSE/MCX
  * option/future from the symbol string, so this engine works identically
@@ -37,6 +44,28 @@
 
 const db = require("../../../database/src");
 const { isLiveMarket } = require("../fyers/tickStream");
+const liveFeed = require("./liveFeed");
+
+// In-memory index of OPEN trades by symbol so the per-tick check never touches
+// the DB. Rebuilt from the DB at boot and on every monitor pass.
+const openBySymbol = new Map(); // symbol → Map<tradeId, trade>
+const closing = new Set();      // trade ids mid-close (prevents double-close on rapid ticks)
+
+function cacheAdd(trade) {
+  if (!openBySymbol.has(trade.symbol)) openBySymbol.set(trade.symbol, new Map());
+  openBySymbol.get(trade.symbol).set(Number(trade.id), trade);
+}
+function cacheRemove(trade) {
+  const m = openBySymbol.get(trade.symbol);
+  if (!m) return;
+  m.delete(Number(trade.id));
+  if (!m.size) openBySymbol.delete(trade.symbol);
+}
+function cacheReplaceAll(trades) {
+  openBySymbol.clear();
+  for (const t of trades) cacheAdd(t);
+}
+function syncLiveSymbols() { return liveFeed.syncSymbols([...openBySymbol.keys()]); }
 
 // ── IST trading-day helper — same convention used across the project (candle
 // storage, reports) — a trade opened at 14:50 IST and one opened at 09:20 IST
@@ -69,8 +98,8 @@ async function openTrade(opts) {
   if (!symbol) throw new Error("openTrade: symbol is required");
   if (side !== "LONG" && side !== "SHORT") throw new Error("openTrade: side must be LONG or SHORT");
 
-  const entryPrice = opts.entryPrice != null ? Number(opts.entryPrice) : await getLastPrice(symbol);
-  if (entryPrice == null) throw new Error(`openTrade: no candle data available for ${symbol} — cannot determine entry price`);
+  const entryPrice = opts.entryPrice != null ? Number(opts.entryPrice) : await liveFeed.getLivePrice(symbol);
+  if (entryPrice == null) throw new Error(`openTrade: no live price or candle data available for ${symbol} — cannot determine entry price`);
 
   const slPrice = opts.slPrice != null
     ? Number(opts.slPrice)
@@ -92,14 +121,45 @@ async function openTrade(opts) {
   );
 
   const trade = inserted[0];
+  cacheAdd(trade);
+  syncLiveSymbols();
   console.log(`[PaperTrading] OPEN #${trade.id} ${source}${strategyId ? `/${strategyId}` : ""} ${symbol} ${side} @ ${entryPrice} (SL ${slPrice} / TGT ${targetPrice})`);
   return trade;
 }
 
-/** Latest close price for a symbol via the shared candle router (1-minute). */
-async function getLastPrice(symbol) {
-  const latest = await db.getLatestCandle(symbol, 1);
-  return latest ? Number(latest.close) : null;
+/**
+ * LIVE path — called for EVERY tick from the shared Fyers stream (via
+ * liveFeed). Checks only trades on that symbol, from the in-memory index.
+ * First tick to cross a level decides the exit, so SL-vs-Target order is exact
+ * (no candle-range guess). Exit is booked at the level price, same as the
+ * candle path, so both paths produce comparable P&L.
+ */
+function onTick(tick) {
+  const m = openBySymbol.get(tick.symbol);
+  if (!m) return;
+  const ltp = tick.ltp;
+  for (const trade of m.values()) {
+    if (closing.has(Number(trade.id))) continue;
+    const sl = Number(trade.sl_price), tgt = Number(trade.target_price);
+    const long = trade.side === "LONG";
+    let reason = null, price = null;
+    if (long ? ltp <= sl : ltp >= sl) { reason = "SL"; price = sl; }
+    else if (long ? ltp >= tgt : ltp <= tgt) { reason = "TARGET"; price = tgt; }
+    if (!reason) continue;
+    closing.add(Number(trade.id));
+    closeTrade(trade.id, { exitPrice: price, exitReason: reason, exitTime: new Date() })
+      .catch((err) => console.error(`[PaperTrading] live close failed #${trade.id}:`, err.message))
+      .finally(() => closing.delete(Number(trade.id)));
+  }
+}
+
+/** Wire the engine to the shared live feed and load existing open trades. Call once at boot. */
+async function initLive({ tickEngine }) {
+  liveFeed.init({ tickEngine });
+  liveFeed.setTickHandler(onTick);
+  const { query } = require("../../../database/src/pool");
+  cacheReplaceAll(await query(`SELECT * FROM paper_trades WHERE status='OPEN'`, []));
+  await syncLiveSymbols();
 }
 
 /**
@@ -131,7 +191,8 @@ function checkCandle(candle, side, slPrice, targetPrice) {
 async function monitorOpenTrades() {
   const { query } = require("../../../database/src/pool");
   const open = await query(`SELECT * FROM paper_trades WHERE status='OPEN'`, []);
-  if (!open.length) return { checked: 0, closed: 0 };
+  cacheReplaceAll(open.filter((t) => !closing.has(Number(t.id))));
+  if (!open.length) { await syncLiveSymbols(); return { checked: 0, closed: 0 }; }
 
   let closed = 0;
   for (const trade of open) {
@@ -188,6 +249,8 @@ async function closeTrade(tradeId, { exitPrice, exitReason, exitTime = new Date(
     [tradeId, exitPrice, exitReason, new Date(exitTime).toISOString(), pnl]
   );
 
+  cacheRemove(trade);
+  syncLiveSymbols();
   console.log(`[PaperTrading] CLOSE #${tradeId} ${trade.symbol} ${exitReason} @ ${exitPrice} → PnL ${pnl.toFixed(2)}`);
   return updated[0];
 }
@@ -205,4 +268,4 @@ async function listTrades({ source, strategyId, tradingDay, status } = {}) {
   return query(`SELECT * FROM paper_trades ${where} ORDER BY entry_time DESC`, params);
 }
 
-module.exports = { openTrade, closeTrade, monitorOpenTrades, listTrades, istTradingDay, checkCandle };
+module.exports = { initLive, onTick, openTrade, closeTrade, monitorOpenTrades, listTrades, istTradingDay, checkCandle };

@@ -8,6 +8,7 @@ import ScannerPage from "./features/scanner/ScannerPage";
 import AdminPage from "./features/admin/AdminPage";
 import AnalyticsPage from "./features/analytics/AnalyticsPage";
 import DataExportPage from "./features/data-export/DataExportPage";
+import PaperTradingPage from "./features/paper-trading/PaperTradingPage";
 import ErrorBoundary from "./shared/components/ErrorBoundary";
 import { loadPref, savePref } from "./utils/prefs";
 import "./styles/App.css";
@@ -44,6 +45,7 @@ export default function App() {
           <Route path="/scanner" element={<ErrorBoundary label="Scanner"><ScannerPage /></ErrorBoundary>} />
           <Route path="/analytics" element={<ErrorBoundary label="Analytics"><AnalyticsPage /></ErrorBoundary>} />
           <Route path="/data-export" element={<ErrorBoundary label="Data Export"><DataExportPage /></ErrorBoundary>} />
+          <Route path="/paper-trading" element={<ErrorBoundary label="Paper Trading"><PaperTradingPage /></ErrorBoundary>} />
           <Route path="/admin" element={<ErrorBoundary label="Admin"><AdminPage /></ErrorBoundary>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

@@ -22,6 +22,7 @@ const router = express.Router();
 const paperConfig = require("../paperTrading/config");
 const engine = require("../paperTrading/engine");
 const reportGenerator = require("../paperTrading/reportGenerator");
+const liveFeed = require("../paperTrading/liveFeed");
 
 // GET /api/papertrading/config
 router.get("/config", async (req, res) => {
@@ -68,12 +69,13 @@ router.post("/close/:id", async (req, res) => {
 
     let price = exitPrice;
     if (price == null) {
-      const target = (await engine.listTrades({})).find((t) => t.id === id);
+      // Trade ids come back from pg as strings (BIGSERIAL) — compare as numbers.
+      const target = (await engine.listTrades({})).find((t) => Number(t.id) === id);
       if (!target) return res.status(404).json({ error: `Trade #${id} not found` });
-      const db = require("../../../database/src");
-      const latest = await db.getLatestCandle(target.symbol, 1);
-      if (!latest) return res.status(400).json({ error: `No price data available for ${target.symbol} to close at market` });
-      price = latest.close;
+      // Close at the live market price (same feed the charts use).
+      const live = await liveFeed.getLivePrice(target.symbol);
+      if (live == null) return res.status(400).json({ error: `No price data available for ${target.symbol} to close at market` });
+      price = live;
     }
 
     const closed = await engine.closeTrade(id, { exitPrice: price, exitReason: "MANUAL_CLOSE" });
@@ -87,7 +89,15 @@ router.post("/close/:id", async (req, res) => {
 router.get("/trades", async (req, res) => {
   try {
     const { source, strategyId, tradingDay, status } = req.query;
-    res.json(await engine.listTrades({ source, strategyId, tradingDay, status }));
+    const trades = await engine.listTrades({ source, strategyId, tradingDay, status });
+    // Open trades carry the live price + unrealised P&L from the shared tick feed.
+    res.json(trades.map((t) => {
+      if (t.status !== "OPEN") return t;
+      const ltp = liveFeed.peekPrice(t.symbol);
+      const dir = t.side === "LONG" ? 1 : -1;
+      const unrealised = ltp == null ? null : dir * (ltp - Number(t.entry_price)) * Number(t.qty);
+      return { ...t, ltp, unrealised };
+    }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -602,3 +602,27 @@ Format per entry: DATE | FILES | bug → fix
   • fullRefetch()'s fetchCandles closures are unchanged (still 2-arg,
     (s,r)=>fetchCandles(s,r)) — a full refetch correctly wants the entire
     default lookback, not a targeted window.
+
+2026-09-16 | 006_paper_trading.sql, paperTrading/{config,engine,autoEntryListener,reportGenerator}.js, paperTradingRouter.js, server.js, App.js, HomePage.js, PaperTradingPage.js/.css
+  • NEW global Paper Trading: one paper_trades table + one engine for
+    auto (scanner signal_found, per-strategy fixed SL/Target pts) and manual
+    entries; SL/Target resolved on 1m candles via db.loadCandles (SL-first
+    when one candle spans both); EOD square-off; separate Auto (per-strategy)
+    and Manual tradesheets at /api/papertrading/report/{auto,manual}/:date.
+  • Dashboard not visible → server.js lacked router mount + boot wiring
+    (step 9: seed config, wireAutoEntry, 30s monitor); App.js lacked the
+    /paper-trading route; HomePage.js lacked the Paper Trading card. Added.
+  • Needs migration 006: cd database && npm run migrate.
+
+2026-09-16 (S2) | state.js, tickEngine.js, paperTrading/{liveFeed,engine}.js, paperTradingRouter.js, server.js, PaperTradingPage.js
+  • Paper trades only saw closed 1m candles (30s DB poll) → now ride the
+    charts' live Fyers tick stream: tickEngine fans every tick to
+    state.tickListeners; engine.onTick checks SL/Target per tick (first tick
+    to cross wins, exact order). 1m-candle scan kept as reconciliation only.
+  • Open-trade symbols merged into getActiveTickSymbols() via
+    state.setExtraTickSymbols so they stay subscribed with no chart open.
+  • Entry price = live tick / forming candle (was last closed candle);
+    scanner supplies the entry signal only, never prices.
+  • /close/:id 404'd (pg BIGSERIAL id is a string, compared === number) and
+    closed at stale DB close → Number() compare + live price.
+  • Dashboard: LTP + unrealised P&L on open rows, 2s refresh.

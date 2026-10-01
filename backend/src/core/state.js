@@ -140,6 +140,18 @@ function getLiveBroadcastSymbols() {
 // state.lastConnectAt from other modules, never destructure.
 const lastTickBySymbol = new Map(); // symbol → Date.now() of last tick received
 
+// ─── Global live-tick hooks (Paper Trading) ───────────────────────────────────
+// tickListeners: functions called with EVERY tick the Fyers stream delivers
+// (tickEngine.js). Lets any feature consume the one shared live feed without
+// opening its own socket. extraTickSymbols: symbols a feature needs ticks for
+// even when no chart is viewing them (open paper trades) — merged into
+// getActiveTickSymbols() so the single Fyers subscription covers them.
+const tickListeners = [];
+function addTickListener(fn) { if (typeof fn === "function") tickListeners.push(fn); }
+let extraTickSymbols = new Set();
+function setExtraTickSymbols(iterable) { extraTickSymbols = new Set(iterable); }
+function getExtraTickSymbols() { return [...extraTickSymbols]; }
+
 // ─── Candle Builder registry ──────────────────────────────────────────────────
 // The CandleBuilder instances themselves live in tickEngine.js (that's where
 // they're created/seeded), but the Map has to live here since dataFetch.js
@@ -194,6 +206,7 @@ module.exports = {
   socketResolutions, socketSymbols, socketUnderlyings,
   broadcastSymbols, BROADCAST_SYMBOL_TTL_MS, markBroadcastSymbol, getLiveBroadcastSymbols,
   lastTickAt: 0, lastConnectAt: 0, lastTickBySymbol,
+  tickListeners, addTickListener, setExtraTickSymbols, getExtraTickSymbols,
   cacheKey, getCache, setCache,
   buildPayload,
 };

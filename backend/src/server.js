@@ -13,6 +13,11 @@ const analyticsRouter = require("./routes/analyticsRouter");
 // symbol search + .xlsx candle download. See routes/dataExportRouter.js's
 // own header for exactly what it reuses vs. what's new.
 const dataExportRouter = require("./routes/dataExportRouter");
+// NEW — global Paper Trading (one engine for auto + manual entries, all strategies).
+const paperTradingRouter = require("./routes/paperTradingRouter");
+const paperTradingConfig = require("./paperTrading/config");
+const paperTradingEngine = require("./paperTrading/engine");
+const { wireAutoEntry } = require("./paperTrading/autoEntryListener");
 const { detectMotherWaveForAPI } = require("./services/motherwave");
 const createChartRouter = require("./routes/chartRouter");
 const corsMiddleware = require("./middleware/cors");
@@ -54,6 +59,10 @@ app.use(rateLimiter);
 // each other — no circular requires anywhere in this graph.
 const tickEngine = createTickEngine({ io });
 const dataFetch = createDataFetch({ io, tickEngine });
+// Paper Trading rides the SAME live tick stream as the charts (tickEngine →
+// state.tickListeners). Register the listener now so no tick is missed; the
+// open-trade cache/subscription loads in listen() step 9 once the DB is up.
+require("./paperTrading/liveFeed").init({ tickEngine });
 const catchUp = createCatchUp({ dataFetch });
 createWebSocket({ io, tickEngine, dataFetch }); // wires io.on("connection", ...) — nothing to store, matches original inline block
 
@@ -104,6 +113,7 @@ app.use("/api/symbols", symbolsRouter);
 app.use("/api/scanner", scannerRouter);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/data-export", dataExportRouter({ io }));
+app.use("/api/papertrading", paperTradingRouter);
 
 // ─── Serve React Frontend ─────────────────────────────────────────────────────
 const FRONTEND_BUILD = path.join(__dirname, "../../frontend/build");
@@ -170,6 +180,24 @@ server.listen(PORT, async () => {
   });
   if (dbJobs && dbJobs.gapFillScheduler) {
     _fireReauthCheckpoint = dbJobs.gapFillScheduler.fireReauthCheckpoint;
+  }
+
+  // ── 9. Paper Trading — seed per-strategy config (disabled by default), ──
+  // subscribe Auto Entry to the scanner's existing signal_found event, and
+  // start the shared SL/Target/EOD monitor (1-minute candles) for every
+  // open trade, auto or manual. Needs migration 006 applied.
+  try {
+    await paperTradingConfig.ensureSeeded();
+    await paperTradingEngine.initLive({ tickEngine });
+    wireAutoEntry();
+    setInterval(() => {
+      paperTradingEngine.monitorOpenTrades().catch((err) =>
+        console.error("[PaperTrading] monitor loop error:", err.message)
+      );
+    }, 30 * 1000);
+    console.log("[PaperTrading] Global paper trading engine online.");
+  } catch (err) {
+    console.error("[PaperTrading] Failed to initialize:", err.message);
   }
 });
 

@@ -95,7 +95,7 @@ function AutoEntryTab() {
 
   useEffect(() => {
     load();
-    const id = setInterval(load, 10000);
+    const id = setInterval(load, 2000); // live LTP / unrealised P&L
     return () => clearInterval(id);
   }, [load]);
 
@@ -212,7 +212,7 @@ function ManualEntryTab() {
 
   useEffect(() => {
     load();
-    const id = setInterval(load, 10000);
+    const id = setInterval(load, 2000); // live LTP / unrealised P&L
     return () => clearInterval(id);
   }, [load]);
 
@@ -261,7 +261,7 @@ function ManualEntryTab() {
           <label>Side</label>
           <select value={side} onChange={(e) => setSide(e.target.value)}>
             <option value="LONG">Long</option>
-            <option value="SHORT">Short</option>
+            <option value="SHO  RT">Short</option>
           </select>
         </div>
 
@@ -400,6 +400,7 @@ function TradesTable({ trades, onClose, showStrategy }) {
           <th>Entry</th>
           <th>SL</th>
           <th>Target</th>
+          {trades.some((t) => t.status === "OPEN") && <th>LTP</th>}
           <th>Exit</th>
           <th>Reason</th>
           <th>P&L</th>
@@ -417,9 +418,13 @@ function TradesTable({ trades, onClose, showStrategy }) {
             <td>{fmtNum(t.entry_price)}</td>
             <td>{fmtNum(t.sl_price)}</td>
             <td>{fmtNum(t.target_price)}</td>
+            {trades.some((x) => x.status === "OPEN") && <td>{t.status === "OPEN" ? fmtNum(t.ltp) : "—"}</td>}
             <td>{fmtNum(t.exit_price)}</td>
             <td>{t.exit_reason || "—"}</td>
-            <td className={Number(t.pnl) > 0 ? "pt-long" : Number(t.pnl) < 0 ? "pt-short" : ""}>{fmtNum(t.pnl)}</td>
+            {(() => {
+              const v = t.status === "OPEN" ? t.unrealised : t.pnl;
+              return <td className={Number(v) > 0 ? "pt-long" : Number(v) < 0 ? "pt-short" : ""}>{fmtNum(v)}{t.status === "OPEN" && v != null ? " *" : ""}</td>;
+            })()}
             <td>{t.status}</td>
             {onClose && <td>{t.status === "OPEN" && <button className="pt-close-btn" onClick={() => onClose(t.id)}>Close</button>}</td>}
           </tr>
