@@ -48,6 +48,25 @@ function isDerivativeSymbol(symbol) {
 function createDataFetch({ io, tickEngine }) {
   const { SYMBOL, RESOLUTION, CANDLES_TO_FETCH, CHART_DB_WINDOW_DAYS, REFRESH_MS, candleBuilders, socketSymbols, socketResolutions } = state;
 
+  // Register the exchange-holiday calendar with the validator so it can tell
+  // "no candles because the exchange was closed" from "no candles because we
+  // lost the whole day" (see validationEngine.findMissingTradingDays).
+  // holidays.js only lists 2026 — for any other year we answer null
+  // ("unknown"), so a stale calendar can never turn holidays into false
+  // missing days (whole-day detection simply skips unknown days).
+  try {
+    const { isTradingHoliday } = require("../data/holidays");
+    if (state.db && state.db.setHolidayChecker) {
+      state.db.setHolidayChecker((dayKey) => {
+        const [y, m, d] = dayKey.split("-").map(Number);
+        if (y !== 2026) return null; // calendar doesn't cover this year — "unknown", never "closed"
+        return isTradingHoliday(new Date(y, m - 1, d, 12), "NSE");
+      });
+    }
+  } catch (err) {
+    console.warn("[DataFetch] Holiday calendar not wired — whole-missing-day detection disabled:", err.message);
+  }
+
   // ─── Lightweight per-symbol staleness check (boot / reactive) ────────────────
   //
   // PROBLEM THIS SOLVES: previously, once a symbol had ANY 1m rows in DB,
@@ -117,11 +136,17 @@ function createDataFetch({ io, tickEngine }) {
 
       vlog(`[Staleness] ${symbol}: DB latest is ${(lagMs / 60000).toFixed(1)}min behind — fetching delta from Fyers`);
 
-      // Small bounded lookback (2 days) is always enough to cover the gap —
-      // even a multi-hour outage never spans more than the current + previous
-      // trading day. This keeps the delta-fetch cheap and fast, unlike a full
-      // historical refetch.
-      const fresh1m = await fetchCandles(symbol, 1, CANDLES_TO_FETCH, 2);
+      // Delta-fetch only: reaches back as far as the DB's last candle (see
+      // lookbackDays below), not a full historical refetch.
+      // Lookback now follows the real gap instead of a fixed 2 days. The
+      // fixed 2 left everything older than (now - 2d) permanently unfilled
+      // after any outage longer than that: in the SENSEX export, the bulk
+      // inserts on 24 Sep 10:06 and 1 Oct 14:13 start EXACTLY 2 days back
+      // (22 Sep 10:07, 29 Sep 14:14), while 17/18/21 Sep and 25 Sep (days
+      // between the last stored candle and that window) were never written.
+      // +1 day padding; capped at 90 (one Fyers intraday chunk).
+      const lookbackDays = Math.min(90, Math.max(2, Math.ceil(lagMs / 86400000) + 1));
+      const fresh1m = await fetchCandles(symbol, 1, CANDLES_TO_FETCH, lookbackDays);
       if (!fresh1m || fresh1m.length === 0) return oneMinCandles;
 
       // Only keep candles strictly newer than what we already have — avoids
@@ -272,6 +297,118 @@ function createDataFetch({ io, tickEngine }) {
     return { checked: symbols.length, backfilled: staleFound, failed };
   }
 
+  // ─── Refresh-time health check + gap heal (added 2026-10-02) ──────────────
+  //
+  // ROOT CAUSE this fixes: Refresh (POST /api/chart/refresh) only ever called
+  // fetchAndProcess(), whose only "self-heal" is ensureFreshOneMinData() —
+  // which compares the DB's LAST candle to the clock and fetches candles
+  // NEWER than that last candle. A hole in the MIDDLE of the history (e.g.
+  // SENSEX on 24 Sep, with good candles after it) is invisible to that check
+  // by construction, so Refresh just re-read the same holey DB rows forever.
+  // The deep validator that does see mid-history holes only runs inside the
+  // 3x/day checkpoint chain, and /health never looked at candle continuity.
+  //
+  // Flow on Refresh, in order:
+  //   1. HEALTH CHECK  — read-only DB continuity scan of the chart window
+  //      (db.checkContinuity): lists the gap days. No broker call.
+  //   2. RECOVERY      — only if gap days exist: ONE broker fetch covering
+  //      them, insert ONLY the missing minutes (db.fillGapDays — additive,
+  //      never deletes).
+  //   3. RE-CHECK      — report what is fixed and what the broker itself
+  //      cannot supply, so the UI/API can say so instead of silently
+  //      showing a hole.
+  // Days the broker already confirmed it cannot fill are not re-fetched on
+  // every click (BROKER_RECHECK_MS) unless their missing-minute count changed.
+  const HEAL_COOLDOWN_MS = 10 * 1000;          // protects against double-clicks only
+  const BROKER_RECHECK_MS = 15 * 60 * 1000;    // re-ask the broker about a still-gappy day at most this often
+  const healInFlight = new Map();              // symbol → Promise
+  const lastHeal = new Map();                  // symbol → { at, report }
+  const brokerConfirmed = new Map();           // `${symbol}|${day}` → { at, missingMinutes }
+
+  async function getContinuityReport(symbol, { days } = {}) {
+    if (!state.dbEnabled || !state.db || !state.db.checkContinuity) return { symbol, available: false, healthy: null, gapDays: [] };
+    const r = await state.db.checkContinuity(symbol, { days: days || CHART_DB_WINDOW_DAYS });
+    return { ...r, available: true };
+  }
+
+  async function _healGapsInner(symbol, { force }) {
+    const before = await getContinuityReport(symbol);
+    if (!before.available) return { ran: false, reason: "db_unavailable" };
+    if (before.healthy) return { ran: true, healthy: true, gapDaysBefore: [], gapDaysAfter: [], inserted: 0 };
+
+    const nowMs = Date.now();
+    const candidates = before.gapDays.filter((g) => {
+      const c = brokerConfirmed.get(`${symbol}|${g.day}`);
+      if (!c) return true;
+      const sameHole = c.missingMinutes === g.missingMinutes;
+      return !(sameHole && nowMs - c.at < BROKER_RECHECK_MS && !force);
+    });
+    // `force` (an explicit Refresh click) always re-asks the broker — the
+    // person clicking wants the current truth. Background callers (force =
+    // false) skip a day the broker already confirmed it cannot fill, until
+    // BROKER_RECHECK_MS passes or the missing-minute count changes.
+    const toFetch = candidates;
+    if (toFetch.length === 0) {
+      return { ran: true, healthy: false, gapDaysBefore: before.gapDays, gapDaysAfter: before.gapDays, inserted: 0, reason: "broker_confirmed_missing" };
+    }
+
+    const tokenOk = await state.validateToken().catch(() => false);
+    if (!tokenOk) return { ran: true, healthy: false, gapDaysBefore: before.gapDays, gapDaysAfter: before.gapDays, inserted: 0, reason: "token_invalid" };
+
+    vlog(`[Heal] ${symbol}: ${toFetch.length} gap day(s) [${toFetch.map((g) => `${g.day}:${g.missingMinutes}m`).join(", ")}] — filling from broker`);
+    const fill = await state.recoveryEngine.fillGapDays({
+      symbol,
+      days: toFetch.map((g) => g.day),
+      fetchCandles: (s, r, c, l) => fetchCandles(s, r, c, l),
+      trigger: "refresh",
+    });
+    if (!fill || fill.skipped || fill.success === false) {
+      return { ran: true, healthy: false, gapDaysBefore: before.gapDays, gapDaysAfter: before.gapDays, inserted: 0, reason: fill && fill.skipped ? "repair_already_running" : (fill && fill.error) || "fill_failed" };
+    }
+
+    const after = await getContinuityReport(symbol);
+    const afterByDay = new Map(after.gapDays.map((g) => [g.day, g]));
+    for (const g of toFetch) {
+      const left = afterByDay.get(g.day);
+      if (left) brokerConfirmed.set(`${symbol}|${g.day}`, { at: Date.now(), missingMinutes: left.missingMinutes });
+      else brokerConfirmed.delete(`${symbol}|${g.day}`);
+    }
+    return {
+      ran: true,
+      healthy: after.healthy,
+      gapDaysBefore: before.gapDays,
+      gapDaysAfter: after.gapDays,
+      inserted: fill.inserted || 0,
+      fixedDays: fill.fixedDays || [],
+      remainingDays: fill.remainingDays || [],
+    };
+  }
+
+  /**
+   * Health check + recovery for one symbol's stored 1m candles. Coalesces
+   * concurrent calls and never throws (a failure here must not break the
+   * chart load that triggered it).
+   */
+  async function healGaps(symbol, { force = false } = {}) {
+    if (healInFlight.has(symbol)) return healInFlight.get(symbol);
+    const last = lastHeal.get(symbol);
+    if (last && Date.now() - last.at < HEAL_COOLDOWN_MS) return last.report;
+    const p = (async () => {
+      try {
+        const report = await _healGapsInner(symbol, { force });
+        lastHeal.set(symbol, { at: Date.now(), report });
+        return report;
+      } catch (err) {
+        console.warn(`[Heal] ${symbol}: health check/heal failed (${err.message}) — serving DB data as-is`);
+        return { ran: false, reason: err.message };
+      } finally {
+        healInFlight.delete(symbol);
+      }
+    })();
+    healInFlight.set(symbol, p);
+    return p;
+  }
+
   // SINGLE SOURCE OF TRUTH for "get me candles for symbol+resolution".
   // Every caller — GET /api/chart, POST /api/chart/refresh, /api/motherwave,
   // and initialRestFetch() — goes through this one function. No DB code lives
@@ -361,7 +498,17 @@ function createDataFetch({ io, tickEngine }) {
     }
   }
 
-  async function fetchAndProcess(symbol, resolution = RESOLUTION) {
+  async function fetchAndProcess(symbol, resolution = RESOLUTION, opts = {}) {
+    // ── 0. Refresh-time health check + gap heal (opts.heal) ──────────────────
+    // Only on an explicit Refresh, only for data that lives in the 1m store
+    // (Daily+ on spot symbols reads the separate 1D rows, so 1m holes are
+    // irrelevant there). Runs BEFORE loadFromDB so the read below already
+    // sees the healed rows.
+    let integrity = null;
+    if (opts.heal && state.dbEnabled && state.db && !(isDailyOrHigher(resolution) && !isDerivativeSymbol(symbol))) {
+      integrity = await healGaps(symbol, { force: true });
+    }
+
     // ── 1. DB-first ──────────────────────────────────────────────────────────
     // CHANGED: previously this skipped the DB entirely for option contracts
     // (CE/PE) because "the DB will always be empty for them" — true when this
@@ -403,7 +550,7 @@ function createDataFetch({ io, tickEngine }) {
       if (dailyCandles && resolution !== DAILY_RESOLUTION) {
         try { state.setCache(symbol, DAILY_RESOLUTION, dailyCandles, runSignalEngine(dailyCandles)); } catch { }
       }
-      return { candles, result };
+      return { candles, result, integrity };
     }
 
     // ── 2. Fyers fallback (DB disabled, empty, or read failed) ───────────────
@@ -592,6 +739,7 @@ function createDataFetch({ io, tickEngine }) {
   return {
     ensureFreshOneMinData, sweepStalenessForSymbols, loadFromDB, fetchAndProcess, fetchAndBroadcast,
     startAutoRefresh, initialRestFetch,
+    healGaps, getContinuityReport,
   };
 }
 

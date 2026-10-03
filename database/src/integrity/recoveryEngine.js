@@ -40,8 +40,8 @@
 // repair can run against whatever symbol a client currently has open in a
 // chart — including option/future contracts — so it needs dataRouter.js's
 // symbol-aware routing to land in nse_options_candles/etc. instead.
-const { upsertCandles, replaceDayCandles } = require("../store/dataRouter");
-const { validateCandleArray, checkPeriodicSync } = require("./validationEngine");
+const { upsertCandles, replaceDayCandles, loadCandles } = require("../store/dataRouter");
+const { validateCandleArray, checkPeriodicSync, summarizeGaps, istDateKey } = require("./validationEngine");
 const { logRepairStart, logRepairFinish } = require("./repairLog");
 
 // ─── DB resolution constant ───────────────────────────────────────────────────
@@ -81,6 +81,27 @@ function emit(event, data) {
 }
 
 // ─── Core repair logic ───────────────────────────────────────────────────────
+
+const DAY_MS = 86400 * 1000;
+const IST_OFFSET_MS = 5.5 * 3600 * 1000;
+
+/** UTC-ms of 00:00 IST for an IST date key "YYYY-MM-DD". */
+function istDayStartMs(dayKey) {
+  return Date.parse(`${dayKey}T00:00:00+05:30`);
+}
+
+/**
+ * How many days back a broker fetch must reach to include `earliestMs`.
+ * +2 days of padding for timezone-boundary safety. Min 3.
+ * (The 2026-06-29 "targeted window" change documented in changes-log.txt
+ * was not present in the code — repairDay always fetched the 30-day default.
+ * This restores the intent using client.js's existing 4th parameter,
+ * lookbackDaysOverride, so no client.js change is needed.)
+ */
+function lookbackDaysFor(earliestMs) {
+  return Math.max(3, Math.ceil((Date.now() - earliestMs) / DAY_MS) + 2);
+}
+
 
 /**
  * Integrity-First Repair (1m only):
@@ -131,7 +152,12 @@ async function repairDay(opts) {
       // production. Fetching first means a failed/partial refetch never
       // touches existing DB rows.
       console.log(`[Recovery] Refetching 1m candles from broker for ${symbol}...`);
-      const fresh = await fetchCandles(symbol, resolution);
+      // Targeted window: reach back only as far as the day being repaired.
+      // 4th arg = lookbackDaysOverride in client.js's fetchCandles(). Callers'
+      // closures that drop extra args fall back to the 30-day default, which
+      // is still safe because of the guards below.
+      const dayStartUtc = new Date(tradingDay); dayStartUtc.setUTCHours(0, 0, 0, 0);
+      const fresh = await fetchCandles(symbol, resolution, undefined, lookbackDaysFor(dayStartUtc.getTime()));
       emit("repair_status", { symbol, resolution, status: "fetched", count: fresh.length });
 
       if (!fresh || fresh.length === 0) {
@@ -155,6 +181,33 @@ async function repairDay(opts) {
           `(${issues.slice(0, 3).map(i => i.type).join(", ")}) — storing valid rows anyway; ` +
           `corrupt rows are filtered out by upsertCandles()`);
         emit("repair_status", { symbol, resolution, status: "validation_warning", issues: issues.length });
+      }
+
+      // Step 2b — NEVER-WIPE GUARDS (2026-10-02).
+      // replaceDayCandles() deletes the whole UTC day, then inserts whatever
+      // was fetched. If the fetched window does not actually contain that
+      // day (e.g. the day is older than the fetch lookback — the validator
+      // targets the OLDEST flagged day in a 90-day window, the fetch only
+      // reached 30 days) the day was deleted and never restored: a silent
+      // full-day hole that the validator then cannot even see (a missing
+      // whole day looks like a normal overnight gap). Also refuse to replace
+      // a day with a SHORTER broker day than what we already hold.
+      const dStart = new Date(tradingDay); dStart.setUTCHours(0, 0, 0, 0);
+      const dEnd = new Date(dStart.getTime() + DAY_MS);
+      const freshOnDay = fresh.filter((c) => c.time >= dStart.getTime() && c.time < dEnd.getTime());
+      const existingOnDay = await loadCandles(symbol, resolution, { from: dStart, to: new Date(dEnd.getTime() - 1), limit: 5000 }).catch(() => []);
+      if (freshOnDay.length === 0 || freshOnDay.length < existingOnDay.length) {
+        const why = freshOnDay.length === 0
+          ? "broker response does not contain the target day"
+          : `broker day has fewer candles (${freshOnDay.length}) than DB (${existingOnDay.length})`;
+        console.warn(`[Recovery] ${symbol} ${dStart.toISOString().slice(0, 10)}: ${why} — NOT deleting; adding any missing candles only`);
+        const have = new Set(existingOnDay.map((c) => c.time));
+        const additive = freshOnDay.filter((c) => !have.has(c.time));
+        const added = additive.length ? await upsertCandles(symbol, resolution, additive) : 0;
+        emit("repair_status", { symbol, resolution, status: "ok", inserted: added, deleted: 0 });
+        if (added > 0) emit("history_updated", { symbol, resolution, reason: "repair", inserted: added });
+        await logRepairFinish(logId, { status: "ok", deleted: 0, inserted: added, detail: why }).catch(() => null);
+        return { success: true, inserted: added, deleted: 0, additiveOnly: true };
       }
 
       // Step 3+4 (FIXED — was: separate delete then separate insert, two
@@ -191,6 +244,109 @@ async function repairDay(opts) {
     } catch (err) {
       emit("repair_status", { symbol, resolution, status: "error", error: err.message });
       await logRepairFinish(logId, { status: "error", detail: err.message }).catch(() => null);
+      throw err;
+    } finally {
+      activeRepairs.delete(key);
+    }
+  });
+}
+
+// ─── Additive gap fill (2026-10-02) ───────────────────────────────────────────
+/**
+ * Fill missing 1m candles on specific IST days from the broker — PURELY
+ * ADDITIVE: it never deletes anything and only inserts minutes the DB does
+ * not already have. This is what Refresh and the scheduled validator use
+ * for GAP issues. (repairDay's delete-and-replace stays for corrupt rows
+ * only; it was the wrong tool for "a few minutes are missing" because any
+ * partial/short broker response turned a small hole into a bigger one.)
+ *
+ * One broker call covers all requested days (lookback reaches back to the
+ * earliest one). Afterwards the days are re-validated from the DB and the
+ * result says which days are STILL gappy — i.e. the broker itself has no
+ * data for those minutes. Every day gets a repair_log row with
+ * status "ok" either way, so wasDayAlreadyRepaired() can stop a
+ * broker-side hole from being re-fetched on every pass — per DAY, so it can
+ * no longer shadow other days.
+ *
+ * @param {object} opts
+ * @param {string} opts.symbol
+ * @param {string[]} opts.days    IST date keys "YYYY-MM-DD"
+ * @param {Function} opts.fetchCandles  (symbol, resolution, count, lookbackDays) => candle[]
+ * @param {string} [opts.trigger]
+ * @returns {Promise<{success, inserted, brokerCandles, fixedDays, remainingDays, error?}>}
+ */
+async function fillGapDays(opts) {
+  const { symbol, fetchCandles, trigger = "gapfill" } = opts;
+  const days = [...new Set(opts.days || [])].sort();
+  const resolution = DB_RESOLUTION;
+  const key = `${symbol}:${resolution}`;
+  if (days.length === 0) return { success: true, inserted: 0, brokerCandles: 0, fixedDays: [], remainingDays: [] };
+
+  if (activeRepairs.has(key)) {
+    console.log(`[Recovery] Repair already active for ${key} — skipping gap fill`);
+    return { skipped: true };
+  }
+
+  return enqueueRepair(symbol, async () => {
+    activeRepairs.add(key);
+    emit("repair_status", { symbol, resolution, status: "starting", trigger });
+    const logIds = [];
+    for (const d of days) {
+      logIds.push(await logRepairStart({ symbol, resolution, trigger, tradingDay: new Date(`${d}T12:00:00+05:30`) }).catch(() => null));
+    }
+    const finishAll = (fn) => Promise.all(logIds.map((id, i) => logRepairFinish(id, fn(days[i])).catch(() => null)));
+
+    try {
+      const earliestMs = istDayStartMs(days[0]);
+      const fresh = await fetchCandles(symbol, resolution, undefined, lookbackDaysFor(earliestMs));
+      emit("repair_status", { symbol, resolution, status: "fetched", count: fresh ? fresh.length : 0 });
+      if (!fresh || fresh.length === 0) {
+        const errMsg = "Broker returned no candles — nothing changed";
+        console.error(`[Recovery] ${symbol} gap fill: ${errMsg}`);
+        emit("repair_status", { symbol, resolution, status: "error", error: errMsg });
+        await finishAll(() => ({ status: "error", detail: errMsg }));
+        return { success: false, error: errMsg, inserted: 0, brokerCandles: 0, fixedDays: [], remainingDays: days };
+      }
+
+      const wanted = new Set(days);
+      const brokerOnDays = fresh.filter((c) => wanted.has(istDateKey(c.time)));
+
+      // What does the DB already hold over the affected span?
+      const existing = await loadCandles(symbol, resolution, {
+        from: new Date(earliestMs), to: new Date(), limit: 100000,
+      });
+      const have = new Set(existing.map((c) => c.time));
+      const missingFromDb = brokerOnDays.filter((c) => !have.has(c.time));
+
+      const inserted = missingFromDb.length ? await upsertCandles(symbol, resolution, missingFromDb) : 0;
+      console.log(`[Recovery] ${symbol} gap fill: broker had ${brokerOnDays.length} candle(s) on ${days.join(", ")}, DB was missing ${missingFromDb.length}, inserted ${inserted}`);
+
+      // Re-validate from the DB and report what the broker could NOT supply.
+      const after = await loadCandles(symbol, resolution, { from: new Date(earliestMs), to: new Date(), limit: 100000 });
+      const stillGappy = new Set(summarizeGaps(validateCandleArray(after, resolution).issues).map((g) => g.day));
+      // A requested day that still has NO candles (broker has nothing for it)
+      // is not visible to validateCandleArray — count it as remaining too.
+      const daysWithData = new Set(after.map((c) => istDateKey(c.time)));
+      for (const d of days) if (!daysWithData.has(d)) stillGappy.add(d);
+      const remainingDays = days.filter((d) => stillGappy.has(d));
+      const fixedDays = days.filter((d) => !stillGappy.has(d));
+
+      // Status matters: wasDayAlreadyRepaired() only matches status "ok", and
+      // that is deliberately the SUPPRESSION marker — it must be written only
+      // for days that are STILL gappy after the broker fetch (the broker has
+      // no data for them, so re-fetching every pass is pointless). A day that
+      // was fully fixed gets "filled" instead, so that if a NEW hole appears
+      // on that same day later (a live tick stall in the afternoon), the next
+      // pass is not blocked by this morning's successful fill.
+      await finishAll((d) => (stillGappy.has(d)
+        ? { status: "ok", inserted: 0, detail: "gap fill: broker has no data for the remaining missing minutes" }
+        : { status: "filled", inserted: 0, detail: `gap fill: ${inserted} candle(s) added across ${days.length} day(s)` }));
+      emit("repair_status", { symbol, resolution, status: "ok", inserted, deleted: 0 });
+      if (inserted > 0) emit("history_updated", { symbol, resolution, reason: "gap_fill", inserted });
+      return { success: true, inserted, brokerCandles: brokerOnDays.length, fixedDays, remainingDays };
+    } catch (err) {
+      emit("repair_status", { symbol, resolution, status: "error", error: err.message });
+      await finishAll(() => ({ status: "error", detail: err.message }));
       throw err;
     } finally {
       activeRepairs.delete(key);
@@ -316,6 +472,7 @@ async function periodicSync(opts) {
 
 module.exports = {
   repairDay,
+  fillGapDays,
   periodicSync,
   injectStatusEmitter,
   // Exposed for tests / diagnostics only — not used by server.js.

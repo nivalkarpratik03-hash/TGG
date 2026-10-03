@@ -87,6 +87,8 @@ app.use(createChartRouter({
   SYMBOL: state.SYMBOL, RESOLUTION: state.RESOLUTION, TICK_WATCHDOG_MS: state.TICK_WATCHDOG_MS,
   getCache: state.getCache, buildPayload: state.buildPayload,
   fetchAndProcess: dataFetch.fetchAndProcess, fetchAndBroadcast: dataFetch.fetchAndBroadcast,
+  // 2026-10-02 — read-only candle-continuity check for GET /api/chart/health
+  getContinuityReport: dataFetch.getContinuityReport,
   isLiveMarket, isTradingDay, isAnyMarketLive,
   tickStream: tickEngine.tickStream, ticksFlowing: tickEngine.ticksFlowing,
   getActiveTickSymbols: tickEngine.getActiveTickSymbols, updateTickSubscription: tickEngine.updateTickSubscription,

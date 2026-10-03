@@ -153,35 +153,70 @@ function createCatchUp({ dataFetch }) {
         await Promise.all(batch.map(async (symbol) => {
           try {
             const { valid, issues } = await state.db.validateHistorical(symbol, 1);
-            if (!valid && issues.length > 0) {
-              const gapIssue = issues.find((iss) => iss.type === "GAP" || iss.type === "CORRUPT_OHLC");
-              if (gapIssue) {
-                const tradingDay = new Date(gapIssue.time || Date.now());
-                const todayStr = new Date().toISOString().slice(0, 10);
-                if (tradingDay.toISOString().slice(0, 10) >= todayStr) {
-                  vlog(`[Recovery] ${symbol}: skipping today's in-progress candles (not a real gap)`);
-                  clean++;
-                  return;
-                }
+            if (valid || issues.length === 0) { clean++; return; }
 
-                const alreadyRepaired = await state.db.wasDayAlreadyRepaired(symbol, tradingDay, 3).catch(() => false);
-                if (alreadyRepaired) {
-                  vlog(`[Recovery] ${symbol}: ${tradingDay.toISOString().slice(0, 10)} already repaired recently and still flagged — likely a genuine short broker day, skipping re-repair`);
-                  skippedKnown++;
-                  return;
-                }
+            // ── 2026-10-02 REWRITE of the repair decision ──────────────────
+            // The old code did `issues.find(GAP|CORRUPT)` — only the FIRST
+            // (chronologically oldest, inside a 90-day window) issue — and
+            // then `return`ed from this symbol on every skip path
+            // ("today", "already repaired recently"). Consequences:
+            //   • one old hole the broker can never fill (so it is flagged
+            //     on every pass) permanently shadowed every LATER hole —
+            //     e.g. SENSEX 24 Sep was never reached;
+            //   • at most ONE day per symbol per pass was ever repaired;
+            //   • that one day was repaired with delete-and-replace using a
+            //     30-day fetch, which for a day older than 30 days wiped it.
+            // Now: every gap day is considered, known-short days are skipped
+            // PER DAY (they no longer stop the loop), and all remaining days
+            // are filled together with ONE additive broker call.
+            const gapDays = state.db.summarizeGaps(issues.filter((iss) => iss.type === "GAP" || iss.type === "MISSING_DAY"));
+            const corruptDays = [...new Set(
+              issues.filter((iss) => iss.type === "CORRUPT_OHLC" && iss.time)
+                .map((iss) => new Date(iss.time + 5.5 * 3600 * 1000).toISOString().slice(0, 10))
+            )];
+            if (gapDays.length === 0 && corruptDays.length === 0) { clean++; return; }
 
-                vlog(`[Recovery] ${symbol}: ${issues.length} issue(s) — repairing gap at ${tradingDay.toISOString().slice(0, 10)}`); await state.recoveryEngine.repairDay({
-                  symbol,
-                  tradingDay,
-                  fetchCandles: (sym, res) => fetchCandles(sym, res),
-                  trigger,
-                });
-                repaired++;
-              }
-            } else {
-              clean++;
+            const MAX_DAYS_PER_PASS = 10; // newest first — recent holes matter most; the rest are picked up next pass
+            const toFill = [];
+            let knownSkipped = 0;
+            for (const g of gapDays) {
+              if (toFill.length >= MAX_DAYS_PER_PASS) break;
+              const dayDate = new Date(`${g.day}T12:00:00+05:30`);
+              const already = await state.db.wasDayAlreadyRepaired(symbol, dayDate, 3).catch(() => false);
+              if (already) { knownSkipped++; vlog(`[Recovery] ${symbol}: ${g.day} already gap-filled in the last 3 days and still flagged — broker has no data for it, skipping this day only`); continue; }
+              toFill.push(g.day);
             }
+
+            let didWork = false;
+            if (toFill.length > 0) {
+              vlog(`[Recovery] ${symbol}: ${gapDays.length} gap day(s), filling ${toFill.length}: ${toFill.join(", ")}`);
+              const r = await state.recoveryEngine.fillGapDays({
+                symbol,
+                days: toFill,
+                // pass ALL args through — the old (sym, res) closure silently
+                // dropped the lookback argument
+                fetchCandles: (sym, res, count, lookback) => fetchCandles(sym, res, count, lookback),
+                trigger,
+              });
+              if (r && r.success) didWork = true;
+              else if (r && r.skipped) vlog(`[Recovery] ${symbol}: another repair is already running — will retry next pass`);
+            }
+
+            for (const day of corruptDays) {
+              const alreadyRepaired = await state.db.wasDayAlreadyRepaired(symbol, new Date(`${day}T12:00:00+05:30`), 3).catch(() => false);
+              if (alreadyRepaired) { knownSkipped++; continue; }
+              await state.recoveryEngine.repairDay({
+                symbol,
+                tradingDay: new Date(`${day}T12:00:00+05:30`),
+                fetchCandles: (sym, res, count, lookback) => fetchCandles(sym, res, count, lookback),
+                trigger,
+              });
+              didWork = true;
+            }
+
+            if (didWork) repaired++;
+            else if (knownSkipped > 0) skippedKnown++;
+            else clean++;
           } catch (e) {
             console.warn(`[Recovery] ${symbol} scan error:`, e.message);
           }
