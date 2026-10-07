@@ -151,6 +151,33 @@
   margin-left: auto;
 }
 
+/* ── Download button — same pattern as CeilingBreakScannerPanel.css's
+   .cbr-download-btn and AbsorptionScannerPanel.css's .af-download-btn,
+   just reading T5's own --t5- theme tokens instead of theirs. */
+.t5-download-btn {
+  align-self: center;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--t5-border);
+  border-radius: 5px;
+  background: var(--t5-card);
+  color: var(--t5-mut);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.t5-download-btn:hover:not(:disabled) {
+  background: var(--t5-bg);
+  color: var(--t5-ink);
+  border-color: var(--t5-accent);
+}
+
+.t5-download-btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
 .t5-search {
   display: flex;
   align-items: center;

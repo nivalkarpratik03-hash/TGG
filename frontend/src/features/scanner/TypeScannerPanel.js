@@ -35,6 +35,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import React, { useState, useMemo } from "react";
+import * as XLSX from "xlsx";
 import { formatDateTimeIST } from "../../utils/istUtils";
 import { fmtTime } from "./mwScanHelpers";
 import { fmt } from "../../utils/format";
@@ -197,6 +198,91 @@ export default function TypeScannerPanel({
     [rows.history, query]
   );
 
+  const resultsAll = rows.results || [];
+  const upcomingAll = rows.upcoming || [];
+  const historyAll = rows.history || [];
+  const hasAnyRows = resultsAll.length > 0 || upcomingAll.length > 0 || historyAll.length > 0;
+
+  function dwText(r) {
+    if (!r.dw) return "";
+    const bull = r.dw === "bullish" || r.dw === "up" || r.dw === true;
+    return bull ? "Bull" : "Bear";
+  }
+
+  function latestEventTimes(r) {
+    const latest = r.events && r.events.length ? r.events[r.events.length - 1] : null;
+    return {
+      entryTime: latest?.entryTime ?? null,
+      exitTime: latest?.exited ? latest?.exitTime : null,
+    };
+  }
+
+  // ── Download — Results / Upcoming / History as three sheets in one
+  // .xlsx, columns mirroring what's on screen in each tab (see
+  // TypeSignalsTable / the new History table above). Always exports the
+  // FULL rows, not the search-filtered view — same rule as
+  // CeilingBreakScannerPanel.js's handleDownload. ────────────────────────
+  function handleDownload() {
+    if (!hasAnyRows) return;
+
+    const resultsRows = resultsAll.map((r, i) => {
+      const t = latestEventTimes(r);
+      return {
+        "Sr": i + 1,
+        "Symbol": tickerOf(r.symbol),
+        "Type": r.type || "",
+        "Entry": r.entry != null ? r.entry : "",
+        "Entry time": t.entryTime ? formatDateTimeIST(t.entryTime) : "",
+        "Exit": r.exit != null ? r.exit : "",
+        "Exit time": t.exitTime ? formatDateTimeIST(t.exitTime) : "",
+        "DW": dwText(r),
+        "DW time": r.dwTime || r.scannedAt ? formatDateTimeIST(r.dwTime || r.scannedAt) : "",
+      };
+    });
+
+    const upcomingRows = upcomingAll.map((r, i) => {
+      const t = latestEventTimes(r);
+      return {
+        "Sr": i + 1,
+        "Symbol": tickerOf(r.symbol),
+        "Type": r.type || "",
+        "Entry": r.entry != null ? r.entry : "",
+        "Entry time": t.entryTime ? formatDateTimeIST(t.entryTime) : "",
+        "DW": dwText(r),
+        "DW time": r.dwTime || r.scannedAt ? formatDateTimeIST(r.dwTime || r.scannedAt) : "",
+      };
+    });
+
+    const historyRows = historyAll.map((r, i) => ({
+      "Sr": i + 1,
+      "Symbol": tickerOf(r.symbol),
+      "Type": r.type || "",
+      "Entry": r.entry != null ? r.entry : "",
+      "Exit": r.exit != null ? r.exit : "",
+      "Time": (r.exitTime || r.entryTime) ? formatDateTimeIST(r.exitTime || r.entryTime) : "",
+    }));
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(resultsRows.length ? resultsRows : [{ "Info": "No completed signals yet." }]),
+      "Results"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(upcomingRows.length ? upcomingRows : [{ "Info": "No active signals yet." }]),
+      "Upcoming"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(historyRows.length ? historyRows : [{ "Info": "No past signals yet." }]),
+      "History"
+    );
+
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    XLSX.writeFile(wb, `type_scanner_${resolution}_${stamp}.xlsx`);
+  }
+
   return (
     <div className="tp-wrap">
       <div className="scanner-stats-row">
@@ -257,6 +343,15 @@ export default function TypeScannerPanel({
               </button>
             )}
           </div>
+
+          <button
+            className="scanner-download-btn"
+            onClick={handleDownload}
+            disabled={!hasAnyRows}
+            title="Download Results, Upcoming & History as one Excel file"
+          >
+            ⬇ Download
+          </button>
         </div>
       </div>
 

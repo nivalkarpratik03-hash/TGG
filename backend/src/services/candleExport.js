@@ -23,6 +23,14 @@
  * it is (see scripts/backtestOptionDataFetch.js, which already calls
  * fetchCandles() directly with option contract symbols — nothing special
  * needed here for options either).
+ *
+ * OI — fetchCandleRows()'s optional includeOI param sources this from
+ * Fyers' own oi_flag on the /history endpoint (added 2026-09, see
+ * oi-iv-data-export-handoff.md and test-oi-flag.js for the live
+ * verification this was based on — real, per-candle OI, confirmed
+ * non-zero for a live NIFTY option contract, works at every resolution
+ * this file supports). Off by default — every existing caller keeps its
+ * current 8-column row shape unless it explicitly opts in.
  * ─────────────────────────────────────────────────────────────────────────
  */
 
@@ -61,10 +69,11 @@ function toISTDateTime(epochMs) {
  * Fetches candles for `symbol` from `fromDateStr` (YYYY-MM-DD) through
  * today at the given timeframe label, and returns plain row objects ready
  * for XLSX.utils.json_to_sheet(): Symbol, Date, Time, Open, High, Low,
- * Close, Volume. Same 6 OHLCV fields every candle object in this backend
- * already has — no OI column (that only applies to derivatives quotes,
- * not historical candles, and isn't part of the shape fetchCandles()
- * returns).
+ * Close, Volume, and OI when includeOI is true. OI comes from Fyers'
+ * oi_flag on the /history endpoint — confirmed working live for this
+ * account via test-oi-flag.js (see oi-iv-data-export-handoff.md for the
+ * full verification). Off by default so every existing caller of this
+ * function keeps its exact current row shape.
  *
  * Throws with a clear message (never returns an empty/undefined result
  * silently) if the date is malformed or Fyers returns nothing — same
@@ -73,9 +82,10 @@ function toISTDateTime(epochMs) {
  * @param {string} symbol          e.g. "NSE:RELIANCE-EQ", "NSE:BEML26NOVFUT", "NSE:BEML26NOV3200CE"
  * @param {string} fromDateStr     "YYYY-MM-DD"
  * @param {string} [timeframeLabel="1day"]  one of TIMEFRAME_TO_MINUTES' keys
+ * @param {boolean} [includeOI=false]  add an OI column, sourced from Fyers' oi_flag
  * @returns {Promise<{rows: object[], resolution: number, timeframeLabel: string}>}
  */
-async function fetchCandleRows(symbol, fromDateStr, timeframeLabel = "1day") {
+async function fetchCandleRows(symbol, fromDateStr, timeframeLabel = "1day", includeOI = false) {
   if (!symbol) throw new Error("symbol is required");
   if (!fromDateStr || !/^\d{4}-\d{2}-\d{2}$/.test(fromDateStr)) {
     throw new Error(`from date must be YYYY-MM-DD, got "${fromDateStr}"`);
@@ -92,7 +102,7 @@ async function fetchCandleRows(symbol, fromDateStr, timeframeLabel = "1day") {
   // ONE call for every timeframe — fetchCandles() branches internally to
   // the 360-day daily-chunk path or the 90-day intraday-chunk path (see
   // fyers/client.js's own header comment for exactly how).
-  const candles = await fetchCandles(symbol, resolution, 999999, lookbackDays);
+  const candles = await fetchCandles(symbol, resolution, 999999, lookbackDays, includeOI);
 
   if (!candles || candles.length === 0) {
     throw new Error(`No candles returned for ${symbol} — check the symbol string and that the token is valid.`);
@@ -112,6 +122,7 @@ async function fetchCandleRows(symbol, fromDateStr, timeframeLabel = "1day") {
         Low: c.low,
         Close: c.close,
         Volume: c.volume ?? 0,
+        ...(includeOI ? { OI: c.oi ?? 0 } : {}),
       };
     });
 

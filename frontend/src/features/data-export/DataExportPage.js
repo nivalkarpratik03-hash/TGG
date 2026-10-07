@@ -137,6 +137,20 @@ export default function DataExportPage() {
 
   // ── Search state ─────────────────────────────────────────────────────
   const [segment, setSegment] = useState("spot");
+  // OI only exists for derivatives (Fyers' oi_flag — confirmed live via
+  // test-oi-flag.js, see oi-iv-data-export-handoff.md) — meaningless for
+  // spot equities/indices, so this only ever shows/applies when segment
+  // is "future" or "option". One shared state covers both single-contract
+  // and bulk download modes since the concept is identical either way.
+  // Declared here (not near optCE/optPE further down) because
+  // buildDownloadUrl, below, needs it in scope — declaring it after that
+  // point caused "Cannot access 'includeOI' before initialization".
+  const [includeOI, setIncludeOI] = useState(false);
+  // IV needs a strike price to mean anything (Black-Scholes requires
+  // one) — futures have no strike, so unlike includeOI this is scoped
+  // to segment === "option" ONLY, never "future". Declared here for the
+  // same reason includeOI is — buildDownloadUrl below needs it in scope.
+  const [includeIV, setIncludeIV] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
@@ -271,8 +285,23 @@ export default function DataExportPage() {
       to: toDate,
       timeframe,
     });
+    // Only ever sent for derivatives — see includeOI's own declaration
+    // comment for why spot never gets this param.
+    if (includeOI && (segment === "future" || segment === "option")) params.set("includeOI", "true");
+    // IV only for options — see includeIV's own declaration comment.
+    // entry.underlying/strike/expiryDate/optionType come straight from
+    // the search-result object handleSelect() already stored — no
+    // parsing of the raw symbol string needed (see dataExportRouter.js's
+    // /download route doc comment for why that would've been fragile).
+    if (includeIV && segment === "option" && entry.underlying && entry.strike && entry.expiryDate && entry.optionType) {
+      params.set("includeIV", "true");
+      params.set("underlying", entry.underlying);
+      params.set("strike", entry.strike);
+      params.set("expiryDate", entry.expiryDate);
+      params.set("optionType", entry.optionType);
+    }
     return `${BACKEND}/api/data-export/download?${params.toString()}`;
-  }, [fromDate, toDate, timeframe]);
+  }, [fromDate, toDate, timeframe, includeOI, includeIV, segment]);
 
   const [multiRunning, setMultiRunning] = useState(false);
   const [multiProgress, setMultiProgress] = useState(null); // {done,total,symbol}
@@ -344,8 +373,10 @@ export default function DataExportPage() {
   const [bulkUnderlying, setBulkUnderlying] = useState("");
   const [bulkQuery, setBulkQuery] = useState("");
   const [bulkDropdownOpen, setBulkDropdownOpen] = useState(false);
-  const [strikeMode, setStrikeMode] = useState("atm"); // "atm" | "strikes"
+  const [strikeMode, setStrikeMode] = useState("atm"); // "atm" | "strikes" | "dynamic"
   const [atmWidth, setAtmWidth] = useState(atmBandDefault);
+  // Dynamic ATM: strikes each side of the ROTATING ATM — 0 (default) = ATM only.
+  const [dynWidth, setDynWidth] = useState(0);
   useEffect(() => { setAtmWidth(atmBandDefault); }, [atmBandDefault]);
   const [strikesText, setStrikesText] = useState("");
   const [optCE, setOptCE] = useState(true);
@@ -414,7 +445,9 @@ export default function DataExportPage() {
     !!bulkUnderlying &&
     dateRangeValid &&
     (optCE || optPE) &&
-    (strikeMode === "atm" ? Number(atmWidth) > 0 : strikesText.trim().length > 0);
+    (strikeMode === "atm" ? Number(atmWidth) > 0
+      : strikeMode === "dynamic" ? (String(dynWidth) !== "" && Number(dynWidth) >= 0)
+        : strikesText.trim().length > 0);
 
   const bulkDownloadUrl = useMemo(() => {
     if (!bulkUnderlying) return null;
@@ -428,14 +461,17 @@ export default function DataExportPage() {
     });
     if (bulkEntry?.exchange) params.set("exchange", bulkEntry.exchange);
     if (strikeMode === "atm") params.set("atmWidth", String(atmWidth || atmBandDefault));
+    if (strikeMode === "dynamic") params.set("atmWidth", String(String(dynWidth) === "" ? 0 : dynWidth));
     if (strikeMode === "strikes") {
       const parsed = strikesText.split(",").map((s) => s.trim()).filter(Boolean).join(",");
       params.set("strikes", parsed);
     }
     if (bulkExpiry) params.set("expiryDate", bulkExpiry);
     if (socketId) params.set("socketId", socketId);
+    if (includeOI) params.set("includeOI", "true");
+    if (includeIV) params.set("includeIV", "true");
     return `${BACKEND}/api/data-export/bulk-options?${params.toString()}`;
-  }, [bulkUnderlying, strikeMode, fromDate, toDate, timeframe, optCE, optPE, bulkEntry, atmWidth, atmBandDefault, strikesText, bulkExpiry, socketId]);
+  }, [bulkUnderlying, strikeMode, fromDate, toDate, timeframe, optCE, optPE, bulkEntry, atmWidth, atmBandDefault, strikesText, dynWidth, bulkExpiry, socketId, includeOI, includeIV]);
 
   // Same fetch()-first approach as triggerMultiDownload above (see the
   // module-level comment on triggerBlobDownload): only ever hand the
@@ -680,6 +716,7 @@ export default function DataExportPage() {
                 <div className="de-segment-toggle">
                   <div className={`de-segment-btn ${strikeMode === "atm" ? "de-segment-active" : ""}`} onClick={() => setStrikeMode("atm")}>ATM ± N</div>
                   <div className={`de-segment-btn ${strikeMode === "strikes" ? "de-segment-active" : ""}`} onClick={() => setStrikeMode("strikes")}>Specific strikes</div>
+                  <div className={`de-segment-btn ${strikeMode === "dynamic" ? "de-segment-active" : ""}`} onClick={() => setStrikeMode("dynamic")}>Dynamic ATM (follows spot)</div>
                 </div>
 
                 {strikeMode === "atm" ? (
@@ -691,6 +728,18 @@ export default function DataExportPage() {
                       style={{ maxWidth: 120 }}
                     />
                     <div className="de-info-note">Default ({atmBandDefault}) matches what this app already uses everywhere else for ATM bands.</div>
+                  </div>
+                ) : strikeMode === "dynamic" ? (
+                  <div style={{ marginTop: 12 }}>
+                    <label className="de-label">Strikes each side of the rotating ATM (0 = ATM only)</label>
+                    <input
+                      type="number" min="0" max="50" value={dynWidth}
+                      onChange={(e) => setDynWidth(e.target.value)}
+                      style={{ maxWidth: 120 }}
+                    />
+                    <div className="de-info-note">
+                      For every candle, the strike nearest that moment's spot price is picked, so the ATM rotates as the market moves — the whole date range in one file. Adds a Spot column showing the spot used for each row.
+                    </div>
                   </div>
                 ) : (
                   <div style={{ marginTop: 12 }}>
@@ -711,6 +760,35 @@ export default function DataExportPage() {
               </div>
             )}
           </fieldset>
+
+          {/* ── Include OI / Include IV ──────────────────────────────
+              OI applies to both derivatives (future + option) — see
+              includeOI's declaration comment. IV only applies to
+              options (needs a strike price for Black-Scholes) — see
+              includeIV's declaration comment, so it's the one checkbox
+              here gated tighter than the fieldset itself. Both placed
+              outside the segment/mode conditionals above since they
+              apply the same way whether you're in single-contract or
+              bulk mode. */}
+          {(segment === "future" || segment === "option") && (
+            <fieldset>
+              <div className="de-checkbox-row">
+                <label className="de-checkbox">
+                  <input type="checkbox" checked={includeOI} onChange={(e) => setIncludeOI(e.target.checked)} /> Include OI
+                </label>
+                {segment === "option" && (
+                  <label className="de-checkbox">
+                    <input type="checkbox" checked={includeIV} onChange={(e) => setIncludeIV(e.target.checked)} /> Include IV
+                  </label>
+                )}
+              </div>
+              <div className="de-info-note">
+                {segment === "option"
+                  ? "OI is sourced live from Fyers per candle. IV is calculated (Black-Scholes) from each candle's own price — Fyers doesn't provide IV directly, and no broker does; every IV figure anywhere is computed this same way."
+                  : "Adds an Open Interest column, sourced live from Fyers per candle."}
+              </div>
+            </fieldset>
+          )}
 
           {/* ── Date range + timeframe ────────────────────────────── */}
           <fieldset>
@@ -800,7 +878,7 @@ export default function DataExportPage() {
               {bulkSummary && (
                 <div className="de-bulk-summary">
                   <div className="de-bulk-summary-title">
-                    Expiry used: {bulkSummary.expiryUsed}{bulkSummary.atmStrike ? ` · ATM ${bulkSummary.atmStrike}` : ""}
+                    Expiry used: {bulkSummary.expiryUsed}{bulkSummary.atmStrike ? ` · ATM ${bulkSummary.atmStrike}` : ""}{bulkSummary.atmRange ? ` · ATM moved ${bulkSummary.atmRange}` : ""}
                   </div>
                   {bulkSummary.clipped && (
                     <div className="de-info-note de-warn">{bulkSummary.clipMessage}</div>

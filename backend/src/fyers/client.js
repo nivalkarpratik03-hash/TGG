@@ -204,7 +204,7 @@ function calcLookbackDays(resolution) {
  *
  * Each chunk is max 360 days (Fyers limit is 365 days per daily request).
  */
-async function fetchDailyCandles(symbol, lookbackDays) {
+async function fetchDailyCandles(symbol, lookbackDays, includeOI = false) {
   const fyers = getFyersClient();
   const now = Math.floor(Date.now() / 1000);
   const todayEnd = endOfTodayIST(now);
@@ -235,6 +235,12 @@ async function fetchDailyCandles(symbol, lookbackDays) {
       .map((c) => ({
         time: normalizeDailyTimestamp(c[0]) * 1000,
         open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5],
+        // c[6] only exists when oi_flag was sent — confirmed live via
+        // test-oi-flag.js (see oi-iv-data-export-handoff.md). Attaching
+        // it unconditionally is harmless (undefined) for every caller
+        // that doesn't request it, since nothing reads a field that
+        // isn't there.
+        ...(includeOI ? { oi: c[6] } : {}),
       }))
       .filter(
         (c) =>
@@ -257,6 +263,7 @@ async function fetchDailyCandles(symbol, lookbackDays) {
         fyers.getHistory({
           symbol, resolution: "D", date_format: "0",
           range_from: String(chunk.from), range_to: String(chunk.to), cont_flag: "1",
+          ...(includeOI ? { oi_flag: "1" } : {}),
         }),
         rejectAfter(TIMEOUT_MS, `fetchDailyCandles ${label}`),
       ]);
@@ -302,7 +309,7 @@ function aggregateDailyToWeekly(dailyCandles) {
 }
 
 // ── Fetch historical candles ──────────────────────────────────────────────────
-async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverride = null) {
+async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverride = null, includeOI = false) {
   if (_excludedSymbols.has(symbol)) {
     throw new Error(`[Fyers] ${symbol} excluded (failed boot-time symbol validation) — skipping fetch, not calling Fyers`);
   }
@@ -335,7 +342,7 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
 
   // ── DAILY ────────────────────────────────────────────────────────────────
   if (isDaily) {
-    const daily = await fetchDailyCandles(symbol, lookbackDays);
+    const daily = await fetchDailyCandles(symbol, lookbackDays, includeOI);
     if (daily.length === 0) throw new Error(`[Fyers] No daily candles for ${symbol}`);
     console.log(
       `[Fyers] ${symbol} D: ${daily.length} candles | ` +
@@ -356,7 +363,10 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
   function parseIntraday(res) {
     if (!res || res.s !== "ok") return null;
     return (res.candles || [])
-      .map((c) => ({ time: c[0] * 1000, open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5] }))
+      .map((c) => ({
+        time: c[0] * 1000, open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5],
+        ...(includeOI ? { oi: c[6] } : {}),
+      }))
       .filter(
         (c) =>
           Number.isFinite(c.time) && c.time > 0 &&
@@ -382,6 +392,7 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
         fyers.getHistory({
           symbol, resolution: fyersResolution, date_format: "0",
           range_from: String(chunk.from), range_to: String(chunk.to), cont_flag: "1",
+          ...(includeOI ? { oi_flag: "1" } : {}),
         }),
         rejectAfter(TIMEOUT_MS, `fetchCandles intraday`),
       ]);
@@ -398,6 +409,7 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
             fyers.getHistory({
               symbol, resolution: fyersResolution, date_format: "0",
               range_from: String(chunk.from), range_to: String(chunk.to), cont_flag: "1",
+              ...(includeOI ? { oi_flag: "1" } : {}),
             }),
             rejectAfter(TIMEOUT_MS, `fetchCandles intraday`),
           ]);

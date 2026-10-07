@@ -388,9 +388,19 @@ class ScannerRunner extends EventEmitter {
   // Runs ONE strategy's own .scan() and stores/handles its result — the
   // generic per-strategy path (everything except the type-group
   // optimization, which computes all 4 type results in one call instead).
-  _runOneStrategy(strategy, symbol, candles, context, effectiveComboKey) {
+  // async + awaited (2026-09-26, Kronos integration) — every strategy
+  // before Kronos was synchronous pattern-matching over already-fetched
+  // candles, so scan() never needed to be async. Kronos calls out to an
+  // external FastAPI service over HTTP, which does. Awaiting a plain
+  // (non-Promise) return value resolves it immediately, so this is a
+  // no-op change in behavior for every existing strategy — confirmed by
+  // this being the only place strategy.scan() is invoked outside the
+  // type-group optimization path, and both call sites below already live
+  // inside _processSymbol()'s `for...of` loops (not .forEach, which
+  // would have broken await) inside an already-async function.
+  async _runOneStrategy(strategy, symbol, candles, context, effectiveComboKey) {
     try {
-      const result = strategy.scan(symbol, candles, context);
+      const result = await strategy.scan(symbol, candles, context);
       this._storeStrategyResult(strategy, symbol, effectiveComboKey, result);
     } catch (stratErr) {
       console.error(`[Scanner] Strategy ${strategy.id} error on ${symbol}: ${stratErr.message}`);
@@ -474,12 +484,12 @@ class ScannerRunner extends EventEmitter {
         }
       } else {
         for (const strategy of typeGroupStrategies) {
-          this._runOneStrategy(strategy, symbol, candles, context, effectiveComboKey);
+          await this._runOneStrategy(strategy, symbol, candles, context, effectiveComboKey);
         }
       }
 
       for (const strategy of otherStrategies) {
-        this._runOneStrategy(strategy, symbol, candles, context, effectiveComboKey);
+        await this._runOneStrategy(strategy, symbol, candles, context, effectiveComboKey);
       }
     } catch (err) {
       const prev = this._errors.get(symbol) || { count: 0, lastError: "" };

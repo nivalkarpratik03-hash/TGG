@@ -43,13 +43,19 @@
  *   Returns up to 50 matches: [{ symbol, name, exchange, type,
  *   underlying, expiryDate, strike, optionType }, ...]
  *
- * GET /api/data-export/download?symbol=&from=&timeframe=[&to=]
+ * GET /api/data-export/download?symbol=&from=&timeframe=[&to=][&includeOI=true]
+ *     [&includeIV=true&underlying=&strike=&expiryDate=&optionType=CE|PE]
  *   Streams an .xlsx attachment for ONE exact contract. `to` is accepted
  *   for forward-compat with the UI's date pickers but candles are always
  *   fetched through today — same "from a date through today" behavior
  *   fetchSpotCandles.js always had; rows after `to` (if given) are trimmed
  *   out before export so an earlier `to` date still does something useful
- *   rather than being silently ignored.
+ *   rather than being silently ignored. `includeOI=true` adds an OI column,
+ *   sourced from Fyers' own oi_flag (off by default — see
+ *   candleExport.js's fetchCandleRows() header for details). `includeIV=true`
+ *   adds an IV column, computed via Black-Scholes (see blackScholes.js and
+ *   ivEnrichment.js) — requires underlying/strike/expiryDate/optionType,
+ *   all of which the frontend already has on the selected search result.
  *
  * GET /api/data-export/curated-underlyings
  *   Returns [{underlying, exchange, assetClass}], plus the app-wide
@@ -60,12 +66,16 @@
  *   Bulk-mode expiry dropdown (leave blank in bulk-options to auto-pick
  *   the nearest one instead).
  *
- * GET /api/data-export/bulk-options?underlying=&mode=atm|strikes[&exchange=]
+ * GET /api/data-export/bulk-options?underlying=&mode=atm|strikes|dynamic[&exchange=]
  *     [&atmWidth=][&strikes=23100,23150][&optionTypes=CE,PE][&expiryDate=]
- *     &from=&timeframe=[&to=][&socketId=]
+ *     &from=&timeframe=[&to=][&includeOI=true][&includeIV=true][&socketId=]
  *   Streams ONE .xlsx attachment covering every matched strike/expiry
  *   combination, one flat sheet (see services/bulkOptionFetch.js's header
- *   for the exact row shape). If `socketId` is given and that socket is
+ *   for the exact row shape). `includeOI=true` adds an OI column to every
+ *   row, same source/convention as the single-symbol route above.
+ *   `includeIV=true` adds an IV column — bulk mode already has
+ *   strike/expiry/optionType per contract internally, so unlike the
+ *   single-symbol route, no extra params are needed here. If `socketId` is given and that socket is
  *   currently connected, "bulk_options_progress" ({done,total,symbol})
  *   fires after each contract, and "bulk_options_summary"
  *   ({fetched,skipped,clipped,clipMessage,expiryUsed}) fires once, right
@@ -81,9 +91,10 @@ const { loadToken, validateToken, fetchOptionChain } = require("../fyers/client"
 const { fetchCandleRows, rowsToXlsxBuffer, safeFilenamePart } = require("../services/candleExport");
 const { getSymbols } = require("./symbolsRouter");
 const { searchUniversalSymbols } = require("../services/fyersSymbolMaster");
-const { loadCuratedUnderlyings } = require("../derivatives/curatedUnderlyingsLoader");
+const { loadCuratedUnderlyings, findCuratedEntry } = require("../derivatives/curatedUnderlyingsLoader");
 const { resolveChainLookupSymbol } = require("../derivatives/derivativesGapFill");
 const { runBulkOptionFetch } = require("../services/bulkOptionFetch");
+const { fetchUnderlyingSpotMap, attachIV } = require("../services/ivEnrichment");
 
 // ── Curated → universal-shaped adapter ──────────────────────────────────
 // symbolsRouter's getSymbols() entries look like { symbol, name, type }
@@ -210,10 +221,13 @@ module.exports = function createDataExportRouter({ io } = {}) {
     }
   });
 
-  /** GET /api/data-export/download?symbol=&from=&timeframe=[&to=] */
+  /** GET /api/data-export/download?symbol=&from=&timeframe=[&to=][&includeOI=true][&includeIV=true&underlying=&strike=&expiryDate=&optionType=CE|PE] */
   router.get("/download", async (req, res) => {
     try {
-      const { symbol, from, to, timeframe } = req.query;
+      const {
+        symbol, from, to, timeframe, includeOI,
+        includeIV, underlying, strike, expiryDate, optionType,
+      } = req.query;
       if (!symbol || !from) {
         return res.status(400).json({ error: "missing_params", message: "symbol and from are required" });
       }
@@ -224,15 +238,54 @@ module.exports = function createDataExportRouter({ io } = {}) {
       if (!(await requireValidToken(res))) return;
 
       const timeframeLabel = timeframe || "1day";
-      const { rows: allRows } = await fetchCandleRows(symbol, from, timeframeLabel);
+      // "true"/"1" from a query string — same loose-boolean parsing
+      // convention scannerRouter.js's found==="true" filter already uses
+      // elsewhere in this codebase. Anything else (undefined, "false")
+      // stays off.
+      const wantOI = includeOI === "true" || includeOI === "1";
+      const wantIV = includeIV === "true" || includeIV === "1";
+
+      // IV needs underlying/strike/expiryDate/optionType — the frontend
+      // already has all 4 on the selected search-result entry (see
+      // DataExportPage.js's handleSelect(), which stores the whole
+      // search-result object), so these arrive as plain params instead
+      // of this route trying to parse them back out of the raw symbol
+      // string, which would be fragile (Fyers' weekly vs monthly option
+      // symbol formats differ and aren't worth re-deriving here when the
+      // frontend already has the clean, structured values on hand).
+      if (wantIV && (!underlying || !strike || !expiryDate || !optionType)) {
+        return res.status(400).json({
+          error: "missing_iv_params",
+          message: "includeIV=true requires underlying, strike, expiryDate, and optionType.",
+        });
+      }
+
+      const { rows: allRows } = await fetchCandleRows(symbol, from, timeframeLabel, wantOI);
 
       // `to` narrows the already-fetched range (fetchCandleRows always goes
       // through today) — trimmed here rather than passed down, so
       // candleExport.js's one fetch function stays the same for the CLI
       // script (which has no --to) and this endpoint.
-      const rows = to
+      let rows = to
         ? allRows.filter((r) => r.Date <= to)
         : allRows;
+
+      if (wantIV) {
+        const entry = findCuratedEntry(underlying);
+        if (!entry) {
+          return res.status(400).json({
+            error: "unknown_underlying",
+            message: `"${underlying}" isn't in this app's curated underlyings list — IV needs the underlying's own spot price series, which this app only knows how to fetch for curated underlyings.`,
+          });
+        }
+        const lookupSymbol = resolveChainLookupSymbol(entry);
+        const spotMap = await fetchUnderlyingSpotMap(lookupSymbol, from, timeframeLabel);
+        rows = attachIV(rows, spotMap, {
+          strike: Number(strike),
+          optionType,
+          expiryDateStr: expiryDate,
+        });
+      }
 
       if (rows.length === 0) {
         return res.status(404).json({
@@ -318,14 +371,16 @@ module.exports = function createDataExportRouter({ io } = {}) {
     try {
       const {
         underlying, exchange, mode, atmWidth, strikes, optionTypes,
-        expiryDate, from, to, timeframe, socketId,
+        expiryDate, from, to, timeframe, includeOI, includeIV, socketId,
       } = req.query;
 
       if (!underlying || !mode || !from) {
         return res.status(400).json({ error: "missing_params", message: "underlying, mode, and from are required" });
       }
-      if (mode !== "atm" && mode !== "strikes") {
-        return res.status(400).json({ error: "invalid_mode", message: 'mode must be "atm" or "strikes"' });
+      // "dynamic" = ATM follows spot candle by candle (atmWidth 0 = ATM only,
+      // N = ATM ± N strikes) — see bulkOptionFetch.js's DYNAMIC ATM MODE.
+      if (mode !== "atm" && mode !== "strikes" && mode !== "dynamic") {
+        return res.status(400).json({ error: "invalid_mode", message: 'mode must be "atm", "strikes" or "dynamic"' });
       }
       if (mode === "strikes" && !strikes) {
         return res.status(400).json({ error: "missing_strikes", message: "strikes is required when mode=strikes (comma-separated numbers)" });
@@ -341,6 +396,8 @@ module.exports = function createDataExportRouter({ io } = {}) {
         : ["CE", "PE"];
 
       const targetSocket = socketId && io ? io.sockets.sockets.get(socketId) : null;
+      const wantOI = includeOI === "true" || includeOI === "1";
+      const wantIV = includeIV === "true" || includeIV === "1";
 
       const result = await runBulkOptionFetch({
         underlying, exchange, mode,
@@ -350,6 +407,8 @@ module.exports = function createDataExportRouter({ io } = {}) {
         expiryDate: expiryDate || undefined,
         from, to: to || undefined,
         timeframe: timeframe || "1day",
+        includeOI: wantOI,
+        includeIV: wantIV,
         onProgress: targetSocket
           ? (p) => targetSocket.emit("bulk_options_progress", p)
           : undefined,
@@ -363,6 +422,7 @@ module.exports = function createDataExportRouter({ io } = {}) {
           clipMessage: result.clipMessage,
           expiryUsed: result.expiryUsed,
           atmStrike: result.atmStrike,
+          atmRange: result.atmRange,
         });
       }
 

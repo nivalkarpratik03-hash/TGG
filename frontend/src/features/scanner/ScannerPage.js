@@ -38,6 +38,8 @@ import CeilingBreakScannerPanel from "./CeilingBreakScannerPanel";
 import { buildCeilingBreakRows } from "./ceilingBreakResultShape";
 import PinakaScannerPanel from "./PinakaScannerPanel";
 import { buildPinakaRows } from "./pinakaResultShape";
+import KronosScannerPanel from "./KronosScannerPanel";
+import { buildKronosRows } from "./kronosResultShape";
 import S1S2S3ScannerPanel from "./S1S2S3ScannerPanel";
 import TypeScannerPanel from "./TypeScannerPanel";
 import { buildTypeHistoryRows } from "./typeResultShape";
@@ -377,6 +379,11 @@ export default function ScannerPage() {
   // id: "pinaka" (see strategyRegistry.js), no group field needed.
   const isPinaka = activeStrategy === "pinaka";
 
+  // Kronos (AI forecast) — id-matched, same as isPinaka above.
+  // Results-only shape (kronosResultShape.js), no group field needed —
+  // kronosDirection.js exports id: "kronos" directly.
+  const isKronos = activeStrategy === "kronos";
+
   // Dropdown-eligible strategies only — excludes variant:"single" entries
   // (type-e/type-r/type-f), which are tab-only, reachable via the R/E/F
   // buttons next to Results/Upcoming instead. Previously the dropdown
@@ -623,6 +630,13 @@ export default function ScannerPage() {
     [results, isPinaka]
   );
 
+  // Results list for KronosScannerPanel. No-op (empty) whenever isKronos
+  // is false, same guard pattern as pinakaRows above.
+  const kronosRows = useMemo(
+    () => (isKronos ? buildKronosRows(results) : { results: [], upcoming: [], history: [], counts: { up: 0, down: 0, neutral: 0, highConfidence: 0 } }),
+    [results, isKronos]
+  );
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="scanner-page">
@@ -811,6 +825,15 @@ export default function ScannerPage() {
                 onLookbackDaysChange={setLookbackDays}
                 onScanRange={handleLookbackScan}
                 lookbackDisabled={isRunning || loading}
+              />
+            ) : isKronos ? (
+              <KronosScannerPanel
+                rows={kronosRows}
+                scannedCount={results.length}
+                resolution={tfLabel}
+                lastScan={comboScannedAt}
+                durationMs={status?.lastScanDurationMs}
+                onRowClick={(symbol) => openChart(symbol, timeframe)}
               />
             ) : isTypeGroup ? (
               <TypeScannerPanel

@@ -1708,3 +1708,82 @@
   white-space: nowrap;
   font-weight: 400;
 }
+/* ─── History Lookback filter (shared) ──────────────────────────────────────
+   Used by HistoryLookbackFilter.js — the ONE dropdown + scoped "Scan this
+   range" button every strategy panel's History sub-header renders, instead
+   of five independent copies. See that file's header comment. */
+.scanner-history-subrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.scanner-lookback-wrap {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg2);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 5px 10px;
+  flex-shrink: 0;
+}
+
+.scanner-lookback-tag {
+  background: var(--accent);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 5px;
+  border-radius: 3px;
+  letter-spacing: 0.03em;
+}
+
+.scanner-lookback-label {
+  color: var(--text2);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.scanner-lookback-select {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.scanner-lookback-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scanner-lookback-select option {
+  background: var(--bg2);
+  color: var(--text);
+}
+
+.scanner-lookback-scan-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  padding: 5px 11px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.scanner-lookback-scan-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
