@@ -2,3 +2,5 @@ README.md
 tgg-clean.zip
 node_modules/
 .turbo/
+kronos-service/__pycache__
+kronos-service/model/__pycache__
