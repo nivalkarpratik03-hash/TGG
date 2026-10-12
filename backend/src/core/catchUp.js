@@ -174,7 +174,10 @@ function createCatchUp({ dataFetch }) {
               issues.filter((iss) => iss.type === "CORRUPT_OHLC" && iss.time)
                 .map((iss) => new Date(iss.time + 5.5 * 3600 * 1000).toISOString().slice(0, 10))
             )];
-            if (gapDays.length === 0 && corruptDays.length === 0) { clean++; return; }
+            // 2026-10-07: ZERO_VOLUME is a real issue type now (validationEngine
+            // findZeroVolumeDays) — handled by healVolumeDays below.
+            const zeroVolDays = state.db.zeroVolumeDaysOf(issues);
+            if (gapDays.length === 0 && corruptDays.length === 0 && zeroVolDays.length === 0) { clean++; return; }
 
             const MAX_DAYS_PER_PASS = 10; // newest first — recent holes matter most; the rest are picked up next pass
             const toFill = [];
@@ -212,6 +215,39 @@ function createCatchUp({ dataFetch }) {
                 trigger,
               });
               didWork = true;
+            }
+
+            // ── Zero-volume heal (additive: only writes real broker volume) ──
+            // Runs AFTER gap fill / OHLC repair so a repaired day (which already
+            // brings broker volume with it) is not asked about twice. A day the
+            // broker already confirmed it has no volume for is skipped: today
+            // for 20 min only (its rows keep arriving), past days for 3 days.
+            if (zeroVolDays.length > 0) {
+              const todayKey = state.db.istDateKey(Date.now());
+              const stillZero = state.db.findZeroVolumeDays(
+                symbol,
+                await state.db.loadCandles(symbol, 1, { limit: 100000, from: new Date(Date.now() - 90 * 86400 * 1000).toISOString(), to: new Date().toISOString() })
+              );
+              const stillZeroDays = new Set(stillZero.map((z) => z.day));
+              const toHeal = [];
+              for (const day of zeroVolDays) {
+                if (toHeal.length >= 10) break;
+                if (!stillZeroDays.has(day)) continue; // already fixed by the repair above
+                const mins = day === todayKey ? 20 : 3 * 24 * 60;
+                const attempted = await state.db.wasVolumeHealAttempted(symbol, new Date(`${day}T12:00:00+05:30`), mins).catch(() => false);
+                if (attempted) { knownSkipped++; continue; }
+                toHeal.push(day);
+              }
+              if (toHeal.length > 0) {
+                const r = await state.recoveryEngine.healVolumeDays({
+                  symbol,
+                  days: toHeal,
+                  fetchCandles: (sym, res, count, lookback) => fetchCandles(sym, res, count, lookback),
+                  trigger: `volume_heal:${trigger}`,
+                });
+                if (r && r.success) didWork = true;
+                else if (r && r.skipped) vlog(`[Recovery] ${symbol}: another repair is already running — volume heal retried next pass`);
+              }
             }
 
             if (didWork) repaired++;

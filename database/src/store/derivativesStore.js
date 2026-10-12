@@ -98,7 +98,9 @@ function buildBatchInsert(batch, kind, exchange, table) {
         VALUES ${values.join(",")}
         ON CONFLICT (underlying, expiry_date, strike, option_type, time) DO UPDATE SET
           open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-          close = EXCLUDED.close, volume = EXCLUDED.volume, oi = EXCLUDED.oi,
+          close = EXCLUDED.close,
+          volume = CASE WHEN COALESCE(EXCLUDED.volume, 0) > 0 THEN EXCLUDED.volume ELSE ${table}.volume END,
+          oi = EXCLUDED.oi,
           symbol = EXCLUDED.symbol, inserted_at = NOW()
       `,
       params,
@@ -114,7 +116,9 @@ function buildBatchInsert(batch, kind, exchange, table) {
         VALUES ${values.join(",")}
         ON CONFLICT (underlying, expiry_date, strike, option_type, time) DO UPDATE SET
           open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-          close = EXCLUDED.close, volume = EXCLUDED.volume, oi = EXCLUDED.oi,
+          close = EXCLUDED.close,
+          volume = CASE WHEN COALESCE(EXCLUDED.volume, 0) > 0 THEN EXCLUDED.volume ELSE ${table}.volume END,
+          oi = EXCLUDED.oi,
           symbol = EXCLUDED.symbol, inserted_at = NOW()
       `,
       params,
@@ -130,7 +134,9 @@ function buildBatchInsert(batch, kind, exchange, table) {
         VALUES ${values.join(",")}
         ON CONFLICT (underlying, expiry_date, time) DO UPDATE SET
           open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-          close = EXCLUDED.close, volume = EXCLUDED.volume, oi = EXCLUDED.oi,
+          close = EXCLUDED.close,
+          volume = CASE WHEN COALESCE(EXCLUDED.volume, 0) > 0 THEN EXCLUDED.volume ELSE ${table}.volume END,
+          oi = EXCLUDED.oi,
           symbol = EXCLUDED.symbol, inserted_at = NOW()
       `,
       params,

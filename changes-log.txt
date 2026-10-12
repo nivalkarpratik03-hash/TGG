@@ -626,3 +626,38 @@ Format per entry: DATE | FILES | bug → fix
   • /close/:id 404'd (pg BIGSERIAL id is a string, compared === number) and
     closed at stale DB close → Number() compare + live price.
   • Dashboard: LTP + unrealised P&L on open rows, 2s refresh.
+
+2026-10-07 | candleStore.js, derivativesStore.js, validationEngine.js, recoveryEngine.js, repairLog.js, catchUp.js, dataFetch.js
+  • ZERO VOLUME root cause: tick stream is Fyers LiteMode (no vol_traded_today)
+    → CandleBuilder finalizes every live 1m with volume 0 → tickEngine upserts
+    it, and ON CONFLICT `volume = EXCLUDED.volume` overwrote real REST volume
+    with 0. Only REST-sourced minutes (boot top-up, gap backfill, the 15:29
+    candle) kept volume → "volume only at open + last minute". Validator
+    never looked at volume, so every pass called it clean.
+  • candleStore/derivativesStore upsert: volume = CASE WHEN EXCLUDED.volume>0
+    THEN EXCLUDED.volume ELSE existing END; derivatives oi = COALESCE(new,
+    existing). A 0/NULL write can no longer erase real volume/OI.
+  • validationEngine: NEW findZeroVolumeDays() — ZERO_VOLUME issue per IST day
+    (spot: >30% zero candles; CE/PE/FUT: every candle zero; ignores candles
+    <5min old and days <10 candles). Added to validateHistorical() issues and
+    checkContinuity().zeroVolumeDays. NOT inside validateCandleArray (periodic
+    sync/repairDay treat "invalid" as "full-day repair").
+  • recoveryEngine: NEW fillZeroVolumeDays() — one broker fetch, writes broker
+    volume ONLY onto rows holding 0 (OHLC/OI untouched, nothing deleted).
+    repair_log trigger "volume_heal": "ok" = broker has no volume (suppress),
+    "filled" = fixed. repairDay() now keeps stored volume where broker row is 0.
+  • repairLog.wasDayAlreadyRepaired(sym, day, withinDays, trigger=null): default
+    ignores volume_heal rows; "volume_heal" asks about volume attempts only, so
+    gap-fill and volume markers never shadow each other.
+  • catchUp.runValidatorRecovery: after gap/corrupt repair, heals ZERO_VOLUME
+    days (max 10/pass, 30-day suppression, expired contracts skipped).
+    Runs at startup + 15:40 close checkpoint.
+  • dataFetch: Refresh (healGaps) also runs the volume heal.
+  • 1440 row: ensureFreshDailyData only inserted bars NEWER than the last
+    stored one and went quiet once today's bar existed, so the half-formed bar
+    Fyers returns mid-session (09:19 snapshot) was frozen forever (NIFTY 6 Oct:
+    close 22592.45 / vol 13.1M stored vs real close 22776.1). Now re-reads 5
+    days and writes any new OR changed bar; refresh ≤1/5min in session, settled
+    after 15:45 IST. Fallback daily upsert uses >= for the latest bar.
+  • Existing zero rows heal on next startup / 15:40 checkpoint / Refresh click.
+    No migration needed.

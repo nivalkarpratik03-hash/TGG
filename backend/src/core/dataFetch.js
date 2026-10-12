@@ -19,7 +19,7 @@ const { runSignalEngine } = require("../services/signalEngine");
 const { fetchCandles, fetchDailyCandles, FULL_HISTORY_DAILY_LOOKBACK_DAYS } = require("../fyers/client");
 const { deriveTimeframe, istDateKey } = require("../services/candleBuilder");
 const { DAILY_RESOLUTION, isDailyOrHigher, aggregateDailyCandles } = require("../services/timeframeAggregator");
-const { isTradingDay, isAnyMarketLive } = require("../fyers/tickStream");
+const { isTradingDay, isAnyMarketLive, isLiveMarket, isMCXSymbol, nowIST, NSE_CLOSE_MIN, MCX_CLOSE_MIN, MCX_SAT_CLOSE } = require("../fyers/tickStream");
 const state = require("./state");
 const { vlog, vwarn } = require("../utils/verboseLog");
 
@@ -182,65 +182,106 @@ function createDataFetch({ io, tickEngine }) {
     }
   }
 
-  // ─── Daily (1D) staleness check — mirrors ensureFreshOneMinData above ─────
+  // ─── Daily (1D) freshness — rewritten 2026-10-07 ──────────────────────────
   //
-  // 1D bars only ever change once per trading day (today's bar, while the
-  // market is open) plus one final settle after close. So instead of a
-  // tight few-minute tolerance like the 1m check, this only re-fetches when
-  // the DB's latest daily row is from a PRIOR calendar day (IST) than
-  // today's actual/most-recent trading day — i.e. "we don't have today's
-  // bar yet" or "yesterday's bar never got its final settle". Throttled the
-  // same way (per-symbol cooldown) so this can't turn into a hammering loop
-  // across a full symbol list either.
+  // BUG THIS FIXES: the old check (a) returned immediately once the DB had a
+  // row for TODAY, and (b) only ever upserted bars with time > the last
+  // stored bar. Fyers returns the still-forming daily bar during the session,
+  // so the first mid-day fetch stored a PARTIAL bar (open/high/low/close/
+  // volume as of that minute) and nothing ever touched it again — not that
+  // evening, not the next day (the refetch filtered it out as "not newer").
+  // That frozen partial row is the odd-looking resolution=1440 row at the top
+  // of the table (its time reads 09:15 because normalizeDailyTimestamp
+  // anchors every daily bar to the session open).
   //
-  // Never throws — same guarantee as ensureFreshOneMinData: any failure here
-  // just means we serve the (possibly one-day-stale) DB data exactly as
-  // before this existed.
-  const DAILY_STALENESS_CHECK_COOLDOWN_MS = 5 * 60 * 1000; // at most once per 5 min per symbol
+  // Now:
+  //   • during the session today's bar is refreshed (2 min throttle) — it is
+  //     provisional, and the live tick patch keeps the in-memory copy current;
+  //   • once the session is over (+ grace) ONE settle refetch replaces it with
+  //     the final bar (tracked in `dailySettled`);
+  //   • on any later day the last few bars are compared with the fresh pull
+  //     and re-written when they differ, so an old partial bar self-heals.
+  // Never throws — any failure serves the DB data exactly as before.
+  const DAILY_STALENESS_CHECK_COOLDOWN_MS = 5 * 60 * 1000;   // closed market / settle
+  const DAILY_LIVE_REFRESH_COOLDOWN_MS = 2 * 60 * 1000;      // while today's bar is forming
+  const DAILY_FINAL_GRACE_MIN = 5;                            // minutes after close before Fyers' daily bar is final
+  const DAILY_COMPARE_DAYS = 5;                               // fresh pull / compare window
   const lastDailyStalenessCheckAt = new Map();
+  const dailySettled = new Set();                             // `${symbol}|${istDay}` already refetched after close
+
+  /** True once today's daily bar for `symbol` can no longer change. */
+  function isTodayDailyFinal(symbol) {
+    const { mins, dow } = nowIST();
+    if (dow === 0) return true;
+    const mcx = isMCXSymbol(symbol);
+    if (!mcx && dow === 6) return true;
+    const closeMin = mcx ? (dow === 6 ? MCX_SAT_CLOSE : MCX_CLOSE_MIN) : NSE_CLOSE_MIN;
+    return mins >= closeMin + DAILY_FINAL_GRACE_MIN;
+  }
+
+  /** Fresh bars that are new or differ from what is stored (OHLC or volume). */
+  function dailyBarsToWrite(fresh, stored) {
+    const byTime = new Map((stored || []).map((c) => [c.time, c]));
+    return fresh.filter((f) => {
+      const o = byTime.get(f.time);
+      if (!o) return true;
+      return o.open !== f.open || o.high !== f.high || o.low !== f.low || o.close !== f.close || (Number(o.volume) || 0) !== (Number(f.volume) || 0);
+    });
+  }
 
   async function ensureFreshDailyData(symbol, dailyCandles) {
     try {
       if (!dailyCandles || dailyCandles.length === 0) return dailyCandles;
 
       const lastCandle = dailyCandles[dailyCandles.length - 1];
-      const todayKey = istDateKey(Date.now());
-      const lastKey = istDateKey(lastCandle.time);
-      if (lastKey === todayKey) return dailyCandles; // already has today's bar — current
-
       const nowMs = Date.now();
+      const todayKey = istDateKey(nowMs);
+      const lastKey = istDateKey(lastCandle.time);
+      const settledKey = `${symbol}|${todayKey}`;
+      const todayFinal = isTodayDailyFinal(symbol);
+
+      let cooldown = DAILY_STALENESS_CHECK_COOLDOWN_MS;
+      if (lastKey === todayKey) {
+        if (isLiveMarket(symbol)) cooldown = DAILY_LIVE_REFRESH_COOLDOWN_MS;       // today's bar is still forming
+        else if (todayFinal && !dailySettled.has(settledKey)) { /* settle refetch due */ }
+        else return dailyCandles;                                                  // settled, or inside the post-close grace window
+      } else if (lastKey > todayKey) {
+        return dailyCandles;
+      }
+
       const lastCheck = lastDailyStalenessCheckAt.get(symbol) || 0;
-      if (nowMs - lastCheck < DAILY_STALENESS_CHECK_COOLDOWN_MS) return dailyCandles; // throttled
+      if (nowMs - lastCheck < cooldown) return dailyCandles; // throttled
       lastDailyStalenessCheckAt.set(symbol, nowMs);
 
       const tokenOk = await state.validateToken().catch(() => false);
       if (!tokenOk) return dailyCandles;
 
-      vlog(`[Staleness] ${symbol}: DB latest daily bar is ${lastKey}, today is ${todayKey} — fetching delta from Fyers`);
+      vlog(`[Staleness] ${symbol}: DB latest daily bar is ${lastKey}, today is ${todayKey} — refreshing last ${DAILY_COMPARE_DAYS}d from Fyers`);
 
-      // Small bounded lookback (5 days) always covers the gap — even a
-      // multi-day outage or a weekend/holiday never spans more than a
-      // handful of calendar days without a new trading-day bar appearing.
-      const freshDaily = await fetchDailyCandles(symbol, 5);
+      const freshDaily = await fetchDailyCandles(symbol, DAILY_COMPARE_DAYS);
       if (!freshDaily || freshDaily.length === 0) return dailyCandles;
 
-      const newOnes = freshDaily.filter((c) => c.time > lastCandle.time);
-      if (newOnes.length === 0) return dailyCandles;
+      // Today's bar after the grace window is final → remember we settled it.
+      if (todayFinal && freshDaily.some((c) => istDateKey(c.time) === todayKey)) dailySettled.add(settledKey);
+
+      const toWrite = dailyBarsToWrite(freshDaily, dailyCandles);
+      if (toWrite.length === 0) return dailyCandles;
 
       if (state.dbEnabled && state.db) {
         try {
-          const inserted = await state.db.upsertCandles(symbol, DAILY_RESOLUTION, newOnes);
-          vlog(`[Staleness] ${symbol}: backfilled ${inserted} missing daily candle(s)`);
+          const inserted = await state.db.upsertCandles(symbol, DAILY_RESOLUTION, toWrite);
+          vlog(`[Staleness] ${symbol}: wrote ${inserted} daily candle(s) (new or changed)`);
           io.emit("history_updated", { symbol, resolution: DAILY_RESOLUTION, reason: "daily_staleness_backfill", count: inserted });
         } catch (err) {
           console.warn(`[Staleness] ${symbol}: daily upsert failed (${err.message}) — still using them in-memory for this response`);
         }
       }
 
-      const merged = [...dailyCandles, ...newOnes]
-        .sort((a, b) => a.time - b.time)
-        .filter((c, i, arr) => i === 0 || c.time !== arr[i - 1].time);
-      return merged;
+      // Merge: fresh bars REPLACE stored bars with the same time (the old
+      // merge kept the stale stored copy because it only appended newer bars).
+      const byTime = new Map(dailyCandles.map((c) => [c.time, c]));
+      for (const c of freshDaily) byTime.set(c.time, c);
+      return [...byTime.values()].sort((a, b) => a.time - b.time);
     } catch (err) {
       console.warn(`[Staleness] ${symbol}: daily check failed (${err.message}) — serving DB data as-is`);
       return dailyCandles;
@@ -280,6 +321,12 @@ function createDataFetch({ io, tickEngine }) {
           if (!latest) return; // symbol has no 1m data yet — nothing to check staleness against
           const before = latest.time;
           await ensureFreshOneMinData(symbol, [latest]);
+          // Also settle the stored daily bar (spot only — derivatives keep no 1D rows).
+          // Without this a symbol nobody opens a chart for would keep a partial bar forever.
+          if (!isDerivativeSymbol(symbol)) {
+            const latestDaily = await state.db.getLatestCandle(symbol, DAILY_RESOLUTION).catch(() => null);
+            if (latestDaily) await ensureFreshDailyData(symbol, [latestDaily]);
+          }
           // ensureFreshOneMinData logs its own [Staleness] line when it
           // actually backfills something; we just tally here for the summary.
           const after = await state.db.getLatestCandle(symbol, 1).catch(() => null);
@@ -348,22 +395,52 @@ function createDataFetch({ io, tickEngine }) {
     // false) skip a day the broker already confirmed it cannot fill, until
     // BROKER_RECHECK_MS passes or the missing-minute count changes.
     const toFetch = candidates;
-    if (toFetch.length === 0) {
-      return { ran: true, healthy: false, gapDaysBefore: before.gapDays, gapDaysAfter: before.gapDays, inserted: 0, reason: "broker_confirmed_missing" };
+
+    // 2026-10-07: zero-volume days are part of the health check now. Refresh
+    // (force) always re-asks the broker; background callers skip days the
+    // broker already confirmed it has no volume for.
+    const zeroDays = [];
+    for (const z of before.zeroVolumeDays || []) {
+      if (!force && state.db.wasVolumeHealAttempted) {
+        const mins = z.day === istDateKey(Date.now()) ? 20 : 3 * 24 * 60;
+        const attempted = await state.db.wasVolumeHealAttempted(symbol, new Date(`${z.day}T12:00:00+05:30`), mins).catch(() => false);
+        if (attempted) continue;
+      }
+      zeroDays.push(z.day);
+    }
+
+    if (toFetch.length === 0 && zeroDays.length === 0) {
+      return { ran: true, healthy: false, gapDaysBefore: before.gapDays, gapDaysAfter: before.gapDays, zeroVolumeDaysBefore: before.zeroVolumeDays || [], inserted: 0, reason: "broker_confirmed_missing" };
     }
 
     const tokenOk = await state.validateToken().catch(() => false);
     if (!tokenOk) return { ran: true, healthy: false, gapDaysBefore: before.gapDays, gapDaysAfter: before.gapDays, inserted: 0, reason: "token_invalid" };
 
-    vlog(`[Heal] ${symbol}: ${toFetch.length} gap day(s) [${toFetch.map((g) => `${g.day}:${g.missingMinutes}m`).join(", ")}] — filling from broker`);
-    const fill = await state.recoveryEngine.fillGapDays({
-      symbol,
-      days: toFetch.map((g) => g.day),
-      fetchCandles: (s, r, c, l) => fetchCandles(s, r, c, l),
-      trigger: "refresh",
-    });
-    if (!fill || fill.skipped || fill.success === false) {
-      return { ran: true, healthy: false, gapDaysBefore: before.gapDays, gapDaysAfter: before.gapDays, inserted: 0, reason: fill && fill.skipped ? "repair_already_running" : (fill && fill.error) || "fill_failed" };
+    let fill = { inserted: 0, fixedDays: [], remainingDays: [] };
+    if (toFetch.length > 0) {
+      vlog(`[Heal] ${symbol}: ${toFetch.length} gap day(s) [${toFetch.map((g) => `${g.day}:${g.missingMinutes}m`).join(", ")}] — filling from broker`);
+      fill = await state.recoveryEngine.fillGapDays({
+        symbol,
+        days: toFetch.map((g) => g.day),
+        fetchCandles: (s, r, c, l) => fetchCandles(s, r, c, l),
+        trigger: "refresh",
+      });
+      if (!fill || fill.skipped || fill.success === false) {
+        return { ran: true, healthy: false, gapDaysBefore: before.gapDays, gapDaysAfter: before.gapDays, inserted: 0, reason: fill && fill.skipped ? "repair_already_running" : (fill && fill.error) || "fill_failed" };
+      }
+    }
+
+    let volumeUpdated = 0;
+    let volumeRemainingDays = [];
+    if (zeroDays.length > 0) {
+      vlog(`[Heal] ${symbol}: ${zeroDays.length} zero-volume day(s) [${zeroDays.join(", ")}] — healing volume from broker`);
+      const vr = await state.recoveryEngine.healVolumeDays({
+        symbol,
+        days: zeroDays,
+        fetchCandles: (s, r, c, l) => fetchCandles(s, r, c, l),
+        trigger: "volume_heal:refresh",
+      }).catch((e) => { console.warn(`[Heal] ${symbol}: volume heal failed (${e.message})`); return null; });
+      if (vr && vr.success) { volumeUpdated = vr.updated || 0; volumeRemainingDays = vr.remainingDays || []; }
     }
 
     const after = await getContinuityReport(symbol);
@@ -378,7 +455,11 @@ function createDataFetch({ io, tickEngine }) {
       healthy: after.healthy,
       gapDaysBefore: before.gapDays,
       gapDaysAfter: after.gapDays,
+      zeroVolumeDaysBefore: before.zeroVolumeDays || [],
+      zeroVolumeDaysAfter: after.zeroVolumeDays || [],
       inserted: fill.inserted || 0,
+      volumeUpdated,
+      volumeRemainingDays,
       fixedDays: fill.fixedDays || [],
       remainingDays: fill.remainingDays || [],
     };
@@ -568,7 +649,9 @@ function createDataFetch({ io, tickEngine }) {
 
       if (state.dbEnabled && dailyCandles.length > 0) {
         state.db.getLatestCandle(symbol, DAILY_RESOLUTION).then((latest) => {
-          const newCandles = latest ? dailyCandles.filter((c) => c.time > latest.time) : dailyCandles;
+          // A bar at/after the last stored one is written again: the stored copy of the
+          // newest bar may be a partial print (see ensureFreshDailyData header).
+          const newCandles = latest ? dailyCandles.filter((c) => c.time >= latest.time) : dailyCandles;
           if (newCandles.length === 0) {
             console.log(`[DB] ${symbol} — no new daily candles to upsert (already up to date)`);
             return;

@@ -337,6 +337,74 @@ function validateCandleArray(candles, resolution) {
   return { valid: issues.length === 0, issues };
 }
 
+// ─── Zero-volume detection (added 2026-10-07) ────────────────────────────────
+// validateCandleArray() never looked at `volume`, so rows stored with
+// volume = 0 were reported as perfectly valid. Where those zeros came from:
+//   • live candles are built from Fyers LiteMode ticks, which carry NO volume
+//     field → every finalized live 1m candle was written with volume 0, and
+//     the old upsert then let that 0 overwrite real REST volume;
+//   • REST "forming minute" rows (partial volume) were later replaced by it.
+// This is deliberately NOT part of validateCandleArray(): that function also
+// gates broker data going INTO the DB (periodicSync / repairDay), and a
+// broker candle with no volume must never be refused for that reason alone.
+//
+// Fyers only serves volume for roughly the last year, so anything older can
+// never be repaired and is not reported (VOLUME_HISTORY_DAYS). The 1m store
+// keeps 90 days, so in practice every stored 1m row is inside that window.
+const VOLUME_HISTORY_DAYS = 365;
+// A symbol with NO non-zero volume anywhere across this many distinct days is
+// a volume-less instrument (some indices/commodity roots), not corrupt data.
+const VOLUMELESS_MIN_DAYS = 5;
+
+/** Option contracts legitimately have minutes with no trades → not checked. */
+function isOptionContractSymbol(symbol) {
+  return /\d(CE|PE)$|-(CE|PE)$/.test(String(symbol || ""));
+}
+
+/**
+ * One ZERO_VOLUME issue per IST day that has zero/missing-volume 1m rows.
+ * @param {string} symbol
+ * @param {Array<{time:number,volume:number,open:number,high:number,low:number,close:number}>} candles
+ * @param {number} [nowMs]
+ * @returns {Array<{type:"ZERO_VOLUME", day:string, time:number, fromTime:number, toTime:number, count:number, flat:number, message:string}>}
+ */
+function findZeroVolumeDays(symbol, candles, nowMs = Date.now()) {
+  if (!candles || candles.length === 0 || isOptionContractSymbol(symbol)) return [];
+  const cutoff = nowMs - VOLUME_HISTORY_DAYS * 86400 * 1000;
+  const byDay = new Map();
+  const allDays = new Set();
+  let anyVolume = false;
+  for (const c of candles) {
+    if (!c || c.time < cutoff) continue;
+    const day = istDateKey(c.time);
+    allDays.add(day);
+    const v = Number(c.volume);
+    if (Number.isFinite(v) && v > 0) { anyVolume = true; continue; }
+    let d = byDay.get(day);
+    if (!d) { d = { day, count: 0, flat: 0, first: c.time, last: c.time }; byDay.set(day, d); }
+    d.count++;
+    if (c.open === c.high && c.high === c.low && c.low === c.close) d.flat++;
+    if (c.time < d.first) d.first = c.time;
+    if (c.time > d.last) d.last = c.time;
+  }
+  if (!anyVolume && allDays.size >= VOLUMELESS_MIN_DAYS) return [];
+  return [...byDay.values()].sort((a, b) => (a.day < b.day ? -1 : 1)).map((d) => ({
+    type: "ZERO_VOLUME",
+    day: d.day,
+    time: d.first,
+    fromTime: d.first,
+    toTime: d.last + 60000,
+    count: d.count,
+    flat: d.flat,
+    message: `${d.count} candle(s) with zero volume on ${d.day} (${d.flat} flat, ${d.count - d.flat} with price movement)`,
+  }));
+}
+
+/** Days (IST keys, newest first) that carry ZERO_VOLUME issues. */
+function zeroVolumeDaysOf(issues) {
+  return [...new Set((issues || []).filter((i) => i.type === "ZERO_VOLUME").map((i) => i.day))].sort().reverse();
+}
+
 // ─── Gap summaries + continuity health check ────────────────────────────────
 
 /**
@@ -388,17 +456,20 @@ async function checkContinuity(symbol, { days = 90 } = {}) {
   const from = Date.now() - days * 86400 * 1000;
   const candles = await loadCandles(symbol, 1, { limit: 100000, from: new Date(from).toISOString(), to: new Date(to).toISOString() });
   if (!candles || candles.length === 0) {
-    return { symbol, healthy: true, empty: true, candlesChecked: 0, gapDays: [], corruptCount: 0, checkedFrom: from, checkedTo: to };
+    return { symbol, healthy: true, empty: true, candlesChecked: 0, gapDays: [], zeroVolumeDays: [], corruptCount: 0, checkedFrom: from, checkedTo: to };
   }
   const { issues } = validateCandleArray(candles, 1);
   addMissingDays(symbol, candles, issues);
   const gapDays = summarizeGaps(issues);
   const corruptCount = issues.filter((i) => i.type === "CORRUPT_OHLC").length;
+  const zeroVolumeIssues = findZeroVolumeDays(symbol, candles);
+  const zeroVolumeDays = zeroVolumeIssues.map((z) => ({ day: z.day, count: z.count, flat: z.flat }));
   return {
     symbol,
-    healthy: gapDays.length === 0 && corruptCount === 0,
+    healthy: gapDays.length === 0 && corruptCount === 0 && zeroVolumeDays.length === 0,
     candlesChecked: candles.length,
     gapDays,
+    zeroVolumeDays,
     corruptCount,
     checkedFrom: from,
     checkedTo: to,
@@ -473,6 +544,8 @@ async function validateHistorical(symbol, resolution, opts = {}) {
   // Whole-day holes only make sense for the default full-window scan; a
   // caller-supplied narrow range would report every day outside it.
   if (!opts.from && !opts.to) addMissingDays(symbol, candles, issues);
+  // Zero-volume rows are corrupt data too (see findZeroVolumeDays header).
+  issues.push(...findZeroVolumeDays(symbol, candles));
   const valid = issues.length === 0;
 
   // Only log when issues found — clean symbols are silent to keep startup logs readable
@@ -536,4 +609,8 @@ module.exports = {
   summarizeGaps,
   checkContinuity,
   safeUpperBoundMs,
+  // 2026-10-07
+  findZeroVolumeDays,
+  zeroVolumeDaysOf,
+  VOLUME_HISTORY_DAYS,
 };

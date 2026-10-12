@@ -41,7 +41,7 @@
 // chart — including option/future contracts — so it needs dataRouter.js's
 // symbol-aware routing to land in nse_options_candles/etc. instead.
 const { upsertCandles, replaceDayCandles, loadCandles } = require("../store/dataRouter");
-const { validateCandleArray, checkPeriodicSync, summarizeGaps, istDateKey } = require("./validationEngine");
+const { validateCandleArray, checkPeriodicSync, summarizeGaps, istDateKey, findZeroVolumeDays, VOLUME_HISTORY_DAYS } = require("./validationEngine");
 const { logRepairStart, logRepairFinish } = require("./repairLog");
 
 // ─── DB resolution constant ───────────────────────────────────────────────────
@@ -354,6 +354,146 @@ async function fillGapDays(opts) {
   });
 }
 
+// ─── Volume heal (2026-10-07) ─────────────────────────────────────────────────
+/**
+ * PURE: which broker candles should be written to fix volume in the DB?
+ *
+ * A broker candle is written when it has real volume (> 0) and the DB either
+ * has no row for that minute, a zero/NULL volume, or a SMALLER volume (a
+ * partial "forming minute" print that was stored before the minute closed).
+ * Broker candles with zero volume are never written (nothing to learn), and
+ * the still-forming minute is skipped entirely.
+ *
+ * @param {Array} brokerCandles  1m candles from Fyers REST
+ * @param {Array} dbCandles      1m candles currently in the DB for the same span
+ * @param {object} [o]
+ * @param {Set<string>} [o.days]  restrict to these IST day keys
+ * @param {number} [o.nowMs]
+ */
+function computeVolumeUpdates(brokerCandles, dbCandles, { days = null, nowMs = Date.now() } = {}) {
+  const dbByTime = new Map();
+  for (const c of dbCandles || []) dbByTime.set(c.time, Number(c.volume) || 0);
+  const oldest = nowMs - VOLUME_HISTORY_DAYS * DAY_MS;
+  const out = [];
+  for (const b of brokerCandles || []) {
+    if (!b || b.time < oldest) continue;
+    if (b.time + 60000 > nowMs) continue;                    // minute still forming
+    if (days && !days.has(istDateKey(b.time))) continue;
+    const bv = Number(b.volume);
+    if (!Number.isFinite(bv) || bv <= 0) continue;
+    const dv = dbByTime.get(b.time);
+    if (dv === undefined || dv <= 0 || dv < bv) out.push(b);
+  }
+  return out;
+}
+
+/**
+ * Fill volume for specific IST days from the broker. Writes only candles
+ * computeVolumeUpdates() selects (real broker volume replaces 0 / partial
+ * volume; the broker row's OHLC comes with it, same as any repair). Never
+ * deletes. Days older than the broker's volume horizon are dropped.
+ *
+ * Days that are STILL zero afterwards (the broker itself has no volume for
+ * those minutes, e.g. flat pre-close minutes on an index) get a repair_log
+ * row with status "ok" and trigger "volume_heal" — the suppression marker
+ * read by wasVolumeHealAttempted() — everything else gets "filled".
+ *
+ * @param {object} opts
+ * @param {string} opts.symbol
+ * @param {string[]} opts.days   IST keys "YYYY-MM-DD"
+ * @param {Function} opts.fetchCandles  (symbol, resolution, count, lookbackDays) => candle[]
+ * @param {string} [opts.trigger]
+ * @returns {Promise<{success, updated, remainingDays, fixedDays, skippedOld, error?}>}
+ */
+async function healVolumeDays(opts) {
+  const { symbol, fetchCandles, trigger = "volume_heal" } = opts;
+  const resolution = DB_RESOLUTION;
+  const horizon = istDateKey(Date.now() - VOLUME_HISTORY_DAYS * DAY_MS);
+  const all = [...new Set(opts.days || [])].sort();
+  const days = all.filter((d) => d >= horizon);
+  const skippedOld = all.filter((d) => d < horizon);
+  if (days.length === 0) return { success: true, updated: 0, fixedDays: [], remainingDays: [], skippedOld };
+
+  const key = `${symbol}:${resolution}`;
+  if (activeRepairs.has(key)) {
+    console.log(`[Recovery] Repair already active for ${key} — skipping volume heal`);
+    return { skipped: true };
+  }
+
+  return enqueueRepair(symbol, async () => {
+    activeRepairs.add(key);
+    const logIds = [];
+    for (const d of days) {
+      logIds.push(await logRepairStart({ symbol, resolution, trigger, tradingDay: new Date(`${d}T12:00:00+05:30`) }).catch(() => null));
+    }
+    const finishAll = (fn) => Promise.all(logIds.map((id, i) => logRepairFinish(id, fn(days[i])).catch(() => null)));
+    try {
+      const earliestMs = istDayStartMs(days[0]);
+      const fresh = await fetchCandles(symbol, resolution, undefined, lookbackDaysFor(earliestMs));
+      if (!fresh || fresh.length === 0) {
+        const errMsg = "Broker returned no candles — volume left as is";
+        console.error(`[Recovery] ${symbol} volume heal: ${errMsg}`);
+        await finishAll(() => ({ status: "error", detail: errMsg }));
+        return { success: false, error: errMsg, updated: 0, fixedDays: [], remainingDays: days, skippedOld };
+      }
+
+      const wanted = new Set(days);
+      const existing = await loadCandles(symbol, resolution, { from: new Date(earliestMs), to: new Date(), limit: 100000 });
+      const brokerOnDays = fresh.filter((c) => wanted.has(istDateKey(c.time)));
+      const withVolume = brokerOnDays.filter((c) => Number(c.volume) > 0).length;
+      const updates = computeVolumeUpdates(fresh, existing, { days: wanted });
+      const zeroBefore = findZeroVolumeDays(symbol, existing.filter((c) => wanted.has(istDateKey(c.time))));
+      const zeroRowsBefore = zeroBefore.reduce((a, z) => a + z.count, 0);
+      const updated = updates.length ? await upsertCandles(symbol, resolution, updates) : 0;
+
+      const after = await loadCandles(symbol, resolution, { from: new Date(earliestMs), to: new Date(), limit: 100000 });
+      const stillZero = new Set(findZeroVolumeDays(symbol, after.filter((c) => wanted.has(istDateKey(c.time)))).map((z) => z.day));
+      const remainingDays = days.filter((d) => stillZero.has(d));
+      const fixedDays = days.filter((d) => !stillZero.has(d));
+      console.log(
+        `[Recovery] ${symbol} volume heal: broker had ${brokerOnDays.length} candle(s) on ${days.join(", ")}, ${withVolume} with volume, ` +
+        `DB had ${zeroRowsBefore} zero-volume row(s), updated ${updated}` +
+        (remainingDays.length ? ` — broker has no volume for the rest on ${remainingDays.join(", ")}` : "")
+      );
+
+      await finishAll((d) => (stillZero.has(d)
+        ? { status: "ok", inserted: 0, detail: "volume heal: broker has no volume for the remaining zero-volume minutes" }
+        : { status: "filled", inserted: 0, detail: `volume heal: ${updated} candle(s) updated across ${days.length} day(s)` }));
+      if (updated > 0) emit("history_updated", { symbol, resolution, reason: "volume_heal", inserted: updated });
+      return { success: true, updated, fixedDays, remainingDays, skippedOld };
+    } catch (err) {
+      await finishAll(() => ({ status: "error", detail: err.message }));
+      throw err;
+    } finally {
+      activeRepairs.delete(key);
+    }
+  });
+}
+
+/**
+ * Zero-cost volume top-up used by periodicSync: it already holds a fresh
+ * broker pull, so compare the last couple of trading days against the DB and
+ * write real volume where the DB has 0 / a partial print. Never throws.
+ */
+async function syncRecentVolumes(symbol, brokerCandles) {
+  try {
+    const nowMs = Date.now();
+    const sinceMs = istDayStartMs(istDateKey(nowMs - 3 * DAY_MS));
+    const recent = (brokerCandles || []).filter((c) => c.time >= sinceMs);
+    if (recent.length === 0) return 0;
+    const existing = await loadCandles(symbol, DB_RESOLUTION, { from: new Date(sinceMs), to: new Date(nowMs), limit: 20000 });
+    const updates = computeVolumeUpdates(recent, existing, { nowMs });
+    if (updates.length === 0) return 0;
+    const n = await upsertCandles(symbol, DB_RESOLUTION, updates);
+    console.log(`[PeriodicSync] ${symbol}: volume top-up wrote ${n} candle(s) from the broker pull`);
+    emit("history_updated", { symbol, resolution: DB_RESOLUTION, reason: "volume_sync", inserted: n });
+    return n;
+  } catch (err) {
+    console.warn(`[PeriodicSync] ${symbol}: volume top-up failed (${err.message}) — ignored`);
+    return 0;
+  }
+}
+
 // ─── Dead-letter tracking for periodicSync ───────────────────────────────────
 // P1 (was "not yet fixed"): periodicSync retried a dead/expired/invalid
 // symbol forever — every 5-minute sweep, indefinitely, with no memory of
@@ -430,6 +570,8 @@ async function periodicSync(opts) {
     const brokerCandles = await fetchCandles(symbol, resolution);
     // Only consider 1m candles within the 3-month retention window
     const recentBroker = brokerCandles.filter(c => c.time >= THREE_MONTHS_AGO);
+    // Free volume top-up from the pull we already paid for (live-built rows have 0).
+    await syncRecentVolumes(symbol, recentBroker);
     const { inSync, latestDb, latestBroker, gapMs } = await checkPeriodicSync(symbol, resolution, recentBroker);
 
     if (inSync) {
@@ -473,6 +615,8 @@ async function periodicSync(opts) {
 module.exports = {
   repairDay,
   fillGapDays,
+  healVolumeDays,
+  computeVolumeUpdates,
   periodicSync,
   injectStatusEmitter,
   // Exposed for tests / diagnostics only — not used by server.js.

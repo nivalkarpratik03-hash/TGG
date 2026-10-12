@@ -154,6 +154,13 @@ class TickStream extends EventEmitter {
     // safe no-op that just refreshes the symbol list instead of opening a
     // second socket.
     this._connecting = false;
+    // 2026-10-07: true only while the socket is actually open. isConnected()
+    // is true during a reconnect too (socket object still set), so it cannot
+    // tell the retry timer "the SDK already reconnected, leave it alone".
+    this._open = false;
+    // The Fyers SDK hands back the SAME singleton on every getInstance(); we
+    // must attach our listeners to it only once, not once per _connect().
+    this._boundSocket = null;
   }
 
   /** Start streaming ticks for the given symbols. */
@@ -250,10 +257,13 @@ class TickStream extends EventEmitter {
         this._socket.autoreconnect(MAX_RECONNECT);
       }
 
-      this._socket.on("connect", () => this._onConnect());
-      this._socket.on("message", (msg) => this._onMessage(msg));
-      this._socket.on("error", (err) => this._onError(err));
-      this._socket.on("close", () => this._onClose());
+      if (this._boundSocket !== this._socket) {
+        this._boundSocket = this._socket;
+        this._socket.on("connect", () => this._onConnect());
+        this._socket.on("message", (msg) => this._onMessage(msg));
+        this._socket.on("error", (err) => this._onError(err));
+        this._socket.on("close", () => this._onClose());
+      }
 
       // connect() takes NO arguments — token is in getInstance()
       this._socket.connect();
@@ -266,6 +276,7 @@ class TickStream extends EventEmitter {
   }
 
   _disconnect() {
+    this._open = false;
     if (this._socket) {
       try { this._socket.close(); } catch { /* ignore */ }
       this._socket = null;
@@ -274,7 +285,13 @@ class TickStream extends EventEmitter {
 
   _onConnect() {
     this._connecting = false;
+    this._open = true;
     this._reconnects = 0;
+    // A retry scheduled by an earlier close is now pointless — the SDK's own
+    // autoreconnect (or a previous retry) already restored the socket. Left
+    // pending, it fired 3s later, closed this HEALTHY socket and started the
+    // close -> reconnect -> close loop seen in the logs.
+    if (this._reconnTimer) { clearTimeout(this._reconnTimer); this._reconnTimer = null; }
     console.log(`[TickStream] Connected ✓ Subscribing to: ${this._symbols.join(", ")}`);
     try {
       // subscribe() takes a flat string array only.
@@ -335,6 +352,7 @@ class TickStream extends EventEmitter {
 
   _onClose() {
     this._connecting = false;
+    this._open = false;
     console.log("[TickStream] Socket closed.");
     this.emit("disconnected");
     if (!this._userStopped && this._running) {
@@ -344,6 +362,7 @@ class TickStream extends EventEmitter {
 
   _scheduleReconnect() {
     if (this._userStopped) return;
+    if (this._reconnTimer) return; // a retry is already pending — never stack timers
     if (this._reconnects >= MAX_RECONNECT) {
       console.warn("[TickStream] Max reconnects reached — giving up.");
       this._running = false;
@@ -354,6 +373,10 @@ class TickStream extends EventEmitter {
     const delay = RECONNECT_DELAY_MS * Math.min(this._reconnects, 5);
     console.log(`[TickStream] Reconnecting in ${delay / 1000}s (attempt ${this._reconnects})…`);
     this._reconnTimer = setTimeout(() => {
+      this._reconnTimer = null;
+      // The SDK may have reconnected on its own during the delay — if so,
+      // do NOT tear down a working socket.
+      if (this._userStopped || this._open) return;
       this._disconnect();
       this._connect();
     }, delay);

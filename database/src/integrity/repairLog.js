@@ -117,4 +117,35 @@ async function wasDayAlreadyRepaired(symbol, tradingDay, withinDays = 3) {
   }
 }
 
-module.exports = { logRepairStart, logRepairFinish, getRepairHistory, wasDayAlreadyRepaired };
+/**
+ * wasVolumeHealAttempted — suppression marker for the zero-volume heal.
+ *
+ * Same idea as wasDayAlreadyRepaired(), but scoped to trigger LIKE
+ * 'volume_heal%' so a gap fill / OHLC repair "ok" row on the same day can
+ * never shadow a volume heal (and vice versa). The caller only writes an
+ * 'ok' row for days that are STILL zero after asking the broker, i.e. the
+ * broker itself has no volume for those minutes. Window is in MINUTES so
+ * today (whose rows keep arriving) can use a short window while past days
+ * use a few days.
+ */
+async function wasVolumeHealAttempted(symbol, tradingDay, withinMinutes = 3 * 24 * 60) {
+  try {
+    const dayStr = new Date(tradingDay).toISOString().slice(0, 10);
+    const rows = await query(
+      `SELECT id FROM repair_log
+       WHERE symbol = $1
+         AND trading_day = $2
+         AND trigger LIKE 'volume_heal%'
+         AND status = 'ok'
+         AND started_at > NOW() - ($3 || ' minutes')::interval
+       LIMIT 1`,
+      [symbol, dayStr, withinMinutes]
+    );
+    return rows.length > 0;
+  } catch (err) {
+    console.warn("[RepairLog] wasVolumeHealAttempted error:", err.message);
+    return false; // fail open
+  }
+}
+
+module.exports = { logRepairStart, logRepairFinish, getRepairHistory, wasDayAlreadyRepaired, wasVolumeHealAttempted };
