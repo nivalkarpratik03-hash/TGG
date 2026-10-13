@@ -1,10 +1,12 @@
 // frontend/src/features/charts/tv/TradingViewChart.js
-// Mounts TradingView Advanced Charts. The library files are NOT part of the
-// source tree: copy the library's "charting_library" folder to
+// Mounts TradingView Advanced Charts plus the strategy overlay layer.
+// The library files are NOT part of the source tree: copy the library's
+// "charting_library" folder to
 //   frontend/public/charting_library/
 // It is served as static files from /charting_library/.
 import React, { useEffect, useRef, useState } from "react";
 import { createDatafeed } from "./tgDatafeed";
+import { createOverlayController } from "./overlay/overlayController";
 
 const BASE = process.env.PUBLIC_URL || "";
 const LIB_PATH = `${BASE}/charting_library/`;
@@ -37,10 +39,28 @@ function loadLibraryScript() {
   return scriptPromise;
 }
 
-export default function TradingViewChart({ symbol = "NSE:NIFTY50-INDEX", interval = "15" }) {
+/**
+ * @param {string} symbol
+ * @param {string} interval       TradingView interval string, e.g. "15", "3", "1D"
+ * @param {object} layers         { [layerId]: boolean }  strategy overlays to show
+ * @param {object} layerOptions   { [layerId]: {...} }    per-layer options (optional)
+ */
+export default function TradingViewChart({
+  symbol = "NSE:NIFTY50-INDEX",
+  interval = "15",
+  layers = {},
+  layerOptions = {},
+}) {
   const containerRef = useRef(null);
+  const controllerRef = useRef(null);
+  const layersRef = useRef(layers);
+  const optionsRef = useRef(layerOptions);
   const [error, setError] = useState(null);
 
+  layersRef.current = layers;
+  optionsRef.current = layerOptions;
+
+  // Create the chart. Re-created only when the symbol or interval prop changes.
   useEffect(() => {
     let widget = null;
     let datafeed = null;
@@ -63,6 +83,15 @@ export default function TradingViewChart({ symbol = "NSE:NIFTY50-INDEX", interva
           theme: appTheme === "light" ? "light" : "dark",
           autosize: true,
         });
+        widget.chartReady().then(() => {
+          if (cancelled) return;
+          controllerRef.current = createOverlayController({
+            widget,
+            datafeed,
+            layers: layersRef.current,
+            options: optionsRef.current,
+          });
+        });
       })
       .catch((e) => {
         if (!cancelled) setError(e.message || String(e));
@@ -70,6 +99,10 @@ export default function TradingViewChart({ symbol = "NSE:NIFTY50-INDEX", interva
 
     return () => {
       cancelled = true;
+      if (controllerRef.current) {
+        controllerRef.current.destroy();
+        controllerRef.current = null;
+      }
       try {
         if (widget && typeof widget.remove === "function") widget.remove();
       } catch (e) {
@@ -78,6 +111,15 @@ export default function TradingViewChart({ symbol = "NSE:NIFTY50-INDEX", interva
       if (datafeed) datafeed.destroy();
     };
   }, [symbol, interval]);
+
+  // Toggle strategy layers without rebuilding the chart.
+  useEffect(() => {
+    if (controllerRef.current) controllerRef.current.setLayers(layers);
+  }, [layers]);
+
+  useEffect(() => {
+    if (controllerRef.current) controllerRef.current.setOptions(layerOptions);
+  }, [layerOptions]);
 
   if (error) {
     return (

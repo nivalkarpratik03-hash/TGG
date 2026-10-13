@@ -7,6 +7,12 @@
 //   Live    : Socket.IO  set_symbol / set_resolution, listen to tick_update
 //             (your existing events, one dedicated socket for this chart)
 //
+// Extras used by the strategy overlay layer:
+//   getPayload(symbol, resolution, force) -> full /api/chart payload
+//                                            (candles, emaHighs, emaLows, signals)
+//   on("context", cb)  fires when the chart starts showing a symbol/interval
+//   on("bar", cb)      fires when a new bar starts (the previous bar closed)
+//
 // The chart only DRAWS what the backend sends. Nothing is computed here.
 // ═══════════════════════════════════════════════════════════════════════════
 import { io } from "socket.io-client";
@@ -38,6 +44,11 @@ function normalizeTime(t, resMinutes) {
   return ms;
 }
 
+/** Candle time (seconds or ms) -> unix seconds in the format the chart expects. */
+export function toChartSeconds(t, resMinutes) {
+  return Math.floor(normalizeTime(t, resMinutes) / 1000);
+}
+
 function toBar(c, resMinutes) {
   return {
     time: normalizeTime(c.time, resMinutes),
@@ -59,17 +70,25 @@ function sessionFor(exchange) {
 }
 
 export function createDatafeed() {
-  const historyCache = new Map();  // "symbol|res" -> { at, bars }
-  const inflight = new Map();      // "symbol|res" -> Promise<bars>
+  const historyCache = new Map();  // "symbol|res" -> { at, bars, payload }
+  const inflight = new Map();      // "symbol|res" -> Promise<entry>
   const lastBarTime = new Map();   // "symbol|res" -> last bar time (ms) from history
   const subs = new Map();          // listenerGuid -> { symbol, res, onTick, lastTime }
+  const listeners = { context: new Set(), bar: new Set() };
+  let currentContext = null;
   let socket = null;
 
+  function emit(evt, payload) {
+    for (const cb of Array.from(listeners[evt])) {
+      try { cb(payload); } catch (e) { /* a listener must never break the feed */ }
+    }
+  }
+
   // ── history ──────────────────────────────────────────────────────────────
-  async function loadHistory(symbol, resMinutes) {
+  async function loadEntry(symbol, resMinutes, force) {
     const key = `${symbol}|${resMinutes}`;
     const cached = historyCache.get(key);
-    if (cached && Date.now() - cached.at < HISTORY_TTL_MS) return cached.bars;
+    if (!force && cached && Date.now() - cached.at < HISTORY_TTL_MS) return cached;
     if (inflight.has(key)) return inflight.get(key);
 
     const p = (async () => {
@@ -82,9 +101,10 @@ export function createDatafeed() {
         .filter((b) => [b.time, b.open, b.high, b.low, b.close].every(Number.isFinite))
         .sort((a, b) => a.time - b.time)
         .filter((b, i, arr) => i === 0 || b.time !== arr[i - 1].time);
-      historyCache.set(key, { at: Date.now(), bars });
+      const entry = { at: Date.now(), bars, payload: d };
+      historyCache.set(key, entry);
       if (bars.length) lastBarTime.set(key, bars[bars.length - 1].time);
-      return bars;
+      return entry;
     })();
 
     inflight.set(key, p);
@@ -93,6 +113,10 @@ export function createDatafeed() {
     } finally {
       inflight.delete(key);
     }
+  }
+
+  async function loadHistory(symbol, resMinutes) {
+    return (await loadEntry(symbol, resMinutes, false)).bars;
   }
 
   // ── live socket ──────────────────────────────────────────────────────────
@@ -117,8 +141,10 @@ export function createDatafeed() {
       const bar = toBar(d.formingCandle, res);
       if (![bar.time, bar.open, bar.high, bar.low, bar.close].every(Number.isFinite)) continue;
       if (bar.time < s.lastTime) continue; // never send a bar older than the last one
+      const isNewBar = s.lastTime > 0 && bar.time > s.lastTime;
       s.lastTime = bar.time;
       s.onTick(bar);
+      if (isNewBar) emit("bar", { symbol: s.symbol, resolution: s.res, time: bar.time });
     }
   }
 
@@ -234,6 +260,8 @@ export function createDatafeed() {
       });
       ensureSocket();
       pointSocketAtLatestSub();
+      currentContext = { symbol, resolution: resMinutes };
+      emit("context", currentContext);
     },
 
     unsubscribeBars(listenerGuid) {
@@ -246,9 +274,28 @@ export function createDatafeed() {
       }
     },
 
+    // ── used by the strategy overlay layer ─────────────────────────────────
+    /** Full /api/chart payload (candles in ms, emaHighs, emaLows, signals). */
+    async getPayload(symbol, resMinutes, force) {
+      return (await loadEntry(symbol, resMinutes, !!force)).payload;
+    },
+
+    /** Subscribe to "context" or "bar". Returns an unsubscribe function. */
+    on(evt, cb) {
+      if (!listeners[evt]) return () => {};
+      listeners[evt].add(cb);
+      if (evt === "context" && currentContext) {
+        try { cb(currentContext); } catch (e) { /* ignore */ }
+      }
+      return () => listeners[evt].delete(cb);
+    },
+
     // Called by the React component when the chart is removed.
     destroy() {
       subs.clear();
+      listeners.context.clear();
+      listeners.bar.clear();
+      currentContext = null;
       if (socket) socket.disconnect();
       socket = null;
       historyCache.clear();
