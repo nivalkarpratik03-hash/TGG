@@ -1,0 +1,12 @@
+{
+  "_readme": "Roots for the DAILY OPTIONS -> PARQUET -> GOOGLE DRIVE job ONLY. Deliberately separate from index.json / equity.json / derivatives-config.json so the existing expiry archive (archive/parquetExport.js) and spot prune (spot/pruneOldSpot.js) never read it. Phase 1 = NIFTY only; more roots are added here after sir approves the CSV. 'cycles' = which expiry cycles to store (NIFTY and SENSEX have weekly+monthly; BANKNIFTY, FINNIFTY and stocks are monthly only - see derivatives-config.json). 'atmWidth' = strikes each side of ATM (2 = ATM, 2 above, 2 below). Spot/lookup symbols are NOT repeated here: they come from index.json via findCuratedEntry().",
+  "roots": [
+    {
+      "name": "NIFTY",
+      "exchange": "NSE",
+      "assetClass": "INDEX",
+      "cycles": ["weekly", "monthly"],
+      "atmWidth": 2
+    }
+  ]
+}

@@ -154,6 +154,9 @@ class TickStream extends EventEmitter {
     // safe no-op that just refreshes the symbol list instead of opening a
     // second socket.
     this._connecting = false;
+    this._open = false;          // true only while the socket is really open
+    this._handlersAttached = false; // getInstance() is a singleton: attach handlers ONCE
+    this._lastSubKey = "";
   }
 
   /** Start streaming ticks for the given symbols. */
@@ -192,14 +195,18 @@ class TickStream extends EventEmitter {
       clearTimeout(this._reconnTimer);
       this._reconnTimer = null;
     }
+    if (this._statTimer) { clearInterval(this._statTimer); this._statTimer = null; }
     this._disconnect();
   }
 
   /** Change the subscribed symbol set without fully restarting. */
   setSymbols(symbols) {
     this._symbols = symbols;
-    if (this._socket && this._running) {
+    const key = [...symbols].sort().join(",");
+    // Only talk to the socket when it is really open, and skip duplicate subscribes.
+    if (this._socket && this._running && this._open && key !== this._lastSubKey) {
       try {
+        this._lastSubKey = key;
         this._socket.subscribe(this._symbols);
         console.log(`[TickStream] Re-subscribed to: ${symbols.join(", ")}`);
       } catch (err) {
@@ -234,26 +241,16 @@ class TickStream extends EventEmitter {
       const fullToken = `${appId}:${token}`;
       this._socket = fyersDataSocket.getInstance(fullToken, FYERS_LOG_PATH, FYERS_LOGGING);
 
-      // LiteMode: fires a tick on EVERY price change (<1s latency).
-      // FullMode: batches OHLC/depth → causes ~30s candle delay.
-      if (this._socket.LiteMode !== undefined) {
-        this._socket.mode(this._socket.LiteMode);
-        console.log("[TickStream] Mode set to LiteMode (fastest tick delivery)");
-      } else {
-        console.warn("[TickStream] LiteMode not available — using default mode");
+      // NOTE: library autoReconnect is intentionally NOT enabled. It reconnected
+      // on its own while our timer ALSO reconnected (closing the healthy socket
+      // every 3s) -> endless loop. We own reconnection.
+      if (!this._handlersAttached) {
+        this._handlersAttached = true;
+        this._socket.on("connect", () => this._onConnect());
+        this._socket.on("message", (msg) => this._onMessage(msg));
+        this._socket.on("error", (err) => this._onError(err));
+        this._socket.on("close", (...a) => this._onClose(...a));
       }
-
-      // autoreconnect() MUST be called before connect()
-      if (typeof this._socket.autoReconnect === "function") {
-        this._socket.autoReconnect(MAX_RECONNECT);
-      } else {
-        this._socket.autoreconnect(MAX_RECONNECT);
-      }
-
-      this._socket.on("connect", () => this._onConnect());
-      this._socket.on("message", (msg) => this._onMessage(msg));
-      this._socket.on("error", (err) => this._onError(err));
-      this._socket.on("close", () => this._onClose());
 
       // connect() takes NO arguments — token is in getInstance()
       this._socket.connect();
@@ -266,30 +263,68 @@ class TickStream extends EventEmitter {
   }
 
   _disconnect() {
+    this._open = false;
+    this._lastSubKey = "";
     if (this._socket) {
+      this._ignoreClose = true; // the close event from OUR close() must not schedule another reconnect
       try { this._socket.close(); } catch { /* ignore */ }
+      setTimeout(() => { this._ignoreClose = false; }, 1500);
       this._socket = null;
     }
   }
 
   _onConnect() {
     this._connecting = false;
-    this._reconnects = 0;
+    this._open = true;
+    this._lastSubKey = [...this._symbols].sort().join(",");
     console.log(`[TickStream] Connected ✓ Subscribing to: ${this._symbols.join(", ")}`);
     try {
       // subscribe() takes a flat string array only.
       // Do NOT pass a second `true` arg (market depth) — forces FullMode.
       this._socket.subscribe(this._symbols);
+      // LiteMode: fires a tick on EVERY price change (<1s latency).
+      // FullMode: batches OHLC/depth → causes ~30s candle delay.
+      // Per the Fyers docs, mode() is sent AFTER the socket is open (here,
+      // after subscribe) — calling it before connect() could not reach the server.
+      if (this._socket.LiteMode !== undefined) {
+        this._socket.mode(this._socket.LiteMode);
+        console.log("[TickStream] Mode set to LiteMode (fastest tick delivery)");
+      } else {
+        console.warn("[TickStream] LiteMode not available — using default mode");
+      }
     } catch (err) {
-      console.error("[TickStream] Subscribe failed:", err.message);
+      console.error("[TickStream] Subscribe/mode failed:", err.message);
     }
+    this._startMsgStats();
     this.emit("connected");
+  }
+
+  // Diagnostics: count raw socket messages so "connected but silent" is visible.
+  _startMsgStats() {
+    this._msgCount = 0;
+    this._firstMsgLogged = false;
+    if (this._statTimer) return;
+    this._statTimer = setInterval(() => {
+      if (!this._open) return;
+      const n = this._msgCount; this._msgCount = 0;
+      if (n === 0 && isAnyMarketLive(this._symbols)) {
+        console.warn("[TickStream] 0 raw messages in last 10s (socket open, market live)");
+      } else if (n > 0) {
+        console.log(`[TickStream] ${n} raw messages in last 10s`);
+      }
+    }, 10000);
   }
 
   _onMessage(msg) {
     try {
       if (!msg) return;
+      this._msgCount = (this._msgCount || 0) + 1;
+      if (!this._firstMsgLogged) {
+        this._firstMsgLogged = true;
+        console.log("[TickStream] first message:", JSON.stringify(msg).slice(0, 300));
+      }
       const ticks = Array.isArray(msg) ? msg : [msg];
+      this._reconnects = 0; // healthy only once data actually flows
 
       for (const tick of ticks) {
         if (!tick || tick.ltp == null) continue;
@@ -330,12 +365,16 @@ class TickStream extends EventEmitter {
   _onError(err) {
     this._connecting = false;
     console.error("[TickStream] Socket error:", err?.message || err);
+    if (this._open === false) { /* will be handled by close */ }
     this.emit("error", err);
   }
 
-  _onClose() {
+  _onClose(...args) {
     this._connecting = false;
-    console.log("[TickStream] Socket closed.");
+    this._open = false;
+    this._lastSubKey = "";
+    console.log("[TickStream] Socket closed.", args.length ? JSON.stringify(args) : "");
+    if (this._ignoreClose) return;
     this.emit("disconnected");
     if (!this._userStopped && this._running) {
       this._scheduleReconnect();
@@ -344,6 +383,7 @@ class TickStream extends EventEmitter {
 
   _scheduleReconnect() {
     if (this._userStopped) return;
+    if (this._reconnTimer) return; // a reconnect is already pending
     if (this._reconnects >= MAX_RECONNECT) {
       console.warn("[TickStream] Max reconnects reached — giving up.");
       this._running = false;
@@ -354,6 +394,8 @@ class TickStream extends EventEmitter {
     const delay = RECONNECT_DELAY_MS * Math.min(this._reconnects, 5);
     console.log(`[TickStream] Reconnecting in ${delay / 1000}s (attempt ${this._reconnects})…`);
     this._reconnTimer = setTimeout(() => {
+      this._reconnTimer = null;
+      if (this._open || this._userStopped) return; // never kill a healthy socket
       this._disconnect();
       this._connect();
     }, delay);

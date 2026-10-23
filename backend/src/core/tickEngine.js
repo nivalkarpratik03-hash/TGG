@@ -300,8 +300,11 @@ function createTickEngine({ io }) {
       if (!isTradingDay() || !isAnyMarketLive(getActiveTickSymbols()) || !tickStream.isConnected()) return;
       const now = Date.now();
       if (state.lastConnectAt > 0 && now - state.lastConnectAt < state.WATCHDOG_GRACE_MS) return;
-      if (state.lastTickAt === 0) return;
-      const silenceMs = now - state.lastTickAt;
+      // Connected but NO tick ever arrived: measure silence from the connect time
+      // (previously this case returned early, so a dead stream was never detected).
+      const lastActivity = state.lastTickAt || state.lastConnectAt;
+      if (!lastActivity) return;
+      const silenceMs = now - lastActivity;
       if (silenceMs > state.TICK_WATCHDOG_MS) {
         console.warn(`[Watchdog] No tick for ${(silenceMs / 1000).toFixed(1)}s — reconnecting WebSocket`);
         state.lastTickAt = 0; state.lastConnectAt = 0;

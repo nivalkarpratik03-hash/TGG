@@ -65,6 +65,8 @@ DEFAULT_CONTEXT = 512     # candles sent to the model (Kronos-small's cap)
 DEFAULT_MAX_TESTS = 40    # how many past moments to score
 MIN_HISTORY = 200         # a cutoff needs at least this many earlier candles
 FOUND_THRESHOLD = 65.0    # the dashboard's "found" line (kronosDirection.js)
+TREND_LOOKBACK = None     # bars to look back for the trend baseline; None = same as --horizon
+MIN_MOVE_PCT = 0.10       # ignore actual moves smaller than this when reporting the "moves that mattered" accuracy
 REQUEST_TIMEOUT_S = 900
 MAX_CONSECUTIVE_ERRORS = 3
 
@@ -208,7 +210,7 @@ def pct(x: float) -> str:
     return "n/a" if x != x else f"{100 * x:.0f}%"
 
 
-def summarize(rows, title: str):
+def summarize(rows, title: str, data=None, horizon=None, trend_lookback=None):
     print("\n" + "=" * 68)
     print(f"RESULTS  {title}")
     print("=" * 68)
@@ -254,6 +256,59 @@ def summarize(rows, title: str):
                 print(f"  {label:>8} : {pct(g / len(grp)):>5}  ({g}/{len(grp)})")
             else:
                 print(f"  {label:>8} : no calls")
+
+        # ── Trend-following baseline + small-move filter ────────────
+        # Both computed here, after the fact, from the SAME candle file
+        # (data) and the cutoff_index already saved in the CSV — nothing
+        # new had to be fetched from Kronos, so this works on old runs
+        # too, including forecasts already scored before this was added.
+        if data is not None and horizon is not None:
+            look = trend_lookback or horizon
+            trend_pairs = []   # (kronos_correct: bool, trend_correct: bool, agree: bool)
+            moved_calls = []   # calls where the actual move was >= MIN_MOVE_PCT
+            for r in calls:
+                idx = int(r["cutoff_index"])
+                mv = abs(r["actual_close"] - r["current_close"]) / r["current_close"] * 100
+                if mv >= MIN_MOVE_PCT:
+                    moved_calls.append(r)
+                if idx - look >= 0:
+                    past_close = data["close"][idx - look]
+                    trend_dir = actual_direction(past_close, r["current_close"])
+                    if trend_dir in ("up", "down"):
+                        k_correct = r["direction"] == r["actual_direction"]
+                        t_correct = trend_dir == r["actual_direction"]
+                        trend_pairs.append((k_correct, t_correct, r["direction"] == trend_dir))
+
+            if moved_calls:
+                mc = sum(1 for r in moved_calls if r["direction"] == r["actual_direction"])
+                mlo, mhi = wilson(mc, len(moved_calls))
+                print(f"\nMoves of >= {MIN_MOVE_PCT}% only (ignores near-flat windows, {len(rows) - len(moved_calls)} excluded): "
+                      f"{pct(mc / len(moved_calls))}  ({mc}/{len(moved_calls)}),  95% range {pct(mlo)} to {pct(mhi)}")
+            else:
+                print(f"\nNo windows moved >= {MIN_MOVE_PCT}% — can't compute a moves-only accuracy.")
+
+            if trend_pairs:
+                n_t = len(trend_pairs)
+                k_right = sum(1 for k, t, a in trend_pairs if k)
+                t_right = sum(1 for k, t, a in trend_pairs if t)
+                agree_n = sum(1 for k, t, a in trend_pairs if a)
+                agree_right = sum(1 for k, t, a in trend_pairs if a and k)
+                disagree_n = n_t - agree_n
+                disagree_right = k_right - agree_right
+                print(f"\nTrend-following baseline (last {look} bars' direction, {n_t} windows with enough history):")
+                print(f"  Just following the trend  : {pct(t_right / n_t)}  ({t_right}/{n_t})")
+                print(f"  Kronos on these same windows: {pct(k_right / n_t)}  ({k_right}/{n_t})")
+                if agree_n:
+                    print(f"  Kronos AGREED with the trend {agree_n}x  -> right {pct(agree_right / agree_n)}  ({agree_right}/{agree_n})")
+                if disagree_n:
+                    print(f"  Kronos went AGAINST the trend {disagree_n}x -> right {pct(disagree_right / disagree_n)}  ({disagree_right}/{disagree_n})")
+                if agree_n and disagree_n:
+                    if agree_right / agree_n > disagree_right / disagree_n:
+                        print("  -> Kronos does BETTER when it agrees with the trend than when it fights it.")
+                        print("     Consistent with (not proof of) Kronos mostly reading recent trend rather than adding new information.")
+                    else:
+                        print("  -> Kronos does AS WELL OR BETTER when it goes against the trend.")
+                        print("     Some sign it isn't just repeating the trend.")
 
         # Plain-language reading, based only on the numbers above.
         print("\nReading:")
@@ -311,7 +366,7 @@ def main():
     title = f"({stem}, horizon {args.horizon} bars = {args.horizon * bar_min} min, {args.samples} samples, {args.context} candles)"
 
     if args.summary_only:
-        summarize(read_rows(out_path), title)
+        summarize(read_rows(out_path), title, data=data, horizon=args.horizon, trend_lookback=TREND_LOOKBACK)
         return
 
     picks, n_valid, valid = choose_test_points(data["times_ms"], bar_min, args.horizon, args.max_tests)
@@ -381,7 +436,7 @@ def main():
     except KeyboardInterrupt:
         print("\nStopped by you. Everything finished so far is saved.")
 
-    summarize(read_rows(out_path), title)
+    summarize(read_rows(out_path), title, data=data, horizon=args.horizon, trend_lookback=TREND_LOOKBACK)
 
 
 if __name__ == "__main__":

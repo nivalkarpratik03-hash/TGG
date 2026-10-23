@@ -195,7 +195,7 @@ class CandleBuilder {
       const istMin = d.getUTCHours() * 60 + d.getUTCMinutes();
       const isMCX = isMCXSymbol(this._symbol);
       const openMin = isMCX ? (9 * 60 + 0) : (9 * 60 + 15);
-      const closeMin = isMCX ? (23 * 60 + 30) : (15 * 60 + 30);
+      const closeMin = isMCX ? (23 * 60 + 30) : (15 * 60 + 40); // keep in sync with NSE_CLOSE_MIN in fyers/tickStream.js
       if (dow === 0 || dow === 6 || istMin < openMin || istMin >= closeMin) return;
     }
     // ─────────────────────────────────────────────────────────────

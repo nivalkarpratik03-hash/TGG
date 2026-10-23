@@ -1,9 +1,20 @@
 """
 kronos-service/app.py
 
-Chunk 2 — the FastAPI wrapper around the Kronos model set up in Chunk 1.
-This is what the Node backend calls over HTTP (same pattern it already
-uses for Fyers — an external service call, not an import).
+The FastAPI wrapper around the Kronos model set up in Chunk 1. Pure
+backend service — no UI, matches the "Kronos as an external forecast
+service" direction. This is what the Node backend / any script calls
+over HTTP (same pattern already used for Fyers — an external service
+call, not an import).
+
+WHAT /forecast RETURNS (changed — see "full per-bar path" below):
+Earlier version only returned ONE number: where the price ends up at
+the FINAL bar of the horizon. The actual ask is a full forecast —
+every future candle, each with its own direction + confidence, so you
+can watch it bar by bar (e.g. "said up at 90% for the 9:15 candle, still
+up at 85% by 10:00...") and compare each one against the real candle
+once it prints. So now `path` in the response has one entry per
+forecasted bar, not just the last one.
 
 HOW CONFIDENCE IS COMPUTED (documented here since it's a real design
 decision, not something obvious from reading Kronos's own docs):
@@ -16,15 +27,25 @@ not the N individual paths. That's not useful for a confidence score (an
 average hides exactly the agreement/disagreement between runs that a
 confidence figure needs). So this wrapper calls predict() N SEPARATE
 times itself (N = sample_count from the request, each with the library's
-own sample_count fixed at 1), each an independently-seeded run. From
-those N independent forecasts:
-  - direction = whichever way (up/down) the MAJORITY of the N runs agree on
-  - confidence = what fraction of the N runs agreed with that majority
-  - predictedClose = the mean of the N runs' final predicted close
+own sample_count fixed at 1), each an independently-seeded run, and now
+keeps EVERY bar of every run (not just the final bar). For each bar b:
+  - direction[b] = whichever way (up/down) the MAJORITY of the N runs
+    agree on, for that bar, vs the real last close
+  - confidence[b] = what fraction of the N runs agreed with that majority
+  - predictedClose[b] = the mean of the N runs' close at that bar
 This is the same Monte-Carlo-via-repeated-sampling approach a real
 third-party Kronos API wrapper (github.com/fengwm64/kronos-api) already
 uses for its own "confidence" field — confirms this is a sound, existing
 pattern, not something invented for this project.
+
+LOGGING, FOR THE "COMPARE AT DAY END" PART:
+Every forecast this service makes gets appended to forecast_log.jsonl
+(one JSON object per line) in this same folder — symbol, every bar's
+prediction, and the real timestamp each bar is FOR. Nothing is deleted
+or rotated automatically. compare_forecasts.py (separate script) reads
+this log later and checks each bar against the real candle once the
+market has printed it, using the same kind of Data Export file
+validate_nifty.py already reads.
 
 RUNNING THIS (manually, before PM2 is wired up):
     cd kronos-service
@@ -37,9 +58,11 @@ Then confirm it's alive: http://localhost:8001/health
 
 from __future__ import annotations
 
+import json
+import os
 import time
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
 import pandas as pd
@@ -49,6 +72,10 @@ from pydantic import BaseModel, Field
 from model import Kronos, KronosTokenizer, KronosPredictor
 
 app = FastAPI(title="Kronos Forecast Service", version="1.0")
+
+# Append-only log every /forecast call writes to — see this file's header
+# ("LOGGING...") and compare_forecasts.py, the script that reads it back.
+LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "forecast_log.jsonl")
 
 # ── Model loaded ONCE at process startup, not per-request ──────────────
 # This is the whole reason this has to be a long-running process (PM2,
@@ -90,17 +117,34 @@ class ForecastRequest(BaseModel):
     resolution: Literal["1min", "3min", "5min", "15min", "1hr", "1day"]
     horizon: int = Field(16, ge=1, le=120, description="Bars ahead to forecast — changeable per-request, nothing hardcoded")
     sample_count: int = Field(20, ge=1, le=100, description="Independent forecast runs for the confidence calculation")
+    symbol: Optional[str] = Field(None, description="Optional — only used to label the log entry for compare_forecasts.py. Forecast math doesn't depend on it.")
+
+
+class BarForecast(BaseModel):
+    time: int  # epoch ms this forecasted bar is FOR — what compare_forecasts.py matches against the real candle
+    direction: Literal["up", "down", "neutral"]
+    confidence: float  # 0-100
+    predictedClose: float
 
 
 class ForecastResponse(BaseModel):
+    # Kept for backward compatibility with anything still reading the
+    # single-number shape (e.g. kronosDirection.js's Scanner integration,
+    # currently paused per the "no UI, pure forecast service" direction,
+    # but not deleted — see the chat reply alongside this file for why).
+    # These three always equal path[-1]'s direction/confidence/predictedClose.
     direction: Literal["up", "down", "neutral"]
-    confidence: float  # 0-100
-    currentClose: float
+    confidence: float
     predictedClose: float
+
+    currentClose: float
     horizon: int
     resolution: str
     sampleCount: int
     computeSeconds: float
+
+    # NEW — the actual ask: every forecasted bar, not just the last one.
+    path: list[BarForecast]
 
 
 @app.get("/health")
@@ -141,10 +185,12 @@ def forecast(req: ForecastRequest):
     ])
 
     current_close = candles[-1].close
-    final_closes = []
 
-    # N independent runs — see this file's header for exactly why this
-    # loop exists instead of relying on predict()'s own sample_count.
+    # all_closes[sample_index][bar_index] — EVERY bar of EVERY run, not
+    # just the final bar (that was the earlier version's whole limitation:
+    # it threw this away). See this file's header for why N separate
+    # predict() calls are needed instead of one call with sample_count=N.
+    all_closes = np.zeros((req.sample_count, req.horizon))
     for i in range(req.sample_count):
         pred_df = predictor.predict(
             df=df,
@@ -156,50 +202,66 @@ def forecast(req: ForecastRequest):
             T=1.0,
             top_p=0.9,
             sample_count=1,  # =1 deliberately, not req.sample_count — see
-                              # this file's header: the official docs
-                              # confirm sample_count>1 in ONE call returns
-                              # an already-averaged result, not individual
-                              # paths, so this file calls predict() in a
-                              # loop instead to get genuinely independent
-                              # runs for its own confidence calculation
+                              # this file's header
             verbose=False,
         )
-        final_closes.append(float(pred_df["close"].iloc[-1]))
+        all_closes[i, :] = pred_df["close"].to_numpy()
 
-    final_closes = np.array(final_closes)
-    up_count = int(np.sum(final_closes > current_close))
-    down_count = int(np.sum(final_closes < current_close))
-    flat_count = req.sample_count - up_count - down_count
+    def direction_and_confidence(closes_for_bar: np.ndarray):
+        up = int(np.sum(closes_for_bar > current_close))
+        down = int(np.sum(closes_for_bar < current_close))
+        flat = req.sample_count - up - down
+        if up > down and up > flat:
+            return "up", 100.0 * up / req.sample_count
+        if down > up and down > flat:
+            return "down", 100.0 * down / req.sample_count
+        # Tie or genuine flat majority — see the old version's comment,
+        # same reasoning, now applied per-bar instead of once.
+        return "neutral", 100.0 * flat / req.sample_count
 
-    if up_count > down_count and up_count > flat_count:
-        direction = "up"
-        confidence = 100.0 * up_count / req.sample_count
-    elif down_count > up_count and down_count > flat_count:
-        direction = "down"
-        confidence = 100.0 * down_count / req.sample_count
-    else:
-        # Two ways to land here: a genuine flat majority (rare — the
-        # sampled paths would have to land on the exact current close),
-        # or an exact up/down tie (up_count == down_count, more plausible
-        # with a smaller sample_count). Either way this reports
-        # direction="neutral" with confidence = flat_count/N, which is 0%
-        # in the tie case since literally 0 samples were flat — that's
-        # correct as "0% agreed on neutral," just worth knowing this
-        # collapses "50% up / 50% down, no majority" and "everyone
-        # predicted exactly flat" into the same label. Confirmed via
-        # testing this happens on real coin-flip-ish inputs, not
-        # theoretical — a future version could return the full
-        # up/down/flat split instead of one collapsed label+number.
-        direction = "neutral"
-        confidence = 100.0 * flat_count / req.sample_count
+    path: list[BarForecast] = []
+    for b in range(req.horizon):
+        bar_closes = all_closes[:, b]
+        bdir, bconf = direction_and_confidence(bar_closes)
+        bar_time_ms = int(y_timestamp.iloc[b].timestamp() * 1000)
+        path.append(BarForecast(
+            time=bar_time_ms, direction=bdir, confidence=round(bconf, 2),
+            predictedClose=round(float(np.mean(bar_closes)), 4),
+        ))
 
-    return ForecastResponse(
-        direction=direction,
-        confidence=round(confidence, 2),
+    compute_seconds = round(time.time() - t0, 3)
+    final_bar = path[-1]
+
+    response = ForecastResponse(
+        direction=final_bar.direction,
+        confidence=final_bar.confidence,
+        predictedClose=final_bar.predictedClose,
         currentClose=current_close,
-        predictedClose=round(float(np.mean(final_closes)), 4),
         horizon=req.horizon,
         resolution=req.resolution,
         sampleCount=req.sample_count,
-        computeSeconds=round(time.time() - t0, 3),
+        computeSeconds=compute_seconds,
+        path=path,
     )
+
+    # ── Log every forecast — see this file's header, "LOGGING..." ──────
+    # Append-only, one line per forecast. Never blocks/fails the actual
+    # response if writing the log has a problem (e.g. disk full) — a
+    # forecast you can't later compare is better than no forecast at all.
+    try:
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "requestedAt": datetime.now().isoformat(),
+                "symbol": req.symbol,
+                "resolution": req.resolution,
+                "horizon": req.horizon,
+                "sampleCount": req.sample_count,
+                "currentClose": current_close,
+                "currentCloseTime": candles[-1].time,
+                "path": [p.model_dump() for p in path],
+                "computeSeconds": compute_seconds,
+            }) + "\n")
+    except Exception as log_err:  # noqa: BLE001 — logging must never break the response
+        print(f"[Kronos] WARNING: could not write to {LOG_PATH}: {log_err}")
+
+    return response

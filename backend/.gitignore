@@ -5,4 +5,5 @@ fyers_access_token.txt
 fyers_refresh_token.txt
 *.log
 dataset/
-
+orderflow_data/
+orderflow/data/
