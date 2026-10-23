@@ -4,6 +4,7 @@
  * Handles the "Bubble" signal markers that appear on the candlestick chart.
  * These markers indicate NH (New High), NL (New Low), BC_HIGH, and BC_LOW signals
  * as arrow markers on the chart series.
+ *  * as arrow markers on the chart series.
  *
  * Connected components:
  *  - CandleChart.js  → calls buildBubbleMarkers() + setMarkersIfChanged()
