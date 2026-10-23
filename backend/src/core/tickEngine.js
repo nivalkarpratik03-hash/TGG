@@ -16,10 +16,61 @@ const { runSignalEngine } = require("../services/signalEngine");
 const { CandleBuilder } = require("../services/candleBuilder");
 const { TickStream, isLiveMarket, isAnyMarketLive, isTradingDay } = require("../fyers/tickStream");
 const { loadIndexSpotSymbols } = require("../derivatives/curatedUnderlyingsLoader");
+const { fetchCandles } = require("../fyers/client");
 const state = require("./state");
 
 function createTickEngine({ io }) {
   const { candleBuilders, socketSymbols, socketUnderlyings, SYMBOL } = state;
+
+  // ─── Live tick-gap backfill (re-wired 2026-10-02) ────────────────────────────
+  // ROOT CAUSE of mid-session holes in the DB: when the WebSocket goes quiet
+  // for N minutes, CandleBuilder pushes N in-memory `synthetic` placeholder
+  // candles and calls onGapDetected(symbol, fromMs, toMs) so the REAL minutes
+  // can be fetched from Fyers REST and spliced in (patchGapCandles). Placeholders
+  // are never passed to onFinalize, so they are never written to the DB — and
+  // nothing in the current code passed an onGapDetected handler (the wiring
+  // described in changes-log.txt 2026-06-29 was lost when server.js was split
+  // into core/*.js). Result: every tick stall left a permanent hole in the DB
+  // that only a later validator pass could fill.
+  //
+  // REST candles for just-closed minutes can lag a few seconds, so retry a
+  // few times with growing delays. Safe to run concurrently with the live
+  // write path: upsert is idempotent, and patchGapCandles only replaces
+  // candles that are still flagged synthetic.
+  const GAP_BACKFILL_DELAYS_MS = [3000, 15000, 45000, 120000];
+  const gapBackfillInFlight = new Set();
+
+  async function backfillLiveGap(symbol, fromMs, toMs) {
+    const key = `${symbol}|${fromMs}`;
+    if (gapBackfillInFlight.has(key)) return;
+    gapBackfillInFlight.add(key);
+    const expected = Math.round((toMs - fromMs) / 60000);
+    const got = new Map();
+    try {
+      for (const delay of GAP_BACKFILL_DELAYS_MS) {
+        await new Promise((r) => setTimeout(r, delay));
+        try {
+          const tokenOk = await state.validateToken().catch(() => false);
+          if (!tokenOk) continue;
+          const recent = await fetchCandles(symbol, 1, undefined, 2);
+          for (const c of recent) if (c.time >= fromMs && c.time < toMs) got.set(c.time, c);
+          if (got.size > 0) {
+            const real = [...got.values()].sort((a, b) => a.time - b.time);
+            const b = candleBuilders.get(symbol);
+            if (b) b.patchGapCandles(real);
+            if (state.dbEnabled) await state.db.upsertCandles(symbol, 1, real);
+            io.emit("history_updated", { symbol, resolution: 1, reason: "live_gap_backfill", count: real.length });
+          }
+          if (got.size >= expected) break; // every missing minute recovered
+        } catch (err) {
+          console.warn(`[GapBackfill] ${symbol} attempt failed (${err.message})`);
+        }
+      }
+      console.log(`[GapBackfill] ${symbol} ${new Date(fromMs).toISOString()} → ${new Date(toMs).toISOString()}: recovered ${got.size}/${expected} minute(s)${got.size < expected ? " — remainder left to Refresh / the scheduled validator" : ""}`);
+    } finally {
+      gapBackfillInFlight.delete(key);
+    }
+  }
 
   // ─── Candle Builder ───────────────────────────────────────────────────────────
   function getOrCreateBuilder(symbol) {
@@ -27,6 +78,7 @@ function createTickEngine({ io }) {
       const builder = new CandleBuilder({
         symbol,
         onTick: (formingCandles) => { emitCandleUpdate(symbol, formingCandles); },
+        onGapDetected: (sym, fromMs, toMs) => { backfillLiveGap(sym, fromMs, toMs).catch((e) => console.warn(`[GapBackfill] ${sym} error:`, e.message)); },
         onFinalize: (finalizedCandle, formingCandles) => {
           console.log(`[Builder:${symbol}] Candle finalized @ ${new Date(finalizedCandle.time).toISOString()} close=${finalizedCandle.close}`);
           emitCandleUpdate(symbol, formingCandles);
@@ -131,6 +183,10 @@ function createTickEngine({ io }) {
     state.lastTickAt = now;
     state.lastTickBySymbol.set(tick.symbol, now);
     getOrCreateBuilder(tick.symbol).processTick(tick);
+    // Global live-tick fan-out (Paper Trading etc.) — same tick the charts get.
+    for (const fn of state.tickListeners) {
+      try { fn(tick); } catch (err) { console.error("[TickListener] error:", err.message); }
+    }
     // If ticks just started flowing (e.g. after a gap/holiday silence),
     // immediately tell all clients — don't wait for the 30s broadcast.
     if (!wasFlowing) io.emit("market_status", { ticksFlowing: true });
@@ -236,6 +292,7 @@ function createTickEngine({ io }) {
     for (const sym of socketSymbols.values()) { if (sym) set.add(sym); }
     for (const sym of socketUnderlyings.values()) { if (sym) set.add(sym); }
     for (const sym of state.getLiveBroadcastSymbols()) { set.add(sym); }
+    for (const sym of state.getExtraTickSymbols()) { set.add(sym); }
     return [...set];
   }
 

@@ -97,6 +97,11 @@ function toIST(utcMs) {
   return new Date(utcMs + IST_OFFSET_MS);
 }
 
+/** "YYYY-MM-DD" of the IST calendar day containing `utcMs`. */
+function istDateKey(utcMs) {
+  return new Date(utcMs + IST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
 /** Expected number of candles per trading day for a given resolution (minutes). */
 function expectedCandlesPerDay(resolution) {
   const sessionMinutes = (MARKET_CLOSE_H * 60 + MARKET_CLOSE_M) - (MARKET_OPEN_H * 60 + MARKET_OPEN_M);
@@ -123,6 +128,84 @@ function expectedCandlesForDay(tradingDayMs, resolution) {
     times.push(t);
   }
   return times;
+}
+
+// ─── Whole-day holes (added 2026-10-02) ──────────────────────────────────────
+// A day with ZERO candles is invisible to validateCandleArray: the only
+// neighbours around it sit on different dates, and a prev-at-close /
+// next-at-open pair is (correctly) treated as a normal overnight gap. The
+// SENSEX export showed four such days (17, 18, 21, 25 Sep) that NIFTY had.
+// The validator cannot know which weekdays the exchange was closed, so the
+// backend registers a holiday checker at boot (setHolidayChecker). Without
+// one, whole-day detection is OFF — never guess, a holiday would be reported
+// as missing data on every pass.
+let _isHoliday = null;
+/** @param {(dayKey:string)=>boolean|null} fn  true = exchange closed that day, false = open, null = calendar doesn't cover that day */
+function setHolidayChecker(fn) { _isHoliday = typeof fn === "function" ? fn : null; }
+
+/**
+ * Weekdays strictly BEFORE today (IST) and AFTER the first stored candle that
+ * have no candles at all and were not exchange holidays. NSE/BSE symbols
+ * only (MCX has different sessions; derivatives expire so their histories
+ * legitimately start/stop).
+ * @returns {Array<{type:"MISSING_DAY", day:string, time:number, fromTime:number, toTime:number, missing:number, days:string[], message:string}>}
+ */
+function findMissingTradingDays(symbol, candles, nowMs = Date.now()) {
+  if (!_isHoliday || !candles || candles.length === 0) return [];
+  if (!/^(NSE|BSE):/.test(symbol)) return [];
+  if (/-(CE|PE|FUT)$|\d(CE|PE)$|FUT$/.test(symbol)) return [];
+  const have = new Set();
+  let firstMs = Infinity;
+  for (const c of candles) { have.add(istDateKey(c.time)); if (c.time < firstMs) firstMs = c.time; }
+  const todayKey = istDateKey(nowMs);
+  const out = [];
+  for (let t = Date.parse(`${istDateKey(firstMs)}T12:00:00+05:30`); istDateKey(t) < todayKey; t += 86400 * 1000) {
+    const day = istDateKey(t);
+    const dow = new Date(t + IST_OFFSET_MS).getUTCDay();
+    if (dow === 0 || dow === 6) continue;
+    if (have.has(day)) continue;
+    let open_ = false;
+    try { open_ = _isHoliday(day) === false; } catch (_) { open_ = false; } // unknown (null) → don't report
+    if (!open_) continue;
+    const open = Date.parse(`${day}T09:15:00+05:30`);
+    out.push({
+      type: "MISSING_DAY", day, time: open, fromTime: open, toTime: open + 375 * 60000,
+      missing: 375, days: [day],
+      message: `No candles at all for ${day} (not a listed exchange holiday)`,
+    });
+  }
+  return out;
+}
+
+
+/**
+ * Session minutes (09:15–15:30 IST) inside [fromMs, toMs), per IST weekday.
+ * Weekends and days the registered calendar says were closed contribute 0;
+ * days the calendar doesn't know about (null) count as open. A gap that
+ * covers no session time at all (overnight, weekend, holiday, stray
+ * pre-open/post-close print) therefore yields [] and is not an issue.
+ */
+function missingSessionByDay(fromMs, toMs) {
+  const out = [];
+  const lastKey = istDateKey(toMs - 1);
+  for (let t = Date.parse(`${istDateKey(fromMs)}T12:00:00+05:30`); istDateKey(t) <= lastKey; t += 86400 * 1000) {
+    const day = istDateKey(t);
+    const dow = new Date(t + IST_OFFSET_MS).getUTCDay();
+    if (dow === 0 || dow === 6) continue;
+    if (_isHoliday) { let closed = false; try { closed = _isHoliday(day) === true; } catch (_) { } if (closed) continue; }
+    const open = Date.parse(`${day}T09:15:00+05:30`);
+    const a = Math.max(fromMs, open), b = Math.min(toMs, open + 375 * 60000);
+    if (b > a) out.push({ day, minutes: Math.round((b - a) / 60000) });
+  }
+  return out;
+}
+
+/** GAP issues + MISSING_DAY issues, without double-reporting a day a GAP already covers. */
+function addMissingDays(symbol, candles, issues) {
+  const covered = new Set();
+  for (const i of issues) if (i.type === "GAP") for (const d of i.days || []) covered.add(d);
+  for (const m of findMissingTradingDays(symbol, candles)) if (!covered.has(m.day)) issues.push(m);
+  return issues;
 }
 
 // ─── Core validation logic ───────────────────────────────────────────────────
@@ -224,17 +307,173 @@ function validateCandleArray(candles, resolution) {
 
         if (isRealGap) {
           const gapMinutes = actualStep / 60000;
-          issues.push({
-            type: "GAP",
-            time: sorted[i - 1].time,
-            message: `Gap of ${gapMinutes.toFixed(0)}min between ${new Date(sorted[i - 1].time).toISOString()} and ${new Date(sorted[i].time).toISOString()}`,
-          });
+          // 2026-10-02: GAP issues carry the exact missing range and a
+          // per-day breakdown of missing SESSION minutes (perDay). Before,
+          // callers got only `time` (the candle before the hole), had to
+          // guess the day, and a multi-day outage was reported as two
+          // endpoint days with the days in between invisible. A gap that
+          // covers no session time at all (holiday / weekend / stray
+          // pre-open or post-close print) is not an issue.
+          const prevT = sorted[i - 1].time;
+          const currT = sorted[i].time;
+          const perDay = missingSessionByDay(prevT + expectedStep, currT);
+          if (perDay.length > 0) {
+            issues.push({
+              type: "GAP",
+              time: prevT,
+              fromTime: prevT + expectedStep,
+              toTime: currT,
+              missing: perDay.reduce((a, d) => a + d.minutes, 0),
+              perDay,
+              days: perDay.map((d) => d.day),
+              message: `Gap of ${gapMinutes.toFixed(0)}min between ${new Date(prevT).toISOString()} and ${new Date(currT).toISOString()}`,
+            });
+          }
         }
       }
     }
   }
 
   return { valid: issues.length === 0, issues };
+}
+
+// ─── Zero-volume detection (added 2026-10-07) ────────────────────────────────
+// validateCandleArray() never looked at `volume`, so rows stored with
+// volume = 0 were reported as perfectly valid. Where those zeros came from:
+//   • live candles are built from Fyers LiteMode ticks, which carry NO volume
+//     field → every finalized live 1m candle was written with volume 0, and
+//     the old upsert then let that 0 overwrite real REST volume;
+//   • REST "forming minute" rows (partial volume) were later replaced by it.
+// This is deliberately NOT part of validateCandleArray(): that function also
+// gates broker data going INTO the DB (periodicSync / repairDay), and a
+// broker candle with no volume must never be refused for that reason alone.
+//
+// Fyers only serves volume for roughly the last year, so anything older can
+// never be repaired and is not reported (VOLUME_HISTORY_DAYS). The 1m store
+// keeps 90 days, so in practice every stored 1m row is inside that window.
+const VOLUME_HISTORY_DAYS = 365;
+// A symbol with NO non-zero volume anywhere across this many distinct days is
+// a volume-less instrument (some indices/commodity roots), not corrupt data.
+const VOLUMELESS_MIN_DAYS = 5;
+
+/** Option contracts legitimately have minutes with no trades → not checked. */
+function isOptionContractSymbol(symbol) {
+  return /\d(CE|PE)$|-(CE|PE)$/.test(String(symbol || ""));
+}
+
+/**
+ * One ZERO_VOLUME issue per IST day that has zero/missing-volume 1m rows.
+ * @param {string} symbol
+ * @param {Array<{time:number,volume:number,open:number,high:number,low:number,close:number}>} candles
+ * @param {number} [nowMs]
+ * @returns {Array<{type:"ZERO_VOLUME", day:string, time:number, fromTime:number, toTime:number, count:number, flat:number, message:string}>}
+ */
+function findZeroVolumeDays(symbol, candles, nowMs = Date.now()) {
+  if (!candles || candles.length === 0 || isOptionContractSymbol(symbol)) return [];
+  const cutoff = nowMs - VOLUME_HISTORY_DAYS * 86400 * 1000;
+  const byDay = new Map();
+  const allDays = new Set();
+  let anyVolume = false;
+  for (const c of candles) {
+    if (!c || c.time < cutoff) continue;
+    const day = istDateKey(c.time);
+    allDays.add(day);
+    const v = Number(c.volume);
+    if (Number.isFinite(v) && v > 0) { anyVolume = true; continue; }
+    let d = byDay.get(day);
+    if (!d) { d = { day, count: 0, flat: 0, first: c.time, last: c.time }; byDay.set(day, d); }
+    d.count++;
+    if (c.open === c.high && c.high === c.low && c.low === c.close) d.flat++;
+    if (c.time < d.first) d.first = c.time;
+    if (c.time > d.last) d.last = c.time;
+  }
+  if (!anyVolume && allDays.size >= VOLUMELESS_MIN_DAYS) return [];
+  return [...byDay.values()].sort((a, b) => (a.day < b.day ? -1 : 1)).map((d) => ({
+    type: "ZERO_VOLUME",
+    day: d.day,
+    time: d.first,
+    fromTime: d.first,
+    toTime: d.last + 60000,
+    count: d.count,
+    flat: d.flat,
+    message: `${d.count} candle(s) with zero volume on ${d.day} (${d.flat} flat, ${d.count - d.flat} with price movement)`,
+  }));
+}
+
+/** Days (IST keys, newest first) that carry ZERO_VOLUME issues. */
+function zeroVolumeDaysOf(issues) {
+  return [...new Set((issues || []).filter((i) => i.type === "ZERO_VOLUME").map((i) => i.day))].sort().reverse();
+}
+
+// ─── Gap summaries + continuity health check ────────────────────────────────
+
+/**
+ * Upper bound for validation reads: start of the current IST minute minus one
+ * minute, so the forming candle and a just-closed-but-not-yet-committed
+ * candle never register as a hole. (Same rule validateHistorical always used;
+ * extracted so the health check shares it.)
+ */
+function safeUpperBoundMs(nowMs = Date.now()) {
+  const istNowMs = nowMs + IST_OFFSET_MS;
+  const currentIstMinuteStartMs = Math.floor(istNowMs / 60000) * 60000;
+  return currentIstMinuteStartMs - 60000 - IST_OFFSET_MS;
+}
+
+/**
+ * Group GAP and MISSING_DAY issues by IST trading day.
+ * @returns {Array<{day:string, missingMinutes:number, ranges:Array<{from:number,to:number,minutes:number}>}>}
+ *          newest day first. A hole that spans an overnight boundary is listed
+ *          under both days it touches.
+ */
+function summarizeGaps(issues) {
+  const byDay = new Map();
+  for (const iss of issues || []) {
+    if (iss.type !== "GAP" && iss.type !== "MISSING_DAY") continue;
+    const perDay = iss.perDay && iss.perDay.length ? iss.perDay : (iss.days || [istDateKey(iss.fromTime || iss.time)]).map((day) => ({ day, minutes: iss.missing || 1 }));
+    for (const { day, minutes } of perDay) {
+      if (!byDay.has(day)) byDay.set(day, { day, missingMinutes: 0, ranges: [] });
+      const d = byDay.get(day);
+      d.missingMinutes += minutes;
+      d.ranges.push({ from: iss.fromTime || iss.time, to: iss.toTime || iss.time, minutes });
+    }
+  }
+  return [...byDay.values()].sort((a, b) => (a.day < b.day ? 1 : -1));
+}
+
+/**
+ * Read-only DB continuity health check for ONE symbol (1m candles).
+ * This is the "health check before recovery": it never writes and never
+ * calls the broker. Refresh / the scheduled chain run it first and only go
+ * to the broker when it reports gap days.
+ *
+ * @param {string} symbol
+ * @param {object} [opts]
+ * @param {number} [opts.days=90]  how far back to look
+ * @returns {Promise<{symbol, healthy, candlesChecked, gapDays, corruptCount, checkedFrom, checkedTo}>}
+ */
+async function checkContinuity(symbol, { days = 90 } = {}) {
+  const to = safeUpperBoundMs();
+  const from = Date.now() - days * 86400 * 1000;
+  const candles = await loadCandles(symbol, 1, { limit: 100000, from: new Date(from).toISOString(), to: new Date(to).toISOString() });
+  if (!candles || candles.length === 0) {
+    return { symbol, healthy: true, empty: true, candlesChecked: 0, gapDays: [], zeroVolumeDays: [], corruptCount: 0, checkedFrom: from, checkedTo: to };
+  }
+  const { issues } = validateCandleArray(candles, 1);
+  addMissingDays(symbol, candles, issues);
+  const gapDays = summarizeGaps(issues);
+  const corruptCount = issues.filter((i) => i.type === "CORRUPT_OHLC").length;
+  const zeroVolumeIssues = findZeroVolumeDays(symbol, candles);
+  const zeroVolumeDays = zeroVolumeIssues.map((z) => ({ day: z.day, count: z.count, flat: z.flat }));
+  return {
+    symbol,
+    healthy: gapDays.length === 0 && corruptCount === 0 && zeroVolumeDays.length === 0,
+    candlesChecked: candles.length,
+    gapDays,
+    zeroVolumeDays,
+    corruptCount,
+    checkedFrom: from,
+    checkedTo: to,
+  };
 }
 
 // ─── Live validation (current trading day) ──────────────────────────────────
@@ -296,23 +535,18 @@ async function validateHistorical(symbol, resolution, opts = {}) {
   const defaultFrom = new Date(Date.now() - RETENTION_DAYS * 86400 * 1000).toISOString();
   const from = opts.from || defaultFrom;
 
-  // Exclude the currently-forming minute from validation.
-  // The live write path (onFinalize) writes a closed candle immediately after the
-  // minute rolls. If validateHistorical runs within the same event-loop tick as
-  // the upsert, the DB may have the candle or may not — this race causes the
-  // validator to report 21749 when 21750 exist, or flag a spurious GAP.
-  // Solution: cap `to` at the start of the current IST minute so we only
-  // validate candles that have been fully closed AND had time to persist.
-  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-  const nowMs = Date.now();
-  const istNowMs = nowMs + IST_OFFSET_MS;
-  // Floor to the previous full IST minute (current minute is still forming or just closed)
-  const currentIstMinuteStartMs = Math.floor(istNowMs / 60000) * 60000;
-  // Subtract one more minute to give the DB write time to commit
-  const safeTo = new Date(currentIstMinuteStartMs - 60000 - IST_OFFSET_MS).toISOString();
+  // Exclude the currently-forming minute from validation (see
+  // safeUpperBoundMs — same cap as before, now shared with checkContinuity).
+  const safeTo = new Date(safeUpperBoundMs()).toISOString();
 
   const candles = await loadCandles(symbol, DB_RESOLUTION, { limit: 100000, ...opts, from, to: opts.to || safeTo });
-  const { valid, issues } = validateCandleArray(candles, DB_RESOLUTION);
+  const { issues } = validateCandleArray(candles, DB_RESOLUTION);
+  // Whole-day holes only make sense for the default full-window scan; a
+  // caller-supplied narrow range would report every day outside it.
+  if (!opts.from && !opts.to) addMissingDays(symbol, candles, issues);
+  // Zero-volume rows are corrupt data too (see findZeroVolumeDays header).
+  issues.push(...findZeroVolumeDays(symbol, candles));
+  const valid = issues.length === 0;
 
   // Only log when issues found — clean symbols are silent to keep startup logs readable
   if (issues.length > 0) {
@@ -367,4 +601,16 @@ module.exports = {
   expectedCandlesPerDay,
   expectedCandlesForDay,
   getAllTrackedSymbols,
+  // 2026-10-02
+  istDateKey,
+  setHolidayChecker,
+  findMissingTradingDays,
+  missingSessionByDay,
+  summarizeGaps,
+  checkContinuity,
+  safeUpperBoundMs,
+  // 2026-10-07
+  findZeroVolumeDays,
+  zeroVolumeDaysOf,
+  VOLUME_HISTORY_DAYS,
 };

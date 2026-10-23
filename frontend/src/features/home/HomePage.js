@@ -87,6 +87,21 @@ const NAV_ITEMS = [
     // stretching the existing `dynamic` flag to mean two different things.
     dynamicAuth: true,
   },
+  {
+    id: "paper-trading",
+    path: "/paper-trading",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <path d="M3 3v18h18" />
+        <path d="M7 14l4-4 3 3 5-6" />
+        <circle cx="19" cy="7" r="1.5" />
+      </svg>
+    ),
+    label: "Paper Trading",
+    description: "Global auto & manual paper trading — one engine for every strategy and feature",
+    tagColor: "green",
+    stats: ["Auto Entry per strategy", "Manual Entry", "EOD tradesheets"],
+  },
 ];
 
 export default function HomePage() {

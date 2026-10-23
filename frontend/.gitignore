@@ -1,3 +1,6 @@
 node_modules/
 build/
 .env
+
+# TradingView Advanced Charts: licensed, not redistributable. Never commit.
+public/charting_library/

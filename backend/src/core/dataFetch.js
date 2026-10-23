@@ -19,7 +19,7 @@ const { runSignalEngine } = require("../services/signalEngine");
 const { fetchCandles, fetchDailyCandles, FULL_HISTORY_DAILY_LOOKBACK_DAYS } = require("../fyers/client");
 const { deriveTimeframe, istDateKey } = require("../services/candleBuilder");
 const { DAILY_RESOLUTION, isDailyOrHigher, aggregateDailyCandles } = require("../services/timeframeAggregator");
-const { isTradingDay, isAnyMarketLive } = require("../fyers/tickStream");
+const { isTradingDay, isAnyMarketLive, isLiveMarket, isMCXSymbol, nowIST, NSE_CLOSE_MIN, MCX_CLOSE_MIN, MCX_SAT_CLOSE } = require("../fyers/tickStream");
 const state = require("./state");
 const { vlog, vwarn } = require("../utils/verboseLog");
 
@@ -47,6 +47,25 @@ function isDerivativeSymbol(symbol) {
 
 function createDataFetch({ io, tickEngine }) {
   const { SYMBOL, RESOLUTION, CANDLES_TO_FETCH, CHART_DB_WINDOW_DAYS, REFRESH_MS, candleBuilders, socketSymbols, socketResolutions } = state;
+
+  // Register the exchange-holiday calendar with the validator so it can tell
+  // "no candles because the exchange was closed" from "no candles because we
+  // lost the whole day" (see validationEngine.findMissingTradingDays).
+  // holidays.js only lists 2026 — for any other year we answer null
+  // ("unknown"), so a stale calendar can never turn holidays into false
+  // missing days (whole-day detection simply skips unknown days).
+  try {
+    const { isTradingHoliday } = require("../data/holidays");
+    if (state.db && state.db.setHolidayChecker) {
+      state.db.setHolidayChecker((dayKey) => {
+        const [y, m, d] = dayKey.split("-").map(Number);
+        if (y !== 2026) return null; // calendar doesn't cover this year — "unknown", never "closed"
+        return isTradingHoliday(new Date(y, m - 1, d, 12), "NSE");
+      });
+    }
+  } catch (err) {
+    console.warn("[DataFetch] Holiday calendar not wired — whole-missing-day detection disabled:", err.message);
+  }
 
   // ─── Lightweight per-symbol staleness check (boot / reactive) ────────────────
   //
@@ -117,11 +136,17 @@ function createDataFetch({ io, tickEngine }) {
 
       vlog(`[Staleness] ${symbol}: DB latest is ${(lagMs / 60000).toFixed(1)}min behind — fetching delta from Fyers`);
 
-      // Small bounded lookback (2 days) is always enough to cover the gap —
-      // even a multi-hour outage never spans more than the current + previous
-      // trading day. This keeps the delta-fetch cheap and fast, unlike a full
-      // historical refetch.
-      const fresh1m = await fetchCandles(symbol, 1, CANDLES_TO_FETCH, 2);
+      // Delta-fetch only: reaches back as far as the DB's last candle (see
+      // lookbackDays below), not a full historical refetch.
+      // Lookback now follows the real gap instead of a fixed 2 days. The
+      // fixed 2 left everything older than (now - 2d) permanently unfilled
+      // after any outage longer than that: in the SENSEX export, the bulk
+      // inserts on 24 Sep 10:06 and 1 Oct 14:13 start EXACTLY 2 days back
+      // (22 Sep 10:07, 29 Sep 14:14), while 17/18/21 Sep and 25 Sep (days
+      // between the last stored candle and that window) were never written.
+      // +1 day padding; capped at 90 (one Fyers intraday chunk).
+      const lookbackDays = Math.min(90, Math.max(2, Math.ceil(lagMs / 86400000) + 1));
+      const fresh1m = await fetchCandles(symbol, 1, CANDLES_TO_FETCH, lookbackDays);
       if (!fresh1m || fresh1m.length === 0) return oneMinCandles;
 
       // Only keep candles strictly newer than what we already have — avoids
@@ -157,65 +182,106 @@ function createDataFetch({ io, tickEngine }) {
     }
   }
 
-  // ─── Daily (1D) staleness check — mirrors ensureFreshOneMinData above ─────
+  // ─── Daily (1D) freshness — rewritten 2026-10-07 ──────────────────────────
   //
-  // 1D bars only ever change once per trading day (today's bar, while the
-  // market is open) plus one final settle after close. So instead of a
-  // tight few-minute tolerance like the 1m check, this only re-fetches when
-  // the DB's latest daily row is from a PRIOR calendar day (IST) than
-  // today's actual/most-recent trading day — i.e. "we don't have today's
-  // bar yet" or "yesterday's bar never got its final settle". Throttled the
-  // same way (per-symbol cooldown) so this can't turn into a hammering loop
-  // across a full symbol list either.
+  // BUG THIS FIXES: the old check (a) returned immediately once the DB had a
+  // row for TODAY, and (b) only ever upserted bars with time > the last
+  // stored bar. Fyers returns the still-forming daily bar during the session,
+  // so the first mid-day fetch stored a PARTIAL bar (open/high/low/close/
+  // volume as of that minute) and nothing ever touched it again — not that
+  // evening, not the next day (the refetch filtered it out as "not newer").
+  // That frozen partial row is the odd-looking resolution=1440 row at the top
+  // of the table (its time reads 09:15 because normalizeDailyTimestamp
+  // anchors every daily bar to the session open).
   //
-  // Never throws — same guarantee as ensureFreshOneMinData: any failure here
-  // just means we serve the (possibly one-day-stale) DB data exactly as
-  // before this existed.
-  const DAILY_STALENESS_CHECK_COOLDOWN_MS = 5 * 60 * 1000; // at most once per 5 min per symbol
+  // Now:
+  //   • during the session today's bar is refreshed (2 min throttle) — it is
+  //     provisional, and the live tick patch keeps the in-memory copy current;
+  //   • once the session is over (+ grace) ONE settle refetch replaces it with
+  //     the final bar (tracked in `dailySettled`);
+  //   • on any later day the last few bars are compared with the fresh pull
+  //     and re-written when they differ, so an old partial bar self-heals.
+  // Never throws — any failure serves the DB data exactly as before.
+  const DAILY_STALENESS_CHECK_COOLDOWN_MS = 5 * 60 * 1000;   // closed market / settle
+  const DAILY_LIVE_REFRESH_COOLDOWN_MS = 2 * 60 * 1000;      // while today's bar is forming
+  const DAILY_FINAL_GRACE_MIN = 5;                            // minutes after close before Fyers' daily bar is final
+  const DAILY_COMPARE_DAYS = 5;                               // fresh pull / compare window
   const lastDailyStalenessCheckAt = new Map();
+  const dailySettled = new Set();                             // `${symbol}|${istDay}` already refetched after close
+
+  /** True once today's daily bar for `symbol` can no longer change. */
+  function isTodayDailyFinal(symbol) {
+    const { mins, dow } = nowIST();
+    if (dow === 0) return true;
+    const mcx = isMCXSymbol(symbol);
+    if (!mcx && dow === 6) return true;
+    const closeMin = mcx ? (dow === 6 ? MCX_SAT_CLOSE : MCX_CLOSE_MIN) : NSE_CLOSE_MIN;
+    return mins >= closeMin + DAILY_FINAL_GRACE_MIN;
+  }
+
+  /** Fresh bars that are new or differ from what is stored (OHLC or volume). */
+  function dailyBarsToWrite(fresh, stored) {
+    const byTime = new Map((stored || []).map((c) => [c.time, c]));
+    return fresh.filter((f) => {
+      const o = byTime.get(f.time);
+      if (!o) return true;
+      return o.open !== f.open || o.high !== f.high || o.low !== f.low || o.close !== f.close || (Number(o.volume) || 0) !== (Number(f.volume) || 0);
+    });
+  }
 
   async function ensureFreshDailyData(symbol, dailyCandles) {
     try {
       if (!dailyCandles || dailyCandles.length === 0) return dailyCandles;
 
       const lastCandle = dailyCandles[dailyCandles.length - 1];
-      const todayKey = istDateKey(Date.now());
-      const lastKey = istDateKey(lastCandle.time);
-      if (lastKey === todayKey) return dailyCandles; // already has today's bar — current
-
       const nowMs = Date.now();
+      const todayKey = istDateKey(nowMs);
+      const lastKey = istDateKey(lastCandle.time);
+      const settledKey = `${symbol}|${todayKey}`;
+      const todayFinal = isTodayDailyFinal(symbol);
+
+      let cooldown = DAILY_STALENESS_CHECK_COOLDOWN_MS;
+      if (lastKey === todayKey) {
+        if (isLiveMarket(symbol)) cooldown = DAILY_LIVE_REFRESH_COOLDOWN_MS;       // today's bar is still forming
+        else if (todayFinal && !dailySettled.has(settledKey)) { /* settle refetch due */ }
+        else return dailyCandles;                                                  // settled, or inside the post-close grace window
+      } else if (lastKey > todayKey) {
+        return dailyCandles;
+      }
+
       const lastCheck = lastDailyStalenessCheckAt.get(symbol) || 0;
-      if (nowMs - lastCheck < DAILY_STALENESS_CHECK_COOLDOWN_MS) return dailyCandles; // throttled
+      if (nowMs - lastCheck < cooldown) return dailyCandles; // throttled
       lastDailyStalenessCheckAt.set(symbol, nowMs);
 
       const tokenOk = await state.validateToken().catch(() => false);
       if (!tokenOk) return dailyCandles;
 
-      vlog(`[Staleness] ${symbol}: DB latest daily bar is ${lastKey}, today is ${todayKey} — fetching delta from Fyers`);
+      vlog(`[Staleness] ${symbol}: DB latest daily bar is ${lastKey}, today is ${todayKey} — refreshing last ${DAILY_COMPARE_DAYS}d from Fyers`);
 
-      // Small bounded lookback (5 days) always covers the gap — even a
-      // multi-day outage or a weekend/holiday never spans more than a
-      // handful of calendar days without a new trading-day bar appearing.
-      const freshDaily = await fetchDailyCandles(symbol, 5);
+      const freshDaily = await fetchDailyCandles(symbol, DAILY_COMPARE_DAYS);
       if (!freshDaily || freshDaily.length === 0) return dailyCandles;
 
-      const newOnes = freshDaily.filter((c) => c.time > lastCandle.time);
-      if (newOnes.length === 0) return dailyCandles;
+      // Today's bar after the grace window is final → remember we settled it.
+      if (todayFinal && freshDaily.some((c) => istDateKey(c.time) === todayKey)) dailySettled.add(settledKey);
+
+      const toWrite = dailyBarsToWrite(freshDaily, dailyCandles);
+      if (toWrite.length === 0) return dailyCandles;
 
       if (state.dbEnabled && state.db) {
         try {
-          const inserted = await state.db.upsertCandles(symbol, DAILY_RESOLUTION, newOnes);
-          vlog(`[Staleness] ${symbol}: backfilled ${inserted} missing daily candle(s)`);
+          const inserted = await state.db.upsertCandles(symbol, DAILY_RESOLUTION, toWrite);
+          vlog(`[Staleness] ${symbol}: wrote ${inserted} daily candle(s) (new or changed)`);
           io.emit("history_updated", { symbol, resolution: DAILY_RESOLUTION, reason: "daily_staleness_backfill", count: inserted });
         } catch (err) {
           console.warn(`[Staleness] ${symbol}: daily upsert failed (${err.message}) — still using them in-memory for this response`);
         }
       }
 
-      const merged = [...dailyCandles, ...newOnes]
-        .sort((a, b) => a.time - b.time)
-        .filter((c, i, arr) => i === 0 || c.time !== arr[i - 1].time);
-      return merged;
+      // Merge: fresh bars REPLACE stored bars with the same time (the old
+      // merge kept the stale stored copy because it only appended newer bars).
+      const byTime = new Map(dailyCandles.map((c) => [c.time, c]));
+      for (const c of freshDaily) byTime.set(c.time, c);
+      return [...byTime.values()].sort((a, b) => a.time - b.time);
     } catch (err) {
       console.warn(`[Staleness] ${symbol}: daily check failed (${err.message}) — serving DB data as-is`);
       return dailyCandles;
@@ -255,6 +321,12 @@ function createDataFetch({ io, tickEngine }) {
           if (!latest) return; // symbol has no 1m data yet — nothing to check staleness against
           const before = latest.time;
           await ensureFreshOneMinData(symbol, [latest]);
+          // Also settle the stored daily bar (spot only — derivatives keep no 1D rows).
+          // Without this a symbol nobody opens a chart for would keep a partial bar forever.
+          if (!isDerivativeSymbol(symbol)) {
+            const latestDaily = await state.db.getLatestCandle(symbol, DAILY_RESOLUTION).catch(() => null);
+            if (latestDaily) await ensureFreshDailyData(symbol, [latestDaily]);
+          }
           // ensureFreshOneMinData logs its own [Staleness] line when it
           // actually backfills something; we just tally here for the summary.
           const after = await state.db.getLatestCandle(symbol, 1).catch(() => null);
@@ -270,6 +342,152 @@ function createDataFetch({ io, tickEngine }) {
     }
     // Summary now logged in catchUp.js with start/end timestamps
     return { checked: symbols.length, backfilled: staleFound, failed };
+  }
+
+  // ─── Refresh-time health check + gap heal (added 2026-10-02) ──────────────
+  //
+  // ROOT CAUSE this fixes: Refresh (POST /api/chart/refresh) only ever called
+  // fetchAndProcess(), whose only "self-heal" is ensureFreshOneMinData() —
+  // which compares the DB's LAST candle to the clock and fetches candles
+  // NEWER than that last candle. A hole in the MIDDLE of the history (e.g.
+  // SENSEX on 24 Sep, with good candles after it) is invisible to that check
+  // by construction, so Refresh just re-read the same holey DB rows forever.
+  // The deep validator that does see mid-history holes only runs inside the
+  // 3x/day checkpoint chain, and /health never looked at candle continuity.
+  //
+  // Flow on Refresh, in order:
+  //   1. HEALTH CHECK  — read-only DB continuity scan of the chart window
+  //      (db.checkContinuity): lists the gap days. No broker call.
+  //   2. RECOVERY      — only if gap days exist: ONE broker fetch covering
+  //      them, insert ONLY the missing minutes (db.fillGapDays — additive,
+  //      never deletes).
+  //   3. RE-CHECK      — report what is fixed and what the broker itself
+  //      cannot supply, so the UI/API can say so instead of silently
+  //      showing a hole.
+  // Days the broker already confirmed it cannot fill are not re-fetched on
+  // every click (BROKER_RECHECK_MS) unless their missing-minute count changed.
+  const HEAL_COOLDOWN_MS = 10 * 1000;          // protects against double-clicks only
+  const BROKER_RECHECK_MS = 15 * 60 * 1000;    // re-ask the broker about a still-gappy day at most this often
+  const healInFlight = new Map();              // symbol → Promise
+  const lastHeal = new Map();                  // symbol → { at, report }
+  const brokerConfirmed = new Map();           // `${symbol}|${day}` → { at, missingMinutes }
+
+  async function getContinuityReport(symbol, { days } = {}) {
+    if (!state.dbEnabled || !state.db || !state.db.checkContinuity) return { symbol, available: false, healthy: null, gapDays: [] };
+    const r = await state.db.checkContinuity(symbol, { days: days || CHART_DB_WINDOW_DAYS });
+    return { ...r, available: true };
+  }
+
+  async function _healGapsInner(symbol, { force }) {
+    const before = await getContinuityReport(symbol);
+    if (!before.available) return { ran: false, reason: "db_unavailable" };
+    if (before.healthy) return { ran: true, healthy: true, gapDaysBefore: [], gapDaysAfter: [], inserted: 0 };
+
+    const nowMs = Date.now();
+    const candidates = before.gapDays.filter((g) => {
+      const c = brokerConfirmed.get(`${symbol}|${g.day}`);
+      if (!c) return true;
+      const sameHole = c.missingMinutes === g.missingMinutes;
+      return !(sameHole && nowMs - c.at < BROKER_RECHECK_MS && !force);
+    });
+    // `force` (an explicit Refresh click) always re-asks the broker — the
+    // person clicking wants the current truth. Background callers (force =
+    // false) skip a day the broker already confirmed it cannot fill, until
+    // BROKER_RECHECK_MS passes or the missing-minute count changes.
+    const toFetch = candidates;
+
+    // 2026-10-07: zero-volume days are part of the health check now. Refresh
+    // (force) always re-asks the broker; background callers skip days the
+    // broker already confirmed it has no volume for.
+    const zeroDays = [];
+    for (const z of before.zeroVolumeDays || []) {
+      if (!force && state.db.wasVolumeHealAttempted) {
+        const mins = z.day === istDateKey(Date.now()) ? 20 : 3 * 24 * 60;
+        const attempted = await state.db.wasVolumeHealAttempted(symbol, new Date(`${z.day}T12:00:00+05:30`), mins).catch(() => false);
+        if (attempted) continue;
+      }
+      zeroDays.push(z.day);
+    }
+
+    if (toFetch.length === 0 && zeroDays.length === 0) {
+      return { ran: true, healthy: false, gapDaysBefore: before.gapDays, gapDaysAfter: before.gapDays, zeroVolumeDaysBefore: before.zeroVolumeDays || [], inserted: 0, reason: "broker_confirmed_missing" };
+    }
+
+    const tokenOk = await state.validateToken().catch(() => false);
+    if (!tokenOk) return { ran: true, healthy: false, gapDaysBefore: before.gapDays, gapDaysAfter: before.gapDays, inserted: 0, reason: "token_invalid" };
+
+    let fill = { inserted: 0, fixedDays: [], remainingDays: [] };
+    if (toFetch.length > 0) {
+      vlog(`[Heal] ${symbol}: ${toFetch.length} gap day(s) [${toFetch.map((g) => `${g.day}:${g.missingMinutes}m`).join(", ")}] — filling from broker`);
+      fill = await state.recoveryEngine.fillGapDays({
+        symbol,
+        days: toFetch.map((g) => g.day),
+        fetchCandles: (s, r, c, l) => fetchCandles(s, r, c, l),
+        trigger: "refresh",
+      });
+      if (!fill || fill.skipped || fill.success === false) {
+        return { ran: true, healthy: false, gapDaysBefore: before.gapDays, gapDaysAfter: before.gapDays, inserted: 0, reason: fill && fill.skipped ? "repair_already_running" : (fill && fill.error) || "fill_failed" };
+      }
+    }
+
+    let volumeUpdated = 0;
+    let volumeRemainingDays = [];
+    if (zeroDays.length > 0) {
+      vlog(`[Heal] ${symbol}: ${zeroDays.length} zero-volume day(s) [${zeroDays.join(", ")}] — healing volume from broker`);
+      const vr = await state.recoveryEngine.healVolumeDays({
+        symbol,
+        days: zeroDays,
+        fetchCandles: (s, r, c, l) => fetchCandles(s, r, c, l),
+        trigger: "volume_heal:refresh",
+      }).catch((e) => { console.warn(`[Heal] ${symbol}: volume heal failed (${e.message})`); return null; });
+      if (vr && vr.success) { volumeUpdated = vr.updated || 0; volumeRemainingDays = vr.remainingDays || []; }
+    }
+
+    const after = await getContinuityReport(symbol);
+    const afterByDay = new Map(after.gapDays.map((g) => [g.day, g]));
+    for (const g of toFetch) {
+      const left = afterByDay.get(g.day);
+      if (left) brokerConfirmed.set(`${symbol}|${g.day}`, { at: Date.now(), missingMinutes: left.missingMinutes });
+      else brokerConfirmed.delete(`${symbol}|${g.day}`);
+    }
+    return {
+      ran: true,
+      healthy: after.healthy,
+      gapDaysBefore: before.gapDays,
+      gapDaysAfter: after.gapDays,
+      zeroVolumeDaysBefore: before.zeroVolumeDays || [],
+      zeroVolumeDaysAfter: after.zeroVolumeDays || [],
+      inserted: fill.inserted || 0,
+      volumeUpdated,
+      volumeRemainingDays,
+      fixedDays: fill.fixedDays || [],
+      remainingDays: fill.remainingDays || [],
+    };
+  }
+
+  /**
+   * Health check + recovery for one symbol's stored 1m candles. Coalesces
+   * concurrent calls and never throws (a failure here must not break the
+   * chart load that triggered it).
+   */
+  async function healGaps(symbol, { force = false } = {}) {
+    if (healInFlight.has(symbol)) return healInFlight.get(symbol);
+    const last = lastHeal.get(symbol);
+    if (last && Date.now() - last.at < HEAL_COOLDOWN_MS) return last.report;
+    const p = (async () => {
+      try {
+        const report = await _healGapsInner(symbol, { force });
+        lastHeal.set(symbol, { at: Date.now(), report });
+        return report;
+      } catch (err) {
+        console.warn(`[Heal] ${symbol}: health check/heal failed (${err.message}) — serving DB data as-is`);
+        return { ran: false, reason: err.message };
+      } finally {
+        healInFlight.delete(symbol);
+      }
+    })();
+    healInFlight.set(symbol, p);
+    return p;
   }
 
   // SINGLE SOURCE OF TRUTH for "get me candles for symbol+resolution".
@@ -361,7 +579,17 @@ function createDataFetch({ io, tickEngine }) {
     }
   }
 
-  async function fetchAndProcess(symbol, resolution = RESOLUTION) {
+  async function fetchAndProcess(symbol, resolution = RESOLUTION, opts = {}) {
+    // ── 0. Refresh-time health check + gap heal (opts.heal) ──────────────────
+    // Only on an explicit Refresh, only for data that lives in the 1m store
+    // (Daily+ on spot symbols reads the separate 1D rows, so 1m holes are
+    // irrelevant there). Runs BEFORE loadFromDB so the read below already
+    // sees the healed rows.
+    let integrity = null;
+    if (opts.heal && state.dbEnabled && state.db && !(isDailyOrHigher(resolution) && !isDerivativeSymbol(symbol))) {
+      integrity = await healGaps(symbol, { force: true });
+    }
+
     // ── 1. DB-first ──────────────────────────────────────────────────────────
     // CHANGED: previously this skipped the DB entirely for option contracts
     // (CE/PE) because "the DB will always be empty for them" — true when this
@@ -403,7 +631,7 @@ function createDataFetch({ io, tickEngine }) {
       if (dailyCandles && resolution !== DAILY_RESOLUTION) {
         try { state.setCache(symbol, DAILY_RESOLUTION, dailyCandles, runSignalEngine(dailyCandles)); } catch { }
       }
-      return { candles, result };
+      return { candles, result, integrity };
     }
 
     // ── 2. Fyers fallback (DB disabled, empty, or read failed) ───────────────
@@ -421,7 +649,9 @@ function createDataFetch({ io, tickEngine }) {
 
       if (state.dbEnabled && dailyCandles.length > 0) {
         state.db.getLatestCandle(symbol, DAILY_RESOLUTION).then((latest) => {
-          const newCandles = latest ? dailyCandles.filter((c) => c.time > latest.time) : dailyCandles;
+          // A bar at/after the last stored one is written again: the stored copy of the
+          // newest bar may be a partial print (see ensureFreshDailyData header).
+          const newCandles = latest ? dailyCandles.filter((c) => c.time >= latest.time) : dailyCandles;
           if (newCandles.length === 0) {
             console.log(`[DB] ${symbol} — no new daily candles to upsert (already up to date)`);
             return;
@@ -592,6 +822,7 @@ function createDataFetch({ io, tickEngine }) {
   return {
     ensureFreshOneMinData, sweepStalenessForSymbols, loadFromDB, fetchAndProcess, fetchAndBroadcast,
     startAutoRefresh, initialRestFetch,
+    healGaps, getContinuityReport,
   };
 }
 

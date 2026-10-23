@@ -20,6 +20,7 @@
  *   GET  /api/auth/callback   (added 2026-08-13 — auto-redirect flow)
  *   POST /api/admin/verify-pin (added 2026-08-13 — /admin page gate)
  *   GET  /api/chart
+ *   GET  /api/chart/health    (added 2026-10-02 — read-only candle-continuity check)
  *   POST /api/chart/refresh
  *   GET  /api/signals
  *   GET  /api/motherwave
@@ -65,6 +66,8 @@ function createChartRouter(deps) {
     getAuthURL, generateToken, validateToken, bustTokenCache,
     detectMotherWaveForAPI,
     markBroadcastSymbol,
+    // Added 2026-10-02 — read-only candle-continuity check (dataFetch.getContinuityReport).
+    getContinuityReport,
     // Added 2026-08-13 — admin auto-redirect auth flow (see /api/auth/callback
     // and /api/admin/verify-pin below). FRONTEND_URL is where the browser
     // lands after Fyers redirects back into our backend.
@@ -220,10 +223,38 @@ function createChartRouter(deps) {
   });
 
   /**
+   * GET /api/chart/health?symbol=X&days=N
+   *
+   * Read-only candle-continuity health check on the stored 1m candles
+   * (no broker call, no writes). Reports every IST day that has missing
+   * minutes, with the exact missing ranges. This is the check Refresh runs
+   * BEFORE it asks the broker for anything — exposed so a gap can be seen
+   * (and verified fixed) without triggering recovery. NOTE: the plain
+   * GET /health above only reports tick-stream status; it has never looked
+   * at candle continuity.
+   */
+  router.get("/api/chart/health", async (req, res) => {
+    const symbol = req.query.symbol || SYMBOL;
+    if (!symbol) return res.status(400).json({ error: "symbol query param required" });
+    const days = Math.min(Math.max(parseInt(req.query.days || "90", 10) || 90, 1), 365);
+    try {
+      const report = await getContinuityReport(symbol, { days });
+      res.json(report);
+    } catch (err) {
+      console.error("[/api/chart/health] Error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
    * POST /api/chart/refresh?symbol=X&resolution=Y
    *
    * Always calls fetchAndProcess(symbol, resolution) — DB-first internally,
    * Fyers fallback if DB has no data yet for this symbol. See server.js.
+   *
+   * UPDATED 2026-10-02: Refresh now runs  health check → gap recovery →
+   * re-read  (fetchAndProcess opts.heal) instead of just re-reading the DB.
+   * The outcome is returned as `integrity` in the response/payload.
    *
    * DUAL-PANEL FIX: emits chart_update only to the requesting socket (via
    * socketId in body) so the other panel's chart is never overwritten.
@@ -247,8 +278,11 @@ function createChartRouter(deps) {
     if (markBroadcastSymbol) markBroadcastSymbol(symbol);
 
     try {
-      const { candles, result } = await fetchAndProcess(symbol, resolution);
-      const payload = { ...buildPayload(candles, result, symbol, resolution, false), success: true };
+      const { candles, result, integrity } = await fetchAndProcess(symbol, resolution, { heal: true });
+      const payload = { ...buildPayload(candles, result, symbol, resolution, false), success: true, integrity: integrity || null };
+      if (integrity && integrity.ran && integrity.gapDaysBefore && integrity.gapDaysBefore.length) {
+        console.log(`[REFRESH] ${symbol} integrity: ${integrity.gapDaysBefore.length} gap day(s) before → ${integrity.gapDaysAfter ? integrity.gapDaysAfter.length : "?"} after, inserted ${integrity.inserted || 0}${integrity.reason ? ` (${integrity.reason})` : ""}`);
+      }
 
       if (requestingSocketId) {
         io.to(requestingSocketId).emit("chart_update", { ...payload, isAutoRefresh: false });

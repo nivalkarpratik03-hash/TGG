@@ -49,7 +49,11 @@ const UPSERT_SQL_SUFFIX = `
     high        = EXCLUDED.high,
     low         = EXCLUDED.low,
     close       = EXCLUDED.close,
-    volume      = EXCLUDED.volume,
+    -- VOLUME GUARD (2026-10-07): live tick-built candles (Fyers LiteMode has no
+    -- volume field) arrive with volume 0. A plain volume = EXCLUDED.volume
+    -- let every finalized live candle overwrite the real broker volume with 0.
+    -- A zero/NULL incoming volume now means "unknown" and keeps what is stored.
+    volume      = CASE WHEN COALESCE(EXCLUDED.volume, 0) > 0 THEN EXCLUDED.volume ELSE candles.volume END,
     validated   = TRUE,
     inserted_at = NOW()
 `;
