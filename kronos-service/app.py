@@ -32,7 +32,10 @@ keeps EVERY bar of every run (not just the final bar). For each bar b:
   - direction[b] = whichever way (up/down) the MAJORITY of the N runs
     agree on, for that bar, vs the real last close
   - confidence[b] = what fraction of the N runs agreed with that majority
-  - predictedClose[b] = the mean of the N runs' close at that bar
+  - predictedClose[b] = the MEDIAN of the N runs' close at that bar
+    (median, not mean: with an odd N it always sits on the same side of
+    the current close as the majority direction, so price and call never
+    contradict each other; one wild run can't drag it either)
 This is the same Monte-Carlo-via-repeated-sampling approach a real
 third-party Kronos API wrapper (github.com/fengwm64/kronos-api) already
 uses for its own "confidence" field — confirms this is a sound, existing
@@ -47,6 +50,20 @@ this log later and checks each bar against the real candle once the
 market has printed it, using the same kind of Data Export file
 validate_nifty.py already reads.
 
+MARKET-HOURS TIMESTAMPS (fixed Oct 2026):
+Future bar times now follow the real NSE session (nse_calendar.py): the
+bar after 15:15 is the next trading day's 09:15, skipping weekends and
+holidays. Before, the times just kept adding 15 min (16:00, 18:00...)
+and those bars could never be compared. All times are explicit IST, so
+the result no longer depends on the PC's clock setting.
+
+SPEED: the N runs now go through ONE batched predict_batch() call (N
+copies of the same input, each sampled independently) instead of N
+separate predict() calls. Same maths, fewer passes through the model.
+
+ONE REQUEST AT A TIME: a lock makes concurrent /forecast calls wait in
+line instead of running the model in parallel (which crashed before).
+
 RUNNING THIS (manually, before PM2 is wired up):
     cd kronos-service
     .venv\\Scripts\\Activate.ps1        (Windows, from Chunk 1's setup)
@@ -60,8 +77,9 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Literal, Optional
 
 import numpy as np
@@ -70,6 +88,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from model import Kronos, KronosTokenizer, KronosPredictor
+from nse_calendar import IST, RESOLUTION_MINUTES, future_bar_starts, ist_to_ms, ms_to_ist
 
 app = FastAPI(title="Kronos Forecast Service", version="1.0")
 
@@ -92,13 +111,10 @@ model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
 predictor = KronosPredictor(model, tokenizer, device="cpu", max_context=MAX_CONTEXT)
 print(f"[Kronos] Ready in {time.time() - _t0:.1f}s")
 
-# Resolution label -> minutes, mirrors the labels the Node side already
-# uses (candleExport.js's TIMEFRAME_TO_MINUTES) so nothing new is invented
-# on this side either.
-RESOLUTION_MINUTES = {
-    "1min": 1, "3min": 3, "5min": 5, "15min": 15,
-    "1hr": 60, "1day": 1440,
-}
+# Only one forecast runs at a time (see header, "ONE REQUEST AT A TIME").
+_model_lock = threading.Lock()
+# RESOLUTION_MINUTES now lives in nse_calendar.py (same labels as before,
+# mirroring candleExport.js's TIMEFRAME_TO_MINUTES).
 
 
 class Candle(BaseModel):
@@ -118,10 +134,12 @@ class ForecastRequest(BaseModel):
     horizon: int = Field(16, ge=1, le=120, description="Bars ahead to forecast — changeable per-request, nothing hardcoded")
     sample_count: int = Field(20, ge=1, le=100, description="Independent forecast runs for the confidence calculation")
     symbol: Optional[str] = Field(None, description="Optional — only used to label the log entry for compare_forecasts.py. Forecast math doesn't depend on it.")
+    mode: Optional[str] = Field(None, description="'live' (forecast_now.py), 'backtest' (validate_nifty.py) or empty. compare_forecasts.py only scores 'live'.")
 
 
 class BarForecast(BaseModel):
-    time: int  # epoch ms this forecasted bar is FOR — what compare_forecasts.py matches against the real candle
+    time: int  # epoch ms (bar START) this forecasted bar is FOR — what compare_forecasts.py matches against the real candle
+    timeIST: str  # same moment, readable, e.g. "2026-10-23 09:15"
     direction: Literal["up", "down", "neutral"]
     confidence: float  # 0-100
     predictedClose: float
@@ -173,39 +191,35 @@ def forecast(req: ForecastRequest):
         "close": c.close, "volume": c.volume,
     } for c in candles])
 
-    x_timestamp = pd.Series([
-        datetime.fromtimestamp(c.time / 1000) for c in candles
-    ])
+    # IST wall-clock, explicitly — the model's time features (hour,
+    # minute, weekday) must be market time no matter what the PC's clock
+    # is set to.
+    x_timestamp = pd.Series([ms_to_ist(c.time) for c in candles])
 
-    interval_minutes = RESOLUTION_MINUTES[req.resolution]
-    last_ts = x_timestamp.iloc[-1]
-    y_timestamp = pd.Series([
-        last_ts + timedelta(minutes=interval_minutes * (i + 1))
-        for i in range(req.horizon)
-    ])
+    # Real NSE session times for the future bars (see header,
+    # "MARKET-HOURS TIMESTAMPS").
+    last_ts = x_timestamp.iloc[-1].to_pydatetime()
+    y_timestamp = pd.Series(future_bar_starts(last_ts, req.resolution, req.horizon))
 
     current_close = candles[-1].close
 
-    # all_closes[sample_index][bar_index] — EVERY bar of EVERY run, not
-    # just the final bar (that was the earlier version's whole limitation:
-    # it threw this away). See this file's header for why N separate
-    # predict() calls are needed instead of one call with sample_count=N.
-    all_closes = np.zeros((req.sample_count, req.horizon))
-    for i in range(req.sample_count):
-        pred_df = predictor.predict(
-            df=df,
-            x_timestamp=x_timestamp,
-            y_timestamp=y_timestamp,
-            pred_len=req.horizon,  # required explicitly, confirmed from the
-                                    # official README's real example — not
-                                    # inferred from y_timestamp's length alone
+    # all_closes[sample_index][bar_index] — EVERY bar of EVERY run. Each
+    # run must be kept separately for the confidence count (the library's
+    # own sample_count averages runs together, which hides the agreement).
+    # N copies of the same input in one batch = N independent runs.
+    n = req.sample_count
+    with _model_lock:
+        pred_dfs = predictor.predict_batch(
+            df_list=[df] * n,
+            x_timestamp_list=[x_timestamp] * n,
+            y_timestamp_list=[y_timestamp] * n,
+            pred_len=req.horizon,
             T=1.0,
             top_p=0.9,
-            sample_count=1,  # =1 deliberately, not req.sample_count — see
-                              # this file's header
+            sample_count=1,  # =1 deliberately — see this file's header
             verbose=False,
         )
-        all_closes[i, :] = pred_df["close"].to_numpy()
+    all_closes = np.stack([p["close"].to_numpy() for p in pred_dfs])
 
     def direction_and_confidence(closes_for_bar: np.ndarray):
         up = int(np.sum(closes_for_bar > current_close))
@@ -223,10 +237,11 @@ def forecast(req: ForecastRequest):
     for b in range(req.horizon):
         bar_closes = all_closes[:, b]
         bdir, bconf = direction_and_confidence(bar_closes)
-        bar_time_ms = int(y_timestamp.iloc[b].timestamp() * 1000)
+        bar_dt = y_timestamp.iloc[b].to_pydatetime()
         path.append(BarForecast(
-            time=bar_time_ms, direction=bdir, confidence=round(bconf, 2),
-            predictedClose=round(float(np.mean(bar_closes)), 4),
+            time=ist_to_ms(bar_dt), timeIST=bar_dt.strftime("%Y-%m-%d %H:%M"),
+            direction=bdir, confidence=round(bconf, 2),
+            predictedClose=round(float(np.median(bar_closes)), 4),
         ))
 
     compute_seconds = round(time.time() - t0, 3)
@@ -251,7 +266,8 @@ def forecast(req: ForecastRequest):
     try:
         with open(LOG_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps({
-                "requestedAt": datetime.now().isoformat(),
+                "requestedAt": datetime.now(IST).isoformat(),
+                "mode": req.mode,
                 "symbol": req.symbol,
                 "resolution": req.resolution,
                 "horizon": req.horizon,
