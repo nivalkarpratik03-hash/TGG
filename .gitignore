@@ -5,3 +5,6 @@ node_modules/
 kronos-service/__pycache__
 kronos-service/model/__pycache__
 orderflow/data/
+orderflow/__pycache__/
+orderflow/.venv/
+orderflow/service/__pycache__/
