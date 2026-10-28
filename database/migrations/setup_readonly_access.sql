@@ -26,12 +26,12 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 --    password here. LOGIN is granted, but nobody can connect until a
 --    password is set (see the \password step below).
 -- ---------------------------------------------------------------------
-CREATE ROLE userA LOGIN;
-CREATE ROLE userB   LOGIN;
-CREATE ROLE userC LOGIN;
-CREATE ROLE userD  LOGIN;
+CREATE ROLE userW LOGIN;
+CREATE ROLE userX   LOGIN;
+CREATE ROLE userY LOGIN;
+CREATE ROLE userZ  LOGIN;
 
-GRANT readonly_access TO userA, userB, userC, userD;
+GRANT readonly_access TO userW, userX, userY, userZ;
 
 -- ---------------------------------------------------------------------
 -- 3. Lock down PUBLIC's default access so nothing leaks outside the
@@ -51,10 +51,10 @@ REVOKE ALL ON SCHEMA public FROM PUBLIC;
 -- NEXT STEP — do this interactively in psql, NOT in any file:
 --
 --   psql -d tgg
---   \password userA
---   \password userB
---   \password userC
---   \password userD
+--   \password userW
+--   \password userX
+--   \password userY
+--   \password userZ
 --
 -- \password prompts for the new password at the terminal and it is
 -- never echoed, logged, or written to disk by psql.

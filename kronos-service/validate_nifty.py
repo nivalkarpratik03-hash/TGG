@@ -6,9 +6,11 @@ with real data instead of opinion: when Kronos says "up/down with X%
 confidence", how often is it right about what NIFTY actually does next?
 
 HOW IT WORKS
-  1. Reads a Data Export .xlsx of real NIFTY50-INDEX candles (the same
-     file your Data Export page downloads: Date, Time, Open, High, Low,
-     Close, Volume).
+  1. Fetches real NIFTY50-INDEX candles FRESH from your running Node
+     backend's Data Export route (backend_candles.py — same Fyers login
+     the dashboard already uses, no manual download, never stale). A
+     manually-downloaded .xlsx can still be given instead (offline mode)
+     — see RUN below.
   2. Picks past moments ("cutoffs"). For each one it sends ONLY the
      candles up to that moment (last 512) to the running Kronos service,
      exactly like the dashboard would, and gets a direction + confidence.
@@ -22,12 +24,17 @@ HOW IT WORKS
   and running the same command again resumes where it stopped.
 
 REQUIRES  the Kronos service already running (uvicorn app:app --port 8001),
-          and  pip install openpyxl  (pandas needs it to read .xlsx).
+          the Node backend running (npm run dev, same as always) with a
+          valid Fyers token, and  pip install openpyxl  (pandas needs it
+          to read the .xlsx the backend returns).
           Do NOT click Scan Now in the dashboard while this runs.
 
-RUN       python validate_nifty.py "C:\\path\\to\\NSE_NIFTY50-INDEX_15min_....xlsx"
-          python validate_nifty.py "file.xlsx" --max-tests 10      (quick trial)
-          python validate_nifty.py "file.xlsx" --summary-only      (re-print results)
+RUN       python validate_nifty.py                                  (live fetch, NIFTY50, 15min, last 150 days — the new default)
+          python validate_nifty.py --max-tests 10                   (quick trial)
+          python validate_nifty.py --output "validation_NSE_NIFTY50-INDEX_15min_2026-05-28_to_2026-09-28_h16_s9_c512.csv"
+                                                                      (keep adding to an EXISTING file-mode CSV — see --output's own help text)
+          python validate_nifty.py "C:\\path\\to\\file.xlsx"          (offline mode — read a manually-downloaded file instead)
+          python validate_nifty.py --summary-only                   (re-print results, no new fetching)
 
 KNOWN LIMITATION (checked by reading app.py, effect on accuracy unknown):
   app.py builds future timestamps by adding fixed steps to the last candle
@@ -65,6 +72,8 @@ DEFAULT_CONTEXT = 512     # candles sent to the model (Kronos-small's cap)
 DEFAULT_MAX_TESTS = 40    # how many past moments to score
 MIN_HISTORY = 200         # a cutoff needs at least this many earlier candles
 FOUND_THRESHOLD = 65.0    # the dashboard's "found" line (kronosDirection.js)
+TREND_LOOKBACK = None     # bars to look back for the trend baseline; None = same as --horizon
+MIN_MOVE_PCT = 0.10       # ignore actual moves smaller than this when reporting the "moves that mattered" accuracy
 REQUEST_TIMEOUT_S = 900
 MAX_CONSECUTIVE_ERRORS = 3
 
@@ -85,16 +94,9 @@ def die(msg: str):
 
 
 # ── Reading the candles ─────────────────────────────────────────────────
-def load_candles(path: str):
-    if not os.path.exists(path):
-        die(f"File not found: {path}")
-    try:
-        df = pd.read_excel(path)
-    except ImportError:
-        die("Reading .xlsx needs openpyxl. Run:  pip install openpyxl")
-    except Exception as e:  # noqa: BLE001 — surface whatever pandas says
-        die(f"Could not read {path}: {e}")
-
+def _candles_df_to_data(df: pd.DataFrame, source_label: str):
+    """Shared transform step — same validation/shape whether df came from
+    a file or a live backend fetch. source_label is just for error text."""
     need = ["Date", "Time", "Open", "High", "Low", "Close"]
     missing = [c for c in need if c not in df.columns]
     if missing:
@@ -111,10 +113,10 @@ def load_candles(path: str):
     df = df.assign(_ts=ts).dropna(subset=["Open", "High", "Low", "Close"])
     df = df.sort_values("_ts").drop_duplicates("_ts").reset_index(drop=True)
     if len(df) < MIN_HISTORY + 50:
-        die(f"Only {len(df)} candles in the file. Download a longer range (a few months of 15-minute data).")
+        die(f"Only {len(df)} candles from {source_label}. Need a longer range (a few months of 15-minute data).")
 
-    # Timestamps in the export are IST wall-clock. Convert to epoch ms the
-    # same way the Node backend's candle objects carry `time`.
+    # Timestamps are IST wall-clock. Convert to epoch ms the same way the
+    # Node backend's candle objects carry `time`.
     times_ms = [int(t.to_pydatetime().replace(tzinfo=IST).timestamp() * 1000) for t in df["_ts"]]
     return {
         "times_ms": times_ms,
@@ -125,6 +127,33 @@ def load_candles(path: str):
         "close": df["Close"].astype(float).tolist(),
         "volume": df["Volume"].fillna(0).astype(float).tolist(),
     }
+
+
+def load_candles_from_file(path: str):
+    """Old behavior, kept for offline use (no backend needed) — reads a
+    manually-downloaded Data Export .xlsx. Can go stale; prefer
+    load_candles_live() when the backend is available."""
+    if not os.path.exists(path):
+        die(f"File not found: {path}")
+    try:
+        df = pd.read_excel(path)
+    except ImportError:
+        die("Reading .xlsx needs openpyxl. Run:  pip install openpyxl")
+    except Exception as e:  # noqa: BLE001 — surface whatever pandas says
+        die(f"Could not read {path}: {e}")
+    return _candles_df_to_data(df, path)
+
+
+def load_candles_live(symbol: str, timeframe: str, days: int, backend_url: str):
+    """New default — fetches fresh candles from the running Node backend
+    (which talks to Fyers), via backend_candles.py. No manual download,
+    no stale file."""
+    from backend_candles import fetch_candles_df, default_from_date, BackendCandleError
+    try:
+        df = fetch_candles_df(symbol, default_from_date(days), timeframe, backend_url=backend_url)
+    except BackendCandleError as e:
+        die(str(e))
+    return _candles_df_to_data(df, f"the backend (symbol={symbol})")
 
 
 def infer_bar_minutes(times_ms):
@@ -176,6 +205,7 @@ def call_forecast(url, data, i, context, resolution, horizon, samples):
         "resolution": resolution,
         "horizon": horizon,
         "sample_count": samples,
+        "mode": "backtest",  # keeps these out of compare_forecasts.py's live score
     }).encode("utf-8")
     req = urllib.request.Request(url + "/forecast", data=payload,
                                  headers={"Content-Type": "application/json"}, method="POST")
@@ -208,7 +238,7 @@ def pct(x: float) -> str:
     return "n/a" if x != x else f"{100 * x:.0f}%"
 
 
-def summarize(rows, title: str):
+def summarize(rows, title: str, data=None, horizon=None, trend_lookback=None):
     print("\n" + "=" * 68)
     print(f"RESULTS  {title}")
     print("=" * 68)
@@ -255,6 +285,59 @@ def summarize(rows, title: str):
             else:
                 print(f"  {label:>8} : no calls")
 
+        # ── Trend-following baseline + small-move filter ────────────
+        # Both computed here, after the fact, from the SAME candle file
+        # (data) and the cutoff_index already saved in the CSV — nothing
+        # new had to be fetched from Kronos, so this works on old runs
+        # too, including forecasts already scored before this was added.
+        if data is not None and horizon is not None:
+            look = trend_lookback or horizon
+            trend_pairs = []   # (kronos_correct: bool, trend_correct: bool, agree: bool)
+            moved_calls = []   # calls where the actual move was >= MIN_MOVE_PCT
+            for r in calls:
+                idx = int(r["cutoff_index"])
+                mv = abs(r["actual_close"] - r["current_close"]) / r["current_close"] * 100
+                if mv >= MIN_MOVE_PCT:
+                    moved_calls.append(r)
+                if idx - look >= 0:
+                    past_close = data["close"][idx - look]
+                    trend_dir = actual_direction(past_close, r["current_close"])
+                    if trend_dir in ("up", "down"):
+                        k_correct = r["direction"] == r["actual_direction"]
+                        t_correct = trend_dir == r["actual_direction"]
+                        trend_pairs.append((k_correct, t_correct, r["direction"] == trend_dir))
+
+            if moved_calls:
+                mc = sum(1 for r in moved_calls if r["direction"] == r["actual_direction"])
+                mlo, mhi = wilson(mc, len(moved_calls))
+                print(f"\nMoves of >= {MIN_MOVE_PCT}% only (ignores near-flat windows, {len(rows) - len(moved_calls)} excluded): "
+                      f"{pct(mc / len(moved_calls))}  ({mc}/{len(moved_calls)}),  95% range {pct(mlo)} to {pct(mhi)}")
+            else:
+                print(f"\nNo windows moved >= {MIN_MOVE_PCT}% — can't compute a moves-only accuracy.")
+
+            if trend_pairs:
+                n_t = len(trend_pairs)
+                k_right = sum(1 for k, t, a in trend_pairs if k)
+                t_right = sum(1 for k, t, a in trend_pairs if t)
+                agree_n = sum(1 for k, t, a in trend_pairs if a)
+                agree_right = sum(1 for k, t, a in trend_pairs if a and k)
+                disagree_n = n_t - agree_n
+                disagree_right = k_right - agree_right
+                print(f"\nTrend-following baseline (last {look} bars' direction, {n_t} windows with enough history):")
+                print(f"  Just following the trend  : {pct(t_right / n_t)}  ({t_right}/{n_t})")
+                print(f"  Kronos on these same windows: {pct(k_right / n_t)}  ({k_right}/{n_t})")
+                if agree_n:
+                    print(f"  Kronos AGREED with the trend {agree_n}x  -> right {pct(agree_right / agree_n)}  ({agree_right}/{agree_n})")
+                if disagree_n:
+                    print(f"  Kronos went AGAINST the trend {disagree_n}x -> right {pct(disagree_right / disagree_n)}  ({disagree_right}/{disagree_n})")
+                if agree_n and disagree_n:
+                    if agree_right / agree_n > disagree_right / disagree_n:
+                        print("  -> Kronos does BETTER when it agrees with the trend than when it fights it.")
+                        print("     Consistent with (not proof of) Kronos mostly reading recent trend rather than adding new information.")
+                    else:
+                        print("  -> Kronos does AS WELL OR BETTER when it goes against the trend.")
+                        print("     Some sign it isn't just repeating the trend.")
+
         # Plain-language reading, based only on the numbers above.
         print("\nReading:")
         if lo > max(base, 0.5):
@@ -290,28 +373,48 @@ def read_rows(path):
 
 def main():
     ap = argparse.ArgumentParser(description="Score Kronos forecasts against real NIFTY50 candles.")
-    ap.add_argument("xlsx", help="Data Export file with NIFTY50-INDEX candles (15-minute)")
+    ap.add_argument("xlsx", nargs="?", default=None,
+                     help="Optional: a Data Export .xlsx to read instead of fetching live. "
+                          "If omitted (the default), candles are fetched fresh from the running "
+                          "backend (--symbol/--timeframe/--days/--backend-url below) — no manual "
+                          "download, no stale file.")
+    ap.add_argument("--symbol", default="NSE:NIFTY50-INDEX", help="live mode only — symbol to fetch")
+    ap.add_argument("--timeframe", default="15min", help="live mode only — candle resolution to fetch")
+    ap.add_argument("--days", type=int, default=150, help="live mode only — how many days back to fetch")
+    ap.add_argument("--backend-url", default="http://localhost:5280", help="live mode only — your Node backend's address")
     ap.add_argument("--horizon", type=int, default=DEFAULT_HORIZON, help="bars ahead to forecast")
     ap.add_argument("--samples", type=int, default=DEFAULT_SAMPLES, help="forecast runs per call")
     ap.add_argument("--context", type=int, default=DEFAULT_CONTEXT, help="candles sent to the model (max 512)")
     ap.add_argument("--max-tests", type=int, default=DEFAULT_MAX_TESTS, help="how many past moments to score")
     ap.add_argument("--url", default=DEFAULT_URL, help="Kronos service address")
     ap.add_argument("--summary-only", action="store_true", help="just re-print results from the saved CSV")
+    ap.add_argument("--output", default=None,
+                     help="exact results CSV filename to use/resume, overriding the auto-generated one. "
+                          "IMPORTANT when switching from file mode to live mode: live mode's auto-generated "
+                          "filename does not include a date range (it's a rolling fetch each run), so it "
+                          "will NOT match an existing file-mode CSV by default — pass --output pointing at "
+                          "your existing file to keep adding to the same evidence instead of starting over.")
     args = ap.parse_args()
 
     if not 1 <= args.context <= 512:
         die("--context must be between 1 and 512 (Kronos-small's limit).")
 
-    data = load_candles(args.xlsx)
+    if args.xlsx:
+        data = load_candles_from_file(args.xlsx)
+        stem = os.path.splitext(os.path.basename(args.xlsx))[0]
+    else:
+        print(f"Fetching live candles from the backend ({args.backend_url}) — symbol={args.symbol}, timeframe={args.timeframe}, last {args.days} days...")
+        data = load_candles_live(args.symbol, args.timeframe, args.days, args.backend_url)
+        stem = args.symbol.replace(":", "_").replace("-", "_")
+
     bar_min = infer_bar_minutes(data["times_ms"])
     resolution = RESOLUTION_BY_MINUTES[bar_min]
 
-    stem = os.path.splitext(os.path.basename(args.xlsx))[0]
-    out_path = f"validation_{stem}_h{args.horizon}_s{args.samples}_c{args.context}.csv"
+    out_path = args.output or f"validation_{stem}_h{args.horizon}_s{args.samples}_c{args.context}.csv"
     title = f"({stem}, horizon {args.horizon} bars = {args.horizon * bar_min} min, {args.samples} samples, {args.context} candles)"
 
     if args.summary_only:
-        summarize(read_rows(out_path), title)
+        summarize(read_rows(out_path), title, data=data, horizon=args.horizon, trend_lookback=TREND_LOOKBACK)
         return
 
     picks, n_valid, valid = choose_test_points(data["times_ms"], bar_min, args.horizon, args.max_tests)
@@ -381,7 +484,7 @@ def main():
     except KeyboardInterrupt:
         print("\nStopped by you. Everything finished so far is saved.")
 
-    summarize(read_rows(out_path), title)
+    summarize(read_rows(out_path), title, data=data, horizon=args.horizon, trend_lookback=TREND_LOOKBACK)
 
 
 if __name__ == "__main__":

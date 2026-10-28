@@ -77,14 +77,16 @@ const strategies = [
   // in the project — do not inline a second copy here.
   require("./pinaka"),
 
-  // ── Kronos — AI forecast (research/backtest mode) ───────────────────────
-  // The only async strategy in this registry — calls the standalone
-  // Kronos FastAPI service (kronos-service/, Chunk 2) over HTTP, not pure
-  // in-process pattern-matching like everything above. Requires
-  // scannerRunner.js's _runOneStrategy() to be async (already is, see
-  // that file's own comment) — do not add another async strategy without
-  // re-confirming that's still awaited correctly.
-  require("./kronosDirection"),
+  // ── Kronos — DISABLED (2026-10-07) ──────────────────────────────────────
+  // Direction changed: Kronos stays a pure backend forecast service
+  // (kronos-service/app.py + compare_forecasts.py), no Scanner UI. Also,
+  // the live service crashes on concurrent requests (confirmed from real
+  // terminal logs — the Scanner sends several symbols at once), so
+  // leaving this registered was a real risk, not just unused clutter.
+  // kronosDirection.js itself is untouched on disk in case this is
+  // revisited later — just not required here, so it can't be selected
+  // from the dropdown or crash the service via a scan.
+  // require("./kronosDirection"),
 
   // ── Add new strategies below ──────────────────────────────────
   // require("./breakoutStrategy"),
