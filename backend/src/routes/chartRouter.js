@@ -30,6 +30,9 @@
  *   app.use(createChartRouter(deps));
  */
 const express = require("express");
+const security = require("../middleware/security");
+const { isValidSymbol, parseResolution } = require("../utils/inputValidation");
+const { getTokenInfo } = require("../fyers/client");
 
 /**
  * @param {object} deps - injected server-level dependencies
@@ -102,13 +105,30 @@ function createChartRouter(deps) {
   router.get("/api/auth/status", async (req, res) => {
     try {
       const valid = await validateToken();
-      res.json({ authenticated: valid, authUrl: valid ? null : getAuthURL() });
+      // tokenInfo = issued/expiry times only; the token itself is never returned.
+      res.json({ authenticated: valid, authUrl: valid ? null : getAuthURL(), tokenInfo: getTokenInfo() });
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  router.get("/api/auth/url", (req, res) => {
-    try { res.json({ url: getAuthURL() }); }
-    catch (err) { res.status(500).json({ error: err.message }); }
+  // If a valid token already exists, refuse to hand out a new login URL unless the
+  // caller explicitly confirms with ?force=true. The dashboard shows "token already
+  // generated - create another?" on this 409. (This is a safety/UX guard, not a
+  // security boundary: the real protection is that only the Fyers account owner can
+  // complete the Fyers login.)
+  router.get("/api/auth/url", async (req, res) => {
+    try {
+      if (req.query.force !== "true") {
+        const info = getTokenInfo();
+        if (info.exists && !info.expired && await validateToken()) {
+          return res.status(409).json({
+            alreadyAuthenticated: true,
+            tokenInfo: info,
+            message: "A Fyers token was already generated and is still valid. Generate another one?",
+          });
+        }
+      }
+      res.json({ url: getAuthURL() });
+    } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
   router.post("/api/auth/token", async (req, res) => {
@@ -177,11 +197,18 @@ function createChartRouter(deps) {
   // bundle (which is public). This is a casual deterrent, not real auth —
   // fine for a single-owner tool, but don't reuse this pattern if the app
   // ever has multiple real users who need separate accounts.
-  router.post("/api/admin/verify-pin", (req, res) => {
+  // HARDENED: constant-time compare, 5 attempts / 15 min / IP (middleware/security.js),
+  // and on success returns a signed, expiring token. Every non-GET /api route except
+  // /api/chart/refresh now requires that token (requireAdminForWrites), so the PIN is
+  // no longer just a client-side gate.
+  router.post("/api/admin/verify-pin", security.pinLimiter, (req, res) => {
     const { pin } = req.body || {};
     const expected = process.env.PIN;
-    if (!expected) return res.status(500).json({ ok: false, error: "PIN not set in backend .env" });
-    res.json({ ok: pin === expected });
+    if (!expected) return res.status(500).json({ ok: false, error: "Admin PIN is not configured on the server" });
+    const ok = typeof pin === "string" && security.safeEqual(pin, expected);
+    // 401 (not 200) so the limiter below counts it as a failed attempt.
+    if (!ok) return res.status(401).json({ ok: false, error: "Incorrect PIN" });
+    res.json({ ok: true, token: security.signAdminToken() });
   });
 
   // ── Chart ───────────────────────────────────────────────────────────────────
@@ -195,7 +222,9 @@ function createChartRouter(deps) {
    */
   router.get("/api/chart", async (req, res) => {
     const symbol = req.query.symbol || SYMBOL;
-    const resolution = parseInt(req.query.resolution || RESOLUTION);
+    const resolution = parseResolution(req.query.resolution, RESOLUTION);
+    if (!isValidSymbol(symbol)) return res.status(400).json({ error: "Invalid or missing symbol" });
+    if (resolution == null) return res.status(400).json({ error: "Invalid resolution" });
     if (markBroadcastSymbol) markBroadcastSymbol(symbol);
     const cache = getCache(symbol, resolution);
 
@@ -218,7 +247,9 @@ function createChartRouter(deps) {
         return res.json(buildPayload(cache.candles, cache.result, symbol, resolution));
       }
       console.error("[/api/chart] Error:", err.message);
-      res.status(500).json({ error: err.message });
+      // Internal detail stays in the server log; the client gets a stable message.
+      const authProblem = /access token|APP_ID/i.test(err.message);
+      res.status(authProblem ? 503 : 500).json({ error: authProblem ? "Market-data provider is not authenticated. An admin must log in to Fyers." : "Failed to load chart data" });
     }
   });
 

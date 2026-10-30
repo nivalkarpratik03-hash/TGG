@@ -18,14 +18,31 @@ const { Pool } = require("pg");
 // "SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string"
 let poolConfig;
 
+// ── Production-tunable pool settings (all optional env vars) ─────────────────
+//   PG_POOL_MAX              max clients (default 20). Keep (instances x max) well below RDS max_connections.
+//   PG_SSL                   "true" → TLS (required by RDS when rds.force_ssl=1, the default on PG15+).
+//   PG_SSL_REJECT_UNAUTHORIZED "false" only if you cannot ship the RDS CA bundle (not recommended).
+//   PG_SSL_CA_FILE           path to the AWS RDS global CA bundle (global-bundle.pem) for full verification.
+//   PG_STATEMENT_TIMEOUT_MS  server-side kill for runaway queries (default 60000).
+const common = {
+  max: parseInt(process.env.PG_POOL_MAX || "20", 10),
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+  keepAlive: true,                       // detect dead NAT/ALB-style idle drops
+  keepAliveInitialDelayMillis: 10000,
+  statement_timeout: parseInt(process.env.PG_STATEMENT_TIMEOUT_MS || "60000", 10),
+  idle_in_transaction_session_timeout: 120000,
+  application_name: process.env.PG_APP_NAME || "tgg-backend",
+};
+let ssl;
+if (process.env.PG_SSL === "true") {
+  ssl = { rejectUnauthorized: process.env.PG_SSL_REJECT_UNAUTHORIZED !== "false" };
+  if (process.env.PG_SSL_CA_FILE) ssl.ca = require("fs").readFileSync(process.env.PG_SSL_CA_FILE, "utf8");
+}
+
 if (process.env.DATABASE_URL) {
   // Use connection string directly — pg handles parsing
-  poolConfig = {
-    connectionString: process.env.DATABASE_URL,
-    max: 10,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 5000,
-  };
+  poolConfig = { connectionString: process.env.DATABASE_URL, ...common, ...(ssl ? { ssl } : {}) };
 } else {
   // Build from individual vars — guarantee password is always a string
   poolConfig = {
@@ -34,9 +51,8 @@ if (process.env.DATABASE_URL) {
     database: process.env.PGDATABASE || "tgg",
     user:     process.env.PGUSER     || "postgres",
     password: String(process.env.PGPASSWORD || ""),  // MUST be string
-    max: 10,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 5000,
+    ...common,
+    ...(ssl ? { ssl } : {}),
   };
 }
 
@@ -71,10 +87,12 @@ async function transaction(fn) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await fn(client);
+    const out = await fn(client);
     await client.query("COMMIT");
+    return out;
   } catch (err) {
-    await client.query("ROLLBACK");
+    // A failed ROLLBACK (e.g. connection already dead) must not mask the original error.
+    try { await client.query("ROLLBACK"); } catch { /* ignore */ }
     throw err;
   } finally {
     client.release();

@@ -8,3 +8,11 @@ orderflow/data/
 orderflow/__pycache__/
 orderflow/.venv/
 orderflow/service/__pycache__/
+# --- secrets & runtime state (never commit or zip these) ---
+.env
+.env.*
+!.env.example
+**/fyers_*token*.txt
+**/.fyers_token
+backend/logs/
+frontend/build/

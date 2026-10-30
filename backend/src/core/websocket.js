@@ -13,6 +13,10 @@
 // like the original inline block did.
 const { isLiveMarket, isAnyMarketLive, isTradingDay } = require("../fyers/tickStream");
 const state = require("./state");
+const { isValidSymbol } = require("../utils/inputValidation");
+
+const ALLOWED_RESOLUTIONS = new Set([1, 3, 5, 15, 30, 60, 240, 1440, 10080, 43200]);
+const REFRESH_MIN_INTERVAL_MS = parseInt(process.env.SOCKET_REFRESH_MIN_MS || "2000", 10);
 
 function createWebSocket({ io, tickEngine, dataFetch }) {
   const { SYMBOL, RESOLUTION, socketResolutions, socketSymbols, socketUnderlyings } = state;
@@ -43,7 +47,7 @@ function createWebSocket({ io, tickEngine, dataFetch }) {
     // so the Fyers WebSocket subscription expands to include the new symbol.
     // This is what makes HAVELLS/RELIANCE/any stock get live ticks, not just NIFTY.
     socket.on("set_symbol", (sym) => {
-      if (!sym) return;
+      if (!isValidSymbol(sym)) return;   // ignore malformed / oversized / non-string input
       const prev = currentSymbol;
       currentSymbol = sym;
       socketSymbols.set(socket.id, sym);
@@ -62,8 +66,8 @@ function createWebSocket({ io, tickEngine, dataFetch }) {
     });
 
     socket.on("set_resolution", (res) => {
-      const newRes = parseInt(res);
-      if (isNaN(newRes) || newRes === currentResolution) return;
+      const newRes = parseInt(res, 10);
+      if (!ALLOWED_RESOLUTIONS.has(newRes) || newRes === currentResolution) return;
       socket.leave(`res:${currentResolution}`);
       currentResolution = newRes;
       socketResolutions.set(socket.id, newRes);
@@ -82,6 +86,7 @@ function createWebSocket({ io, tickEngine, dataFetch }) {
     // subscribes the tick stream to it. Calling with null/undefined stops the
     // feed (toggle off, symbol changed away from an option, panel unmounted).
     socket.on("set_underlying", (optionSym) => {
+      if (optionSym != null && !isValidSymbol(optionSym)) return;
       const underlyingSym = tickEngine.deriveUnderlyingSymbol(optionSym);
       if (!underlyingSym) {
         if (socketUnderlyings.delete(socket.id)) {
@@ -97,7 +102,13 @@ function createWebSocket({ io, tickEngine, dataFetch }) {
       }
     });
 
+    let lastRefreshAt = 0;
     socket.on("request_refresh", () => {
+      // Throttle: a misbehaving/malicious client could otherwise fire thousands of
+      // broker fetches per second and get the Fyers app rate-limited for everyone.
+      const now = Date.now();
+      if (now - lastRefreshAt < REFRESH_MIN_INTERVAL_MS) return;
+      lastRefreshAt = now;
       // No token check — fetchAndProcess() is DB-first, works without Fyers token.
       // If DB has data → instant. If DB empty + token dead → error emitted below.
       // FIX: error now carries the symbol/resolution it actually failed for, so

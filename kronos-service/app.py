@@ -129,7 +129,7 @@ class Candle(BaseModel):
 
 
 class ForecastRequest(BaseModel):
-    candles: list[Candle] = Field(..., description="Historical candles, oldest first")
+    candles: list[Candle] = Field(..., max_length=10000, description="Historical candles, oldest first")
     resolution: Literal["1min", "3min", "5min", "15min", "1hr", "1day"]
     horizon: int = Field(16, ge=1, le=120, description="Bars ahead to forecast — changeable per-request, nothing hardcoded")
     sample_count: int = Field(20, ge=1, le=100, description="Independent forecast runs for the confidence calculation")

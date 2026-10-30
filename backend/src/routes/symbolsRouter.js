@@ -497,6 +497,7 @@ function exchangeOf(sym) {
 
 /** GET /api/symbols[?exchange=NSE|MCX|BSE][&type=index|equity|commodity|future] */
 router.get("/", (req, res) => {
+  res.setHeader("Cache-Control", "public, max-age=300");   // symbol master changes only on /refresh; lets browsers/CloudFront reuse it
   try {
     let symbols = getSymbols();
     const exch = (req.query.exchange || "").toUpperCase();
