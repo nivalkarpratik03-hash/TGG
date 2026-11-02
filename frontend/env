@@ -15,10 +15,11 @@ PG_POOL_MAX=20
 # Security (server refuses to start in production if these are weak)
 # Admin accounts (recommended). One entry per admin, comma-separated, format  username:scrypt$salt$hash
 # Create each entry with:   node backend/src/scripts/hashPassword.js
-ADMIN_USERS=
+ADMIN_USERS=tggd:scrypt$75ccbbacd1ec48fb10edec1873582713$3ffb3e9dbac8cb98901294a32578ae2cfaaccecdc67407f07fdeea786866ab4380a4447b65c55d548de2b58cdfc2ddf7f3c3aa86ef1d98436ec19a3545a6ec2a
 # Legacy single PIN - only used when ADMIN_USERS is empty (8+ characters)
 PIN=
 # REQUIRED. 32+ random chars, signs login tokens:  openssl rand -base64 48
+# to generate token use this cmd : node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 ADMIN_SESSION_SECRET=
 ADMIN_SESSION_TTL_MIN=480
 CORS_ORIGINS=https://app.example.com

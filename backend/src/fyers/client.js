@@ -129,11 +129,19 @@ function saveToken(token) {
 //
 // Falls back to the old generic page if PUBLIC_BACKEND_URL isn't set yet
 // (e.g. still on a local/unstable tunnel URL), so nothing breaks mid-migration.
+//
+// Priority (first one that is set wins):
+//   1. PUBLIC_BACKEND_URL  -> <it>/api/auth/callback   (automatic flow, no copy-paste)
+//   2. REDIRECT_URI        -> used exactly as written  (manual flow: Fyers redirects to
+//                             e.g. http://127.0.0.1/ and you paste the code/URL into /admin;
+//                             must equal the Redirect URL registered in the Fyers app)
+//   3. Fyers' generic redirect page
 function getRedirectUri() {
-  const publicUrl = process.env.PUBLIC_BACKEND_URL;
-  return publicUrl
-    ? `${publicUrl.replace(/\/$/, "")}/api/auth/callback`
-    : "https://trade.fyers.in/api-login/redirect-uri/index.html";
+  const publicUrl = (process.env.PUBLIC_BACKEND_URL || "").trim();
+  if (publicUrl) return `${publicUrl.replace(/\/$/, "")}/api/auth/callback`;
+  const manual = (process.env.REDIRECT_URI || "").trim().replace(/^["']|["']$/g, "");
+  if (manual) return manual;
+  return "https://trade.fyers.in/api-login/redirect-uri/index.html";
 }
 
 function getFyersClient() {
