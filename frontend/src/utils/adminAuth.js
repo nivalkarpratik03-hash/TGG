@@ -17,6 +17,16 @@ export const getAdminToken = () => {
   try { return sessionStorage.getItem(ADMIN_TOKEN_KEY); } catch { return null; }
 };
 
+/** True if a stored admin token exists and has not expired. UX only - the server re-checks every request. */
+export function hasValidAdminToken() {
+  const t = getAdminToken();
+  if (!t) return false;
+  try {
+    const payload = JSON.parse(atob(t.split(".")[0].replace(/-/g, "+").replace(/_/g, "/")));
+    return typeof payload.exp === "number" && payload.exp > Date.now();
+  } catch { return false; }
+}
+
 let warned = false;
 function warnOnce() {
   if (warned) return;

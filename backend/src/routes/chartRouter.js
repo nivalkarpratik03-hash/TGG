@@ -201,14 +201,50 @@ function createChartRouter(deps) {
   // and on success returns a signed, expiring token. Every non-GET /api route except
   // /api/chart/refresh now requires that token (requireAdminForWrites), so the PIN is
   // no longer just a client-side gate.
+  // Tells the login page which form to show: "credentials" (username+password) or legacy "pin".
+  router.get("/api/admin/auth-mode", (req, res) => res.json({ mode: security.authMode() }));
+
+  // Admin login with a personal username + password (ADMIN_USERS in .env, scrypt-hashed).
+  // 5 failures per IP / 15 min (limiter) AND 5 failures per account / 15 min (lockout).
+  router.post("/api/admin/login", security.pinLimiter, (req, res) => {
+    if (security.authMode() !== "credentials") return res.status(400).json({ ok: false, error: "Username/password login is not enabled on this server." });
+    if (!security.hasSecret()) {
+      console.error("[AdminAuth] ADMIN_SESSION_SECRET is missing or shorter than 32 characters — cannot issue login tokens");
+      return res.status(500).json({ ok: false, error: "Server misconfigured: ADMIN_SESSION_SECRET is not set (min 32 characters). Ask the server owner to fix backend/.env." });
+    }
+    const { username, password } = req.body || {};
+    if (security.isLocked(username)) {
+      console.warn(`[AdminAuth] login blocked (account locked) user=${String(username).slice(0, 32)} ip=${req.ip}`);
+      return res.status(429).json({ ok: false, error: "This account is temporarily locked after too many failed attempts. Try again in 15 minutes." });
+    }
+    const user = security.checkCredentials(username, password);
+    if (!user) {
+      security.recordFailure(username);
+      console.warn(`[AdminAuth] login FAILED user=${String(username).slice(0, 32)} ip=${req.ip}`);
+      return res.status(401).json({ ok: false, error: "Invalid username or password" });
+    }
+    security.recordSuccess(user);
+    const { token, expiresAt } = security.signAdminToken(user);
+    console.log(`[AdminAuth] login ok user=${user} ip=${req.ip}`);
+    res.json({ ok: true, token, expiresAt, user });
+  });
+
+  // Legacy single-PIN login. Disabled automatically once ADMIN_USERS is configured.
   router.post("/api/admin/verify-pin", security.pinLimiter, (req, res) => {
+    if (security.authMode() === "credentials") return res.status(400).json({ ok: false, error: "PIN login is disabled. Sign in with your username and password." });
     const { pin } = req.body || {};
     const expected = process.env.PIN;
     if (!expected) return res.status(500).json({ ok: false, error: "Admin PIN is not configured on the server" });
+    if (!security.hasSecret()) {
+      // Previously this returned {ok:true, token:null} and the page showed "Incorrect PIN".
+      console.error("[AdminAuth] ADMIN_SESSION_SECRET is missing or shorter than 32 characters — cannot issue login tokens");
+      return res.status(500).json({ ok: false, error: "Server misconfigured: ADMIN_SESSION_SECRET is not set (min 32 characters)." });
+    }
     const ok = typeof pin === "string" && security.safeEqual(pin, expected);
     // 401 (not 200) so the limiter below counts it as a failed attempt.
     if (!ok) return res.status(401).json({ ok: false, error: "Incorrect PIN" });
-    res.json({ ok: true, token: security.signAdminToken() });
+    const { token, expiresAt } = security.signAdminToken("admin");
+    res.json({ ok: true, token, expiresAt });
   });
 
   // ── Chart ───────────────────────────────────────────────────────────────────

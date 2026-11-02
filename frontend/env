@@ -13,8 +13,14 @@ PG_SSL_CA_FILE=/etc/ssl/rds/global-bundle.pem
 PG_POOL_MAX=20
 
 # Security (server refuses to start in production if these are weak)
-PIN=                      # 8+ characters
-ADMIN_SESSION_SECRET=     # 32+ random chars: openssl rand -base64 48
+# Admin accounts (recommended). One entry per admin, comma-separated, format  username:scrypt$salt$hash
+# Create each entry with:   node backend/src/scripts/hashPassword.js
+ADMIN_USERS=
+# Legacy single PIN - only used when ADMIN_USERS is empty (8+ characters)
+PIN=
+# REQUIRED. 32+ random chars, signs login tokens:  openssl rand -base64 48
+ADMIN_SESSION_SECRET=
+ADMIN_SESSION_TTL_MIN=480
 CORS_ORIGINS=https://app.example.com
 TRUST_PROXY_HOPS=1        # 2 if CloudFront is in front of the ALB
 RATE_LIMIT_PER_MIN=300

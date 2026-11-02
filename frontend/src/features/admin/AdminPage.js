@@ -26,6 +26,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { BACKEND } from "../../config";
+import { hasValidAdminToken } from "../../utils/adminAuth";
 import "./AdminPage.css";
 
 const SESSION_KEY = "tgg_admin_verified";
@@ -34,8 +35,10 @@ export default function AdminPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const [verified, setVerified] = useState(() => sessionStorage.getItem(SESSION_KEY) === "1");
-  const [pin, setPin] = useState("");
+  const [verified, setVerified] = useState(() => sessionStorage.getItem(SESSION_KEY) === "1" && hasValidAdminToken());
+  const [authMode, setAuthMode] = useState(null);   // "credentials" | "pin" | "none" (asked from the server)
+  const [username, setUsername] = useState("");
+  const [pin, setPin] = useState("");   // holds the password in credentials mode
   const [pinError, setPinError] = useState("");
   const [pinLoading, setPinLoading] = useState(false);
 
@@ -100,23 +103,36 @@ export default function AdminPage() {
     return () => clearInterval(id);
   }, [verified, status, fetchStatus]);
 
+  // Ask the server which login to show (username+password, or the legacy PIN).
+  useEffect(() => {
+    if (verified) return;
+    fetch(`${BACKEND}/api/admin/auth-mode`)
+      .then((r) => r.json())
+      .then((d) => setAuthMode(d.mode || "pin"))
+      .catch(() => setAuthMode("pin"));
+  }, [verified]);
+
   async function submitPin(e) {
     e.preventDefault();
     setPinError("");
     setPinLoading(true);
+    const creds = authMode === "credentials";
     try {
-      const res = await fetch(`${BACKEND}/api/admin/verify-pin`, {
+      const res = await fetch(`${BACKEND}/api/admin/${creds ? "login" : "verify-pin"}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pin }),
+        body: JSON.stringify(creds ? { username, password: pin } : { pin }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (data.ok && data.token) {
         sessionStorage.setItem(SESSION_KEY, "1");
         sessionStorage.setItem("tgg_admin_token", data.token);   // signed, expiring token — see utils/adminAuth.js
         setVerified(true);
+      } else if (res.status === 429) {
+        setPinError(data.error || "Too many attempts. Try again later.");
       } else {
-        setPinError(data.error || "Incorrect PIN");
+        // Show the server's real reason (wrong credentials, locked, or a server config problem).
+        setPinError(data.error || (creds ? "Invalid username or password" : "Incorrect PIN"));
       }
     } catch (err) {
       setPinError("Could not reach backend: " + err.message);
@@ -217,19 +233,35 @@ export default function AdminPage() {
       <div className="admin-page admin-gate">
         <form className="admin-card" onSubmit={submitPin}>
           <h1>Admin</h1>
-          <p className="admin-sub">Enter the admin PIN to manage the Fyers connection.</p>
+          <p className="admin-sub">
+            {authMode === "credentials"
+              ? "Sign in with your admin account to manage the Fyers connection."
+              : "Enter the admin PIN to manage the Fyers connection."}
+          </p>
+          {authMode === "credentials" && (
+            <input
+              type="text"
+              autoFocus
+              autoComplete="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="Username"
+              className="admin-input"
+            />
+          )}
           <input
             type="password"
-            inputMode="numeric"
-            autoFocus
+            inputMode={authMode === "credentials" ? "text" : "numeric"}
+            autoFocus={authMode !== "credentials"}
+            autoComplete={authMode === "credentials" ? "current-password" : "off"}
             value={pin}
             onChange={(e) => setPin(e.target.value)}
-            placeholder="PIN"
+            placeholder={authMode === "credentials" ? "Password" : "PIN"}
             className="admin-input"
           />
           {pinError && <div className="admin-error">{pinError}</div>}
-          <button type="submit" className="admin-btn" disabled={pinLoading || !pin}>
-            {pinLoading ? "Checking…" : "Unlock"}
+          <button type="submit" className="admin-btn" disabled={pinLoading || !pin || (authMode === "credentials" && !username)}>
+            {pinLoading ? "Checking…" : authMode === "credentials" ? "Sign in" : "Unlock"}
           </button>
           <button type="button" className="admin-link" onClick={() => navigate("/")}>
             ← Back to app

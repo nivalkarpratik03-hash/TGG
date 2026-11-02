@@ -34,8 +34,9 @@ function secret() {
 function assertProductionConfig() {
   const problems = [];
   if (PROTECT_WRITES && !secret()) problems.push("ADMIN_SESSION_SECRET must be set (>= 32 chars)");
-  if (!process.env.PIN) problems.push("PIN must be set");
-  else if (IS_PROD && process.env.PIN.length < 8) problems.push("PIN should be at least 8 characters in production");
+  if (authMode() === "none") problems.push("set ADMIN_USERS (recommended) or PIN so someone can log in as admin");
+  else if (authMode() === "pin" && IS_PROD && process.env.PIN.length < 8) problems.push("PIN should be at least 8 characters in production (or switch to ADMIN_USERS)");
+  if (ADMIN_USERS_RAW() && parseAdminUsers().size === 0) problems.push("ADMIN_USERS is set but no valid 'username:scrypt$salt$hash' entry was found");
   if (IS_PROD && !process.env.CORS_ORIGINS && !process.env.PUBLIC_FRONTEND_ORIGIN) {
     console.warn("[Security] CORS_ORIGINS not set — cross-origin browser requests will be blocked (same-origin still works).");
   }
@@ -48,13 +49,83 @@ function assertProductionConfig() {
 
 const b64u = (buf) => Buffer.from(buf).toString("base64url");
 
-function signAdminToken() {
+function signAdminToken(user = "admin") {
   const key = secret();
   if (!key) return null;
-  const payload = b64u(JSON.stringify({ r: "admin", exp: Date.now() + TTL_MS, n: crypto.randomBytes(8).toString("hex") }));
+  const exp = Date.now() + TTL_MS;
+  const payload = b64u(JSON.stringify({ r: "admin", u: String(user).slice(0, 64), exp, n: crypto.randomBytes(8).toString("hex") }));
   const sig = crypto.createHmac("sha256", key).update(payload).digest("base64url");
-  return `${payload}.${sig}`;
+  return { token: `${payload}.${sig}`, expiresAt: new Date(exp).toISOString() };
 }
+
+// ── Admin accounts ──────────────────────────────────────────────────────────
+// ADMIN_USERS="alice:scrypt$<salt>$<hash>,bob:scrypt$<salt>$<hash>"
+// Create entries with:  node backend/src/scripts/hashPassword.js
+// Only salted scrypt hashes live in the environment — never plain-text passwords.
+const ADMIN_USERS_RAW = () => (process.env.ADMIN_USERS || "").trim();
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(String(password), salt, 64, { N: 16384, r: 8, p: 1 });
+  return `scrypt$${salt.toString("hex")}$${hash.toString("hex")}`;
+}
+
+function verifyPassword(password, stored) {
+  try {
+    const [scheme, saltHex, hashHex] = String(stored).split("$");
+    if (scheme !== "scrypt" || !saltHex || !hashHex) return false;
+    const expected = Buffer.from(hashHex, "hex");
+    const actual = crypto.scryptSync(String(password), Buffer.from(saltHex, "hex"), expected.length, { N: 16384, r: 8, p: 1 });
+    return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+  } catch { return false; }
+}
+
+function parseAdminUsers() {
+  const users = new Map();
+  for (const entry of ADMIN_USERS_RAW().split(",")) {
+    const i = entry.indexOf(":");
+    if (i < 1) continue;
+    const name = entry.slice(0, i).trim().toLowerCase();
+    const hash = entry.slice(i + 1).trim();
+    if (name && hash.startsWith("scrypt$")) users.set(name, hash);
+  }
+  return users;
+}
+
+/** "credentials" (ADMIN_USERS set) | "pin" (legacy single PIN) | "none" (not configured) */
+function authMode() {
+  if (ADMIN_USERS_RAW()) return "credentials";
+  return process.env.PIN ? "pin" : "none";
+}
+
+const DUMMY_HASH = hashPassword("dummy-password-for-timing");
+
+/** Returns the canonical username on success, otherwise null. Equal work for unknown users (no user enumeration by timing). */
+function checkCredentials(username, password) {
+  if (typeof username !== "string" || typeof password !== "string" || username.length > 64 || password.length > 256) return null;
+  const name = username.trim().toLowerCase();
+  const stored = parseAdminUsers().get(name);
+  const ok = verifyPassword(password, stored || DUMMY_HASH);
+  return stored && ok ? name : null;
+}
+
+// Per-username lockout on top of the per-IP limiter (stops distributed guessing on one account).
+const failures = new Map(); // name -> { n, until }
+const LOCK_AFTER = parseInt(process.env.LOGIN_MAX_ATTEMPTS || "5", 10);
+const LOCK_MS = 15 * 60 * 1000;
+function isLocked(name) {
+  const f = failures.get(String(name || "").trim().toLowerCase());
+  return !!(f && f.until && f.until > Date.now());
+}
+function recordFailure(name) {
+  const k = String(name || "").trim().toLowerCase().slice(0, 64);
+  const f = failures.get(k) || { n: 0, until: 0 };
+  f.n += 1;
+  if (f.n >= LOCK_AFTER) { f.until = Date.now() + LOCK_MS; f.n = 0; }
+  failures.set(k, f);
+  if (failures.size > 5000) failures.clear();   // memory guard
+}
+function recordSuccess(name) { failures.delete(String(name || "").trim().toLowerCase()); }
 
 function verifyAdminToken(token) {
   const key = secret();
@@ -85,7 +156,7 @@ function extractToken(req) {
 
 // Non-GET routes that regular (non-admin) chart users need. Everything else
 // that mutates state or triggers heavy work needs an admin token.
-const PUBLIC_WRITE_ROUTES = new Set(["/api/admin/verify-pin", "/api/chart/refresh"]);
+const PUBLIC_WRITE_ROUTES = new Set(["/api/admin/verify-pin", "/api/admin/login", "/api/chart/refresh"]);
 
 function requireAdminForWrites(req, res, next) {
   if (!PROTECT_WRITES) return next();
@@ -102,7 +173,7 @@ const pinLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: true,
-  message: { ok: false, error: "Too many PIN attempts. Try again in 15 minutes." },
+  message: { ok: false, error: "Too many failed login attempts from this address. Try again in 15 minutes." },
 });
 
 /**
@@ -145,4 +216,5 @@ function applySecurity(app) {
 module.exports = {
   applySecurity, assertProductionConfig, requireAdminForWrites, pinLimiter,
   signAdminToken, verifyAdminToken, safeEqual, extractToken,
+  hashPassword, verifyPassword, checkCredentials, authMode, isLocked, recordFailure, recordSuccess, hasSecret: () => !!secret(),
 };
