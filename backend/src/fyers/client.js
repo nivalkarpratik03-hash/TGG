@@ -14,7 +14,12 @@ const {
   aggregateDailyCandles,
 } = require("../services/timeframeAggregator");
 
-const ROOT = path.resolve(__dirname, "../..");
+// FYERS_TOKEN_DIR lets production keep tokens on a persistent volume (EBS/EFS mount)
+// instead of the app directory, so they survive container/instance replacement.
+const ROOT = process.env.FYERS_TOKEN_DIR
+  ? path.resolve(process.env.FYERS_TOKEN_DIR)
+  : path.resolve(__dirname, "../..");
+if (!fs.existsSync(ROOT)) fs.mkdirSync(ROOT, { recursive: true, mode: 0o700 });
 const TOKEN_FILE = path.join(ROOT, "fyers_access_token.txt");
 const REFRESH_FILE = path.join(ROOT, "fyers_refresh_token.txt");
 
@@ -63,8 +68,52 @@ function loadToken() {
   return fs.readFileSync(TOKEN_FILE, "utf8").trim();
 }
 
+/**
+ * Describes the saved access token WITHOUT exposing it: when it was issued and
+ * when it expires. Fyers access tokens are JWTs, so exp/iat are read from the
+ * payload (source:"jwt"). If the token isn't a decodable JWT, expiry is
+ * ESTIMATED as the next 06:00 IST after the file was written (source:"estimated")
+ * and the UI labels it as an estimate. Whether the token is actually accepted by
+ * Fyers is a separate question - use validateToken() for that.
+ */
+function getTokenInfo() {
+  const token = loadToken();
+  if (!token) return { exists: false };
+  const nowSec = Math.floor(Date.now() / 1000);
+  let issuedSec = null, expSec = null, source = "estimated";
+  try {
+    const part = token.split(".")[1];
+    if (part) {
+      const payload = JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
+      if (typeof payload.exp === "number") { expSec = payload.exp; source = "jwt"; }
+      if (typeof payload.iat === "number") issuedSec = payload.iat;
+    }
+  } catch { /* fall through to estimate */ }
+  if (issuedSec == null) {
+    try { issuedSec = Math.floor(fs.statSync(TOKEN_FILE).mtimeMs / 1000); } catch { issuedSec = nowSec; }
+  }
+  if (expSec == null) {
+    const t = issuedSec + 19800;                       // shift to IST
+    let cand = Math.floor(t / 86400) * 86400 + 6 * 3600; // 06:00 IST that day
+    if (cand <= t) cand += 86400;
+    expSec = cand - 19800;
+  }
+  return {
+    exists: true,
+    source,
+    issuedAt: new Date(issuedSec * 1000).toISOString(),
+    expiresAt: new Date(expSec * 1000).toISOString(),
+    secondsLeft: Math.max(0, expSec - nowSec),
+    expired: expSec <= nowSec,
+  };
+}
+
 function saveToken(token) {
-  fs.writeFileSync(TOKEN_FILE, token.trim(), "utf8");
+  // Write-then-rename so a crash mid-write can never leave a truncated token file;
+  // mode 0600 so other OS users on the host cannot read the broker token.
+  const tmp = TOKEN_FILE + ".tmp";
+  fs.writeFileSync(tmp, token.trim(), { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(tmp, TOKEN_FILE);
 }
 
 // ─── Redirect URI ──────────────────────────────────────────────────────────
@@ -80,11 +129,19 @@ function saveToken(token) {
 //
 // Falls back to the old generic page if PUBLIC_BACKEND_URL isn't set yet
 // (e.g. still on a local/unstable tunnel URL), so nothing breaks mid-migration.
+//
+// Priority (first one that is set wins):
+//   1. PUBLIC_BACKEND_URL  -> <it>/api/auth/callback   (automatic flow, no copy-paste)
+//   2. REDIRECT_URI        -> used exactly as written  (manual flow: Fyers redirects to
+//                             e.g. http://127.0.0.1/ and you paste the code/URL into /admin;
+//                             must equal the Redirect URL registered in the Fyers app)
+//   3. Fyers' generic redirect page
 function getRedirectUri() {
-  const publicUrl = process.env.PUBLIC_BACKEND_URL;
-  return publicUrl
-    ? `${publicUrl.replace(/\/$/, "")}/api/auth/callback`
-    : "https://trade.fyers.in/api-login/redirect-uri/index.html";
+  const publicUrl = (process.env.PUBLIC_BACKEND_URL || "").trim();
+  if (publicUrl) return `${publicUrl.replace(/\/$/, "")}/api/auth/callback`;
+  const manual = (process.env.REDIRECT_URI || "").trim().replace(/^["']|["']$/g, "");
+  if (manual) return manual;
+  return "https://trade.fyers.in/api-login/redirect-uri/index.html";
 }
 
 function getFyersClient() {
@@ -124,7 +181,7 @@ async function generateToken(authCode) {
   });
   if (response.s !== "ok") throw new Error("Token exchange failed: " + JSON.stringify(response));
   saveToken(response.access_token);
-  if (response.refresh_token) fs.writeFileSync(REFRESH_FILE, response.refresh_token.trim(), "utf8");
+  if (response.refresh_token) fs.writeFileSync(REFRESH_FILE, response.refresh_token.trim(), { encoding: "utf8", mode: 0o600 });
   return response.access_token;
 }
 
@@ -385,6 +442,10 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
   }
 
   const allCandles = [];
+  // Remember WHY chunks came back empty. Before, an expired/invalid token or a
+  // bad symbol made every chunk fail, each failure was swallowed as "empty",
+  // and the user only ever saw the misleading "returned no candles" message.
+  let lastProblem = null;
   for (const chunk of chunks) {
     let res;
     try {
@@ -415,19 +476,30 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
           ]);
         } catch (err2) {
           console.warn(`[Fyers] Intraday chunk failed again after retry (${err2.message}) — skipping`);
+          lastProblem = err2.message;
           continue;
         }
       } else {
         console.warn(`[Fyers] Intraday chunk failed (${err.message}) — skipping`);
+        lastProblem = err.message;
         continue;
       }
     }
     const parsed = parseIntraday(res);
     if (parsed && parsed.length > 0) allCandles.push(...parsed);
-    else vwarn(`[Fyers] Intraday chunk empty: ${res?.message || res?.errmsg || "unknown"}`);
+    else {
+      vwarn(`[Fyers] Intraday chunk empty: ${res?.message || res?.errmsg || "unknown"}`);
+      if (res && res.s && res.s !== "ok") lastProblem = `${res.code != null ? res.code + " " : ""}${res.message || res.errmsg || res.s}`;
+    }
   }
 
-  if (allCandles.length === 0) throw new Error(`Fyers getHistory returned no candles for ${symbol} res=${fyersResolution}`);
+  if (allCandles.length === 0) {
+    throw new Error(
+      lastProblem
+        ? `Fyers getHistory failed for ${symbol} res=${fyersResolution}: ${lastProblem}`
+        : `Fyers getHistory returned no candles for ${symbol} res=${fyersResolution}`
+    );
+  }
 
   const deduped = dedupSortCandles(allCandles);
 
@@ -583,7 +655,7 @@ async function validateSymbols(symbols) {
 }
 
 module.exports = {
-  loadToken, saveToken, getAuthURL, getRedirectUri, generateToken, validateToken, fetchCandles, fetchOptionChain,
+  loadToken, saveToken, getTokenInfo, getAuthURL, getRedirectUri, generateToken, validateToken, fetchCandles, fetchOptionChain,
   validateSymbols, setExcludedSymbols, isExcludedSymbol,
   fetchDailyCandles, FULL_HISTORY_DAILY_LOOKBACK_DAYS,
 };

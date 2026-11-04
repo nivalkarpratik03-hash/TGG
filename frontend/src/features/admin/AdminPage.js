@@ -26,6 +26,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { BACKEND } from "../../config";
+import { hasValidAdminToken } from "../../utils/adminAuth";
 import "./AdminPage.css";
 
 const SESSION_KEY = "tgg_admin_verified";
@@ -34,8 +35,10 @@ export default function AdminPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const [verified, setVerified] = useState(() => sessionStorage.getItem(SESSION_KEY) === "1");
-  const [pin, setPin] = useState("");
+  const [verified, setVerified] = useState(() => sessionStorage.getItem(SESSION_KEY) === "1" && hasValidAdminToken());
+  const [authMode, setAuthMode] = useState(null);   // "credentials" | "pin" | "none" (asked from the server)
+  const [username, setUsername] = useState("");
+  const [pin, setPin] = useState("");   // holds the password in credentials mode
   const [pinError, setPinError] = useState("");
   const [pinLoading, setPinLoading] = useState(false);
 
@@ -43,6 +46,10 @@ export default function AdminPage() {
   const [statusLoading, setStatusLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [banner, setBanner] = useState(null); // { type: 'success'|'error', msg }
+  // Set when a valid token already exists and the user clicked Connect/Reconnect:
+  // we ask "token already generated - create another?" before opening Fyers.
+  const [confirmNew, setConfirmNew] = useState(null); // tokenInfo | null
+  const [now, setNow] = useState(Date.now());          // ticks every 30s for the expiry countdown
 
   // Added 2026-08-13 — manual fallback for when the auto-redirect isn't wired
   // up yet (PUBLIC_BACKEND_URL/FRONTEND_URL unset, or not registered as the
@@ -83,22 +90,49 @@ export default function AdminPage() {
     if (verified) fetchStatus();
   }, [verified, fetchStatus]);
 
+  // Live expiry countdown: tick every 30s, and re-check status the moment the token lapses
+  // so the pill flips from "Connected" to "Token expired" without a manual refresh.
+  useEffect(() => {
+    if (!verified) return undefined;
+    const id = setInterval(() => {
+      const t = Date.now();
+      setNow(t);
+      const exp = status?.tokenInfo?.expiresAt;
+      if (status?.authenticated && exp && new Date(exp).getTime() <= t) fetchStatus();
+    }, 30000);
+    return () => clearInterval(id);
+  }, [verified, status, fetchStatus]);
+
+  // Ask the server which login to show (username+password, or the legacy PIN).
+  useEffect(() => {
+    if (verified) return;
+    fetch(`${BACKEND}/api/admin/auth-mode`)
+      .then((r) => r.json())
+      .then((d) => setAuthMode(d.mode || "pin"))
+      .catch(() => setAuthMode("pin"));
+  }, [verified]);
+
   async function submitPin(e) {
     e.preventDefault();
     setPinError("");
     setPinLoading(true);
+    const creds = authMode === "credentials";
     try {
-      const res = await fetch(`${BACKEND}/api/admin/verify-pin`, {
+      const res = await fetch(`${BACKEND}/api/admin/${creds ? "login" : "verify-pin"}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pin }),
+        body: JSON.stringify(creds ? { username, password: pin } : { pin }),
       });
-      const data = await res.json();
-      if (data.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (data.ok && data.token) {
         sessionStorage.setItem(SESSION_KEY, "1");
+        sessionStorage.setItem("tgg_admin_token", data.token);   // signed, expiring token — see utils/adminAuth.js
         setVerified(true);
+      } else if (res.status === 429) {
+        setPinError(data.error || "Too many attempts. Try again later.");
       } else {
-        setPinError(data.error || "Incorrect PIN");
+        // Show the server's real reason (wrong credentials, locked, or a server config problem).
+        setPinError(data.error || (creds ? "Invalid username or password" : "Incorrect PIN"));
       }
     } catch (err) {
       setPinError("Could not reach backend: " + err.message);
@@ -108,11 +142,25 @@ export default function AdminPage() {
     }
   }
 
-  async function connectToFyers() {
+  const fmtIST = (iso) => new Date(iso).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }) + " IST";
+  function fmtLeft(ms) {
+    if (ms <= 0) return "expired";
+    const m = Math.floor(ms / 60000);
+    return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m left` : `${m}m left`;
+  }
+
+  // force=false: the server answers 409 if a valid token already exists -> ask first.
+  // force=true : user confirmed they want another token.
+  async function connectToFyers(force = false) {
     setConnecting(true);
+    setConfirmNew(null);
     try {
-      const res = await fetch(`${BACKEND}/api/auth/url`);
+      const res = await fetch(`${BACKEND}/api/auth/url${force ? "?force=true" : ""}`);
       const data = await res.json();
+      if (res.status === 409 && data.alreadyAuthenticated) {
+        setConfirmNew(data.tokenInfo || {});
+        return;
+      }
       if (data.url) {
         // CHANGED 2026-08-13: was window.location.href (full-tab nav, for the
         // auto-redirect-back flow). Now opens in a new tab instead — keeps
@@ -134,6 +182,7 @@ export default function AdminPage() {
 
   function logoutAdmin() {
     sessionStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem("tgg_admin_token");
     setVerified(false);
   }
 
@@ -184,19 +233,35 @@ export default function AdminPage() {
       <div className="admin-page admin-gate">
         <form className="admin-card" onSubmit={submitPin}>
           <h1>Admin</h1>
-          <p className="admin-sub">Enter the admin PIN to manage the Fyers connection.</p>
+          <p className="admin-sub">
+            {authMode === "credentials"
+              ? "Sign in with your admin account to manage the Fyers connection."
+              : "Enter the admin PIN to manage the Fyers connection."}
+          </p>
+          {authMode === "credentials" && (
+            <input
+              type="text"
+              autoFocus
+              autoComplete="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="Username"
+              className="admin-input"
+            />
+          )}
           <input
             type="password"
-            inputMode="numeric"
-            autoFocus
+            inputMode={authMode === "credentials" ? "text" : "numeric"}
+            autoFocus={authMode !== "credentials"}
+            autoComplete={authMode === "credentials" ? "current-password" : "off"}
             value={pin}
             onChange={(e) => setPin(e.target.value)}
-            placeholder="PIN"
+            placeholder={authMode === "credentials" ? "Password" : "PIN"}
             className="admin-input"
           />
           {pinError && <div className="admin-error">{pinError}</div>}
-          <button type="submit" className="admin-btn" disabled={pinLoading || !pin}>
-            {pinLoading ? "Checking…" : "Unlock"}
+          <button type="submit" className="admin-btn" disabled={pinLoading || !pin || (authMode === "credentials" && !username)}>
+            {pinLoading ? "Checking…" : authMode === "credentials" ? "Sign in" : "Unlock"}
           </button>
           <button type="button" className="admin-link" onClick={() => navigate("/")}>
             ← Back to app
@@ -231,6 +296,8 @@ export default function AdminPage() {
             <span className="admin-status-pill admin-status-pending">Checking…</span>
           ) : status?.authenticated ? (
             <span className="admin-status-pill admin-status-ok">Connected</span>
+          ) : status?.tokenInfo?.exists && status.tokenInfo.expired ? (
+            <span className="admin-status-pill admin-status-bad">Token expired</span>
           ) : (
             <span className="admin-status-pill admin-status-bad">Not connected</span>
           )}
@@ -241,12 +308,43 @@ export default function AdminPage() {
 
         <p className="admin-sub">
           {status?.authenticated
-            ? "Today's access token is valid. Tick data and the tick stream should be flowing normally."
-            : "No valid token for today. Connect below to authenticate — Fyers access tokens expire daily."}
+            ? "A token has already been generated and is valid. Tick data and the tick stream should be flowing normally."
+            : status?.tokenInfo?.exists && status.tokenInfo.expired
+              ? "The saved token has expired. Connect below to generate a new one — Fyers access tokens expire daily."
+              : "No valid token. Connect below to authenticate — Fyers access tokens expire daily."}
         </p>
 
-        <button className="admin-btn admin-btn-primary" onClick={connectToFyers} disabled={connecting}>
-          {connecting ? "Opening Fyers…" : status?.authenticated ? "Reconnect to Fyers" : "Connect to Fyers"}
+        {status?.tokenInfo?.exists && (() => {
+          const t = status.tokenInfo;
+          const left = new Date(t.expiresAt).getTime() - now;
+          const soon = left > 0 && left < 60 * 60 * 1000;
+          return (
+            <div className="admin-token-info" style={{ margin: "8px 0 12px", fontSize: 13, lineHeight: 1.6 }}>
+              <div>Token generated: <strong>{fmtIST(t.issuedAt)}</strong></div>
+              <div>
+                Expires{t.source === "estimated" ? " (estimated)" : ""}: <strong>{fmtIST(t.expiresAt)}</strong>
+                {" "}— <strong style={{ color: left <= 0 ? "#e5484d" : soon ? "#f5a524" : "inherit" }}>{fmtLeft(left)}</strong>
+              </div>
+              {left <= 0 && <div style={{ color: "#e5484d" }}>Token expired — chart data from Fyers and live ticks will stop until you reconnect.</div>}
+              {soon && <div style={{ color: "#f5a524" }}>Token expires within the hour. Reconnect before it lapses to avoid a gap in live data.</div>}
+            </div>
+          );
+        })()}
+
+        {confirmNew && (
+          <div className="admin-banner admin-banner-error" style={{ display: "block" }}>
+            <strong>A token is already generated and still valid.</strong>
+            {confirmNew.expiresAt ? <> It was created {fmtIST(confirmNew.issuedAt)} and expires {fmtIST(confirmNew.expiresAt)}.</> : null}
+            {" "}Do you want to create one more token?
+            <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+              <button className="admin-btn admin-btn-primary" onClick={() => connectToFyers(true)}>Yes, create new token</button>
+              <button className="admin-btn" onClick={() => setConfirmNew(null)}>Cancel</button>
+            </div>
+          </div>
+        )}
+
+        <button className="admin-btn admin-btn-primary" onClick={() => connectToFyers(false)} disabled={connecting}>
+          {connecting ? "Opening Fyers…" : status?.authenticated ? "Generate new token" : "Connect to Fyers"}
         </button>
 
         <form className="admin-manual-form" onSubmit={submitManualCode}>

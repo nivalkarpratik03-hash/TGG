@@ -1,5 +1,6 @@
 require("dotenv").config();
 const express = require("express");
+const security = require("./middleware/security");
 const http = require("http");
 const path = require("path");
 const { Server } = require("socket.io");
@@ -38,20 +39,39 @@ const createWebSocket = require("./core/websocket");
 const { wireDbJobs, wireScannerSymbols } = require("./core/scheduler");
 const symbolCheck = require("./core/symbolCheck");
 
+// Fail fast on missing/weak production secrets (ADMIN_SESSION_SECRET, PIN).
+security.assertProductionConfig();
+
 const app = express();
 const server = http.createServer(app);
 
-app.set("trust proxy", 1);
+// Number of reverse-proxy hops in front of Node (ALB only = 1; CloudFront + ALB = 2).
+// Wrong values make req.ip (and therefore rate-limiting) wrong, so it is configurable.
+app.set("trust proxy", parseInt(process.env.TRUST_PROXY_HOPS || "1", 10));
+
+// Keep-alive must outlive the ALB idle timeout, or the ALB reuses a socket Node already closed (502s).
+server.keepAliveTimeout = 65_000;
+server.headersTimeout = 66_000;
+server.requestTimeout = 120_000;
 
 // ─── Socket.IO ────────────────────────────────────────────────────────────────
 const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
+  cors: {
+    origin: (origin, cb) => cb(null, corsMiddleware.isAllowed(origin)),
+    methods: ["GET", "POST"],
+  },
+  maxHttpBufferSize: 64 * 1024,   // default is 1 MB per message — nothing here needs more than a symbol name
+  pingInterval: 25_000,
+  pingTimeout: 30_000,
+  connectionStateRecovery: { maxDisconnectionDuration: 2 * 60 * 1000 },
 });
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
+security.applySecurity(app);                 // helmet + compression + x-powered-by off
 app.use(corsMiddleware);
-app.use(express.json()); // parse JSON body — needed for req.body.socketId in /refresh
+app.use(express.json({ limit: "100kb" })); // parse JSON body — needed for req.body.socketId in /refresh
 app.use(rateLimiter);
+app.use(security.requireAdminForWrites);   // every non-GET /api call needs an admin token (see middleware/security.js)
 
 // ─── Construct the split-out modules, in dependency order ───────────────────
 // tickEngine → dataFetch → catchUp is one-directional (each only requires
@@ -117,12 +137,42 @@ app.use("/api/analytics", analyticsRouter);
 app.use("/api/data-export", dataExportRouter({ io }));
 app.use("/api/papertrading", paperTradingRouter);
 
+// ─── Readiness probe (liveness is /health; this one also proves the DB works) ─
+// Use /ready for load-balancer / orchestrator health checks that should pull the
+// instance out of rotation when Postgres is unreachable.
+app.get("/ready", async (req, res) => {
+  try {
+    const { healthCheck } = require("../../database/src/pool");
+    const dbOk = await Promise.race([healthCheck(), new Promise((r) => setTimeout(() => r(false), 3000))]);
+    res.status(dbOk ? 200 : 503).json({ status: dbOk ? "ready" : "db_unavailable", uptimeSec: Math.round(process.uptime()) });
+  } catch { res.status(503).json({ status: "db_unavailable" }); }
+});
+
 // ─── Serve React Frontend ─────────────────────────────────────────────────────
+// Hashed CRA assets are immutable → long cache. index.html must always revalidate.
 const FRONTEND_BUILD = path.join(__dirname, "../../frontend/build");
-app.use(express.static(FRONTEND_BUILD));
+app.use(express.static(FRONTEND_BUILD, {
+  index: false,
+  setHeaders: (res, filePath) => {
+    if (/\/static\//.test(filePath.replace(/\\/g, "/"))) res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    else if (filePath.endsWith("index.html")) res.setHeader("Cache-Control", "no-cache");
+  },
+}));
+// Unknown API paths → JSON 404 (not the SPA's index.html, which confuses API clients)
+app.use("/api", (req, res) => res.status(404).json({ error: "Not found" }));
 app.get("*", (req, res, next) => {
   if (req.path.startsWith("/api") || req.path.startsWith("/socket.io")) return next();
-  res.sendFile(path.join(FRONTEND_BUILD, "index.html"));
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(FRONTEND_BUILD, "index.html"), (err) => { if (err) next(err); });
+});
+
+// ─── Central error handler — never leak stack traces / SQL text to clients ───
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  const status = err.status || err.statusCode || (err.type === "entity.too.large" ? 413 : 500);
+  if (status >= 500) console.error(`[HTTP ${status}] ${req.method} ${req.originalUrl}:`, err);
+  if (res.headersSent) return;
+  res.status(status).json({ error: status >= 500 ? "Internal server error" : err.message });
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
@@ -202,5 +252,34 @@ server.listen(PORT, async () => {
     console.error("[PaperTrading] Failed to initialize:", err.message);
   }
 });
+
+// ─── Process-level safety nets + graceful shutdown ───────────────────────────
+// A single unhandled rejection used to be able to kill the process silently
+// (Node >= 15 exits on them). Log loudly and keep serving; exit only on truly
+// unrecoverable synchronous errors so the supervisor (systemd/ECS) restarts us.
+process.on("unhandledRejection", (reason) => {
+  console.error("[FATAL-ish] unhandledRejection:", reason && reason.stack ? reason.stack : reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[FATAL] uncaughtException:", err && err.stack ? err.stack : err);
+  shutdown("uncaughtException", 1);
+});
+
+let shuttingDown = false;
+function shutdown(signal, code = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[Shutdown] ${signal} received — draining connections…`);
+  const force = setTimeout(() => { console.error("[Shutdown] forced exit after 15s"); process.exit(code || 1); }, 15_000);
+  force.unref();
+  try { io.close(); } catch { /* ignore */ }
+  server.close(async () => {
+    try { await require("../../database/src/pool").pool.end(); } catch { /* ignore */ }
+    console.log("[Shutdown] clean exit");
+    process.exit(code);
+  });
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 module.exports = { app, server };

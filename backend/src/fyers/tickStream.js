@@ -155,7 +155,7 @@ class TickStream extends EventEmitter {
     // second socket.
     this._connecting = false;
     this._open = false;          // true only while the socket is really open
-    this._handlersAttached = false; // getInstance() is a singleton: attach handlers ONCE
+    this._tokenInUse = null;       // token the live socket was opened with
     this._lastSubKey = "";
   }
 
@@ -171,8 +171,13 @@ class TickStream extends EventEmitter {
     // Already connected, or a connection attempt is already in flight —
     // don't open a second socket. Just make sure the live/incoming socket
     // ends up with the latest symbol list.
-    if (this.isConnected()) {
+    if (this.isConnected() && !this.tokenChanged()) {
       this.setSymbols(symbols);
+      return;
+    }
+    if (this.isConnected()) {
+      console.log("[TickStream] Fyers token changed — reopening socket with the new token");
+      this.restart(symbols);
       return;
     }
     if (this._connecting) {
@@ -239,27 +244,62 @@ class TickStream extends EventEmitter {
 
     try {
       const fullToken = `${appId}:${token}`;
-      this._socket = fyersDataSocket.getInstance(fullToken, FYERS_LOG_PATH, FYERS_LOGGING);
+
+      // SERVER-ONLY BUG FIX (2026-11-04): fyersDataSocket.getInstance() is a
+      // process-wide SINGLETON that keeps the token it was FIRST created with.
+      // Every later getInstance(newToken) call silently returns that same old
+      // instance and ignores the new token. Locally the backend is restarted
+      // every day, so the singleton always holds today's token. On the server
+      // the process runs for days: after the first daily token expiry (and the
+      // admin's fresh Fyers login), every reconnect still used YESTERDAY's
+      // expired token, Fyers closed the socket, we hit MAX_RECONNECT and gave
+      // up, and ticks never flowed again until the process was restarted.
+      // Fix: drop the cached singleton so each connect builds a fresh socket
+      // with the token currently on disk, and bind handlers per instance.
+      try { fyersDataSocket.instance = null; } catch { /* ignore */ }
+      const sock = fyersDataSocket.getInstance(fullToken, FYERS_LOG_PATH, FYERS_LOGGING);
+      this._socket = sock;
+      this._tokenInUse = token;
+
+      // Handlers are bound to THIS instance only. Events from an older,
+      // replaced instance (e.g. its late "close") are ignored, so they can't
+      // schedule a reconnect that tears down the new, healthy socket.
+      const isCurrent = () => this._socket === sock;
+      sock.on("connect", () => { if (isCurrent()) this._onConnect(); });
+      sock.on("message", (msg) => { if (isCurrent()) this._onMessage(msg); });
+      sock.on("error", (err) => { if (isCurrent()) this._onError(err); });
+      sock.on("close", (...a) => { if (isCurrent()) this._onClose(...a); });
 
       // NOTE: library autoReconnect is intentionally NOT enabled. It reconnected
       // on its own while our timer ALSO reconnected (closing the healthy socket
       // every 3s) -> endless loop. We own reconnection.
-      if (!this._handlersAttached) {
-        this._handlersAttached = true;
-        this._socket.on("connect", () => this._onConnect());
-        this._socket.on("message", (msg) => this._onMessage(msg));
-        this._socket.on("error", (err) => this._onError(err));
-        this._socket.on("close", (...a) => this._onClose(...a));
-      }
 
       // connect() takes NO arguments — token is in getInstance()
-      this._socket.connect();
+      sock.connect();
       console.log("[TickStream] Connecting to Fyers data socket (LiteMode)…");
     } catch (err) {
       console.error("[TickStream] Connect error:", err.message);
       this._connecting = false;
       this._scheduleReconnect();
     }
+  }
+
+  /**
+   * Force a brand-new socket with the token currently on disk. Called right
+   * after a successful Fyers login so the stream never keeps running on (or
+   * retrying with) the previous day's token.
+   */
+  restart(symbols) {
+    const syms = symbols && symbols.length ? symbols : this._symbols;
+    this.stop();
+    this._reconnects = 0;
+    if (syms && syms.length) this.start(syms);
+  }
+
+  /** True when the token file changed since the live socket was opened. */
+  tokenChanged() {
+    const t = loadToken();
+    return !!t && !!this._tokenInUse && t !== this._tokenInUse;
   }
 
   _disconnect() {
@@ -385,8 +425,10 @@ class TickStream extends EventEmitter {
     if (this._userStopped) return;
     if (this._reconnTimer) return; // a reconnect is already pending
     if (this._reconnects >= MAX_RECONNECT) {
-      console.warn("[TickStream] Max reconnects reached — giving up.");
+      console.warn("[TickStream] Max reconnects reached — giving up until the next start() (new login / symbol change / watchdog).");
       this._running = false;
+      this._connecting = false;
+      this._socket = null;
       return;
     }
     this._reconnects++;

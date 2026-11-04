@@ -30,6 +30,9 @@
  *   app.use(createChartRouter(deps));
  */
 const express = require("express");
+const security = require("../middleware/security");
+const { isValidSymbol, parseResolution } = require("../utils/inputValidation");
+const { getTokenInfo } = require("../fyers/client");
 
 /**
  * @param {object} deps - injected server-level dependencies
@@ -102,13 +105,30 @@ function createChartRouter(deps) {
   router.get("/api/auth/status", async (req, res) => {
     try {
       const valid = await validateToken();
-      res.json({ authenticated: valid, authUrl: valid ? null : getAuthURL() });
+      // tokenInfo = issued/expiry times only; the token itself is never returned.
+      res.json({ authenticated: valid, authUrl: valid ? null : getAuthURL(), tokenInfo: getTokenInfo() });
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  router.get("/api/auth/url", (req, res) => {
-    try { res.json({ url: getAuthURL() }); }
-    catch (err) { res.status(500).json({ error: err.message }); }
+  // If a valid token already exists, refuse to hand out a new login URL unless the
+  // caller explicitly confirms with ?force=true. The dashboard shows "token already
+  // generated - create another?" on this 409. (This is a safety/UX guard, not a
+  // security boundary: the real protection is that only the Fyers account owner can
+  // complete the Fyers login.)
+  router.get("/api/auth/url", async (req, res) => {
+    try {
+      if (req.query.force !== "true") {
+        const info = getTokenInfo();
+        if (info.exists && !info.expired && await validateToken()) {
+          return res.status(409).json({
+            alreadyAuthenticated: true,
+            tokenInfo: info,
+            message: "A Fyers token was already generated and is still valid. Generate another one?",
+          });
+        }
+      }
+      res.json({ url: getAuthURL() });
+    } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
   router.post("/api/auth/token", async (req, res) => {
@@ -117,7 +137,7 @@ function createChartRouter(deps) {
     try {
       await generateToken(code);
       if (bustTokenCache) bustTokenCache();  // clear 60s cache so next validateToken is live
-      await deps.maybeStartTickStream();
+      await deps.maybeStartTickStream({ force: true });
 
       // UPDATED 2026-08-06 (items 2, 3, 4, 6): now that a fresh token is
       // confirmed saved, re-run the FULL Staleness→GapFill→Validator/
@@ -160,7 +180,7 @@ function createChartRouter(deps) {
     try {
       await generateToken(authCode);
       if (bustTokenCache) bustTokenCache();
-      await deps.maybeStartTickStream();
+      await deps.maybeStartTickStream({ force: true });
       if (runReauthCheckpoint) {
         runReauthCheckpoint().catch((err) => {
           console.warn("[GapFill] Re-auth checkpoint chain failed:", err.message);
@@ -177,11 +197,54 @@ function createChartRouter(deps) {
   // bundle (which is public). This is a casual deterrent, not real auth —
   // fine for a single-owner tool, but don't reuse this pattern if the app
   // ever has multiple real users who need separate accounts.
-  router.post("/api/admin/verify-pin", (req, res) => {
+  // HARDENED: constant-time compare, 5 attempts / 15 min / IP (middleware/security.js),
+  // and on success returns a signed, expiring token. Every non-GET /api route except
+  // /api/chart/refresh now requires that token (requireAdminForWrites), so the PIN is
+  // no longer just a client-side gate.
+  // Tells the login page which form to show: "credentials" (username+password) or legacy "pin".
+  router.get("/api/admin/auth-mode", (req, res) => res.json({ mode: security.authMode() }));
+
+  // Admin login with a personal username + password (ADMIN_USERS in .env, scrypt-hashed).
+  // 5 failures per IP / 15 min (limiter) AND 5 failures per account / 15 min (lockout).
+  router.post("/api/admin/login", security.pinLimiter, (req, res) => {
+    if (security.authMode() !== "credentials") return res.status(400).json({ ok: false, error: "Username/password login is not enabled on this server." });
+    if (!security.hasSecret()) {
+      console.error("[AdminAuth] ADMIN_SESSION_SECRET is missing or shorter than 32 characters — cannot issue login tokens");
+      return res.status(500).json({ ok: false, error: "Server misconfigured: ADMIN_SESSION_SECRET is not set (min 32 characters). Ask the server owner to fix backend/.env." });
+    }
+    const { username, password } = req.body || {};
+    if (security.isLocked(username)) {
+      console.warn(`[AdminAuth] login blocked (account locked) user=${String(username).slice(0, 32)} ip=${req.ip}`);
+      return res.status(429).json({ ok: false, error: "This account is temporarily locked after too many failed attempts. Try again in 15 minutes." });
+    }
+    const user = security.checkCredentials(username, password);
+    if (!user) {
+      security.recordFailure(username);
+      console.warn(`[AdminAuth] login FAILED user=${String(username).slice(0, 32)} ip=${req.ip}`);
+      return res.status(401).json({ ok: false, error: "Invalid username or password" });
+    }
+    security.recordSuccess(user);
+    const { token, expiresAt } = security.signAdminToken(user);
+    console.log(`[AdminAuth] login ok user=${user} ip=${req.ip}`);
+    res.json({ ok: true, token, expiresAt, user });
+  });
+
+  // Legacy single-PIN login. Disabled automatically once ADMIN_USERS is configured.
+  router.post("/api/admin/verify-pin", security.pinLimiter, (req, res) => {
+    if (security.authMode() === "credentials") return res.status(400).json({ ok: false, error: "PIN login is disabled. Sign in with your username and password." });
     const { pin } = req.body || {};
     const expected = process.env.PIN;
-    if (!expected) return res.status(500).json({ ok: false, error: "PIN not set in backend .env" });
-    res.json({ ok: pin === expected });
+    if (!expected) return res.status(500).json({ ok: false, error: "Admin PIN is not configured on the server" });
+    if (!security.hasSecret()) {
+      // Previously this returned {ok:true, token:null} and the page showed "Incorrect PIN".
+      console.error("[AdminAuth] ADMIN_SESSION_SECRET is missing or shorter than 32 characters — cannot issue login tokens");
+      return res.status(500).json({ ok: false, error: "Server misconfigured: ADMIN_SESSION_SECRET is not set (min 32 characters)." });
+    }
+    const ok = typeof pin === "string" && security.safeEqual(pin, expected);
+    // 401 (not 200) so the limiter below counts it as a failed attempt.
+    if (!ok) return res.status(401).json({ ok: false, error: "Incorrect PIN" });
+    const { token, expiresAt } = security.signAdminToken("admin");
+    res.json({ ok: true, token, expiresAt });
   });
 
   // ── Chart ───────────────────────────────────────────────────────────────────
@@ -195,7 +258,9 @@ function createChartRouter(deps) {
    */
   router.get("/api/chart", async (req, res) => {
     const symbol = req.query.symbol || SYMBOL;
-    const resolution = parseInt(req.query.resolution || RESOLUTION);
+    const resolution = parseResolution(req.query.resolution, RESOLUTION);
+    if (!isValidSymbol(symbol)) return res.status(400).json({ error: "Invalid or missing symbol" });
+    if (resolution == null) return res.status(400).json({ error: "Invalid resolution" });
     if (markBroadcastSymbol) markBroadcastSymbol(symbol);
     const cache = getCache(symbol, resolution);
 
@@ -218,7 +283,9 @@ function createChartRouter(deps) {
         return res.json(buildPayload(cache.candles, cache.result, symbol, resolution));
       }
       console.error("[/api/chart] Error:", err.message);
-      res.status(500).json({ error: err.message });
+      // Internal detail stays in the server log; the client gets a stable message.
+      const authProblem = /access token|APP_ID/i.test(err.message);
+      res.status(authProblem ? 503 : 500).json({ error: authProblem ? "Market-data provider is not authenticated. An admin must log in to Fyers." : "Failed to load chart data" });
     }
   });
 

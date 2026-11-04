@@ -56,7 +56,31 @@ function bustTokenCache() { _tokenCache = { valid: null, at: 0 }; }
 // ─── Config ───────────────────────────────────────────────────────────────────
 // SYMBOL: optional — if set in .env, that symbol is pre-warmed at boot.
 // If not set, the chart loads whatever the first connected client requests.
-const SYMBOL = process.env.SYMBOL || null;
+// FIX (2026-11-04): SYMBOL was used exactly as typed. A bare name such as
+// SYMBOL=SENSEX (instead of BSE:SENSEX-INDEX) is not a Fyers symbol, so the
+// boot pre-warm asked Fyers for "SENSEX" at every resolution — starting with
+// res=1, which is where "Fyers getHistory returned no candles for SENSEX
+// res=1" came from — and the same bad name was pushed into the live tick
+// subscription and the per-socket default symbol. Now a bare index name is
+// mapped to its real symbol via symbols/index.json, and anything else that
+// isn't "EXCH:TICKER" is ignored with a warning.
+function resolveDefaultSymbol(raw) {
+  const v = String(raw || "").trim().toUpperCase();
+  if (!v) return null;
+  const { isValidSymbol } = require("../utils/inputValidation");
+  if (isValidSymbol(v)) return v;
+  try {
+    const { loadIndexSpotSymbols } = require("../derivatives/curatedUnderlyingsLoader");
+    const hit = loadIndexSpotSymbols().find((e) => String(e.name).toUpperCase() === v);
+    if (hit) {
+      console.warn(`[Config] SYMBOL="${raw}" is not a Fyers symbol — using ${hit.symbol}. Put SYMBOL=${hit.symbol} in .env to silence this.`);
+      return hit.symbol;
+    }
+  } catch { /* index.json missing — fall through */ }
+  console.warn(`[Config] SYMBOL="${raw}" is not a valid Fyers symbol (expected e.g. BSE:SENSEX-INDEX) — ignoring it.`);
+  return null;
+}
+const SYMBOL = resolveDefaultSymbol(process.env.SYMBOL);
 // CANDLE_RESOLUTION / CANDLES_TO_FETCH / TICK_WATCHDOG_MS / WATCHDOG_GRACE_MS
 // were removed from .env on 2026-08-06 -- .env now only holds APP_ID,
 // ST_KEY, PIN, and DB credentials. The fallback values below ARE the real

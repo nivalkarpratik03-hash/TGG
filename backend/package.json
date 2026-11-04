@@ -6,20 +6,22 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "db:migrate": "node ../database/src/migrate.js",
-    "db:health": "node ../database/src/healthcheck.js"
+    "db:migrate": "node ../database/src/scripts/migrate.js",
+    "db:health": "node ../database/src/scripts/healthcheck.js"
   },
   "dependencies": {
     "axios": "^1.6.0",
+    "compression": "^1.8.2",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "express-rate-limit": "^7.1.5",
-    "parquetjs-lite": "^0.8.7",
     "fyers-api-v3": "^1.0.0",
+    "helmet": "^8.3.0",
+    "parquetjs-lite": "^0.8.7",
+    "pg": "^8.11.3",
     "socket.io": "^4.6.1",
-    "xlsx": "^0.18.5",
-    "pg": "^8.11.3"
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

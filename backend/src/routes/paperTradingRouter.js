@@ -105,6 +105,7 @@ router.get("/trades", async (req, res) => {
 
 // GET /api/papertrading/report/auto/:date
 router.get("/report/auto/:date", async (req, res) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(req.params.date)) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
   try {
     res.json(await reportGenerator.buildAutoReport(req.params.date));
   } catch (err) {
@@ -114,6 +115,7 @@ router.get("/report/auto/:date", async (req, res) => {
 
 // GET /api/papertrading/report/manual/:date
 router.get("/report/manual/:date", async (req, res) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(req.params.date)) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
   try {
     res.json(await reportGenerator.buildManualReport(req.params.date));
   } catch (err) {
