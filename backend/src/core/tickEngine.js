@@ -16,7 +16,8 @@ const { runSignalEngine } = require("../services/signalEngine");
 const { CandleBuilder } = require("../services/candleBuilder");
 const { TickStream, isLiveMarket, isAnyMarketLive, isTradingDay } = require("../fyers/tickStream");
 const { loadIndexSpotSymbols } = require("../derivatives/curatedUnderlyingsLoader");
-const { fetchCandles } = require("../fyers/client");
+const { fetchCandles, isExcludedSymbol } = require("../fyers/client");
+const { isValidSymbol } = require("../utils/inputValidation");
 const state = require("./state");
 
 function createTickEngine({ io }) {
@@ -286,6 +287,7 @@ function createTickEngine({ io }) {
    * socket has registered via set_underlying. This is the list Fyers WebSocket
    * subscribes to.
    */
+  const _warnedBadTickSymbols = new Set();
   function getActiveTickSymbols() {
     const set = new Set();
     if (SYMBOL) set.add(SYMBOL);
@@ -293,7 +295,18 @@ function createTickEngine({ io }) {
     for (const sym of socketUnderlyings.values()) { if (sym) set.add(sym); }
     for (const sym of state.getLiveBroadcastSymbols()) { set.add(sym); }
     for (const sym of state.getExtraTickSymbols()) { set.add(sym); }
-    return [...set];
+    // Only real Fyers symbols ("EXCH:TICKER") go to the data socket. A bare
+    // name such as SYMBOL=SENSEX in .env (or any symbol that failed the boot
+    // symbol check) used to be sent in the subscribe list; Fyers rejects the
+    // subscription request, so NO symbol in that batch got ticks.
+    return [...set].filter((s) => {
+      if (isValidSymbol(s) && !isExcludedSymbol(s)) return true;
+      if (!_warnedBadTickSymbols.has(s)) {
+        _warnedBadTickSymbols.add(s);
+        console.warn(`[TickStream] Ignoring invalid/excluded symbol "${s}" — not subscribing it to the Fyers socket`);
+      }
+      return false;
+    });
   }
 
   // ── ticksFlowing: true if any subscribed symbol got a tick within watchdog window ─
@@ -337,11 +350,21 @@ function createTickEngine({ io }) {
    * maybeStartTickStream — startup entry point. Uses getActiveTickSymbols() so
    * any symbols already in socketSymbols (from fast-connecting clients) are included.
    */
-  async function maybeStartTickStream() {
+  // opts.force — called right after a new Fyers login: always reopen the
+  // socket so it carries the NEW token (see tickStream.js _connect()).
+  async function maybeStartTickStream(opts = {}) {
     if (!isTradingDay()) { console.log("[TickStream] Weekend — tick stream not needed."); return; }
     const symbols = getActiveTickSymbols();
     if (!isAnyMarketLive(symbols)) { console.log("[TickStream] No active market right now — tick stream not needed."); return; }
-    if (tickStream.isConnected()) { tickStream.setSymbols(symbols); return; }
+    if (opts.force) {
+      const valid = await state.validateToken().catch(() => false);
+      if (!valid) { console.log("[TickStream] Not authenticated — skipping tick stream."); return; }
+      console.log("[TickStream] New Fyers login — reopening data socket with the fresh token");
+      state.lastTickAt = 0; state.lastConnectAt = 0;
+      tickStream.restart(symbols);
+      return;
+    }
+    if (tickStream.isConnected()) { tickStream.start(symbols); return; } // start() re-subscribes, or reconnects if the token changed
     const valid = await state.validateToken().catch(() => false);
     if (!valid) { console.log("[TickStream] Not authenticated — skipping tick stream."); return; }
     tickStream.start(symbols);
@@ -354,7 +377,11 @@ function createTickEngine({ io }) {
   // "market just closed for the day."
   function startTickWatchdog() {
     setInterval(() => {
-      if (!isTradingDay() || !isAnyMarketLive(getActiveTickSymbols()) || !tickStream.isConnected()) return;
+      if (!isTradingDay() || !isAnyMarketLive(getActiveTickSymbols())) return;
+      // Stream gave up (max reconnects) or never started: try again now that
+      // the market is live, instead of staying dead until someone changes
+      // symbol or the process restarts. maybeStartTickStream checks the token.
+      if (!tickStream.isConnected()) { maybeStartTickStream().catch(console.error); return; }
       const now = Date.now();
       if (state.lastConnectAt > 0 && now - state.lastConnectAt < state.WATCHDOG_GRACE_MS) return;
       // Connected but NO tick ever arrived: measure silence from the connect time

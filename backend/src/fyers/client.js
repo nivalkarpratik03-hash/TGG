@@ -442,6 +442,10 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
   }
 
   const allCandles = [];
+  // Remember WHY chunks came back empty. Before, an expired/invalid token or a
+  // bad symbol made every chunk fail, each failure was swallowed as "empty",
+  // and the user only ever saw the misleading "returned no candles" message.
+  let lastProblem = null;
   for (const chunk of chunks) {
     let res;
     try {
@@ -472,19 +476,30 @@ async function fetchCandles(symbol, resolution, count = 10000, lookbackDaysOverr
           ]);
         } catch (err2) {
           console.warn(`[Fyers] Intraday chunk failed again after retry (${err2.message}) — skipping`);
+          lastProblem = err2.message;
           continue;
         }
       } else {
         console.warn(`[Fyers] Intraday chunk failed (${err.message}) — skipping`);
+        lastProblem = err.message;
         continue;
       }
     }
     const parsed = parseIntraday(res);
     if (parsed && parsed.length > 0) allCandles.push(...parsed);
-    else vwarn(`[Fyers] Intraday chunk empty: ${res?.message || res?.errmsg || "unknown"}`);
+    else {
+      vwarn(`[Fyers] Intraday chunk empty: ${res?.message || res?.errmsg || "unknown"}`);
+      if (res && res.s && res.s !== "ok") lastProblem = `${res.code != null ? res.code + " " : ""}${res.message || res.errmsg || res.s}`;
+    }
   }
 
-  if (allCandles.length === 0) throw new Error(`Fyers getHistory returned no candles for ${symbol} res=${fyersResolution}`);
+  if (allCandles.length === 0) {
+    throw new Error(
+      lastProblem
+        ? `Fyers getHistory failed for ${symbol} res=${fyersResolution}: ${lastProblem}`
+        : `Fyers getHistory returned no candles for ${symbol} res=${fyersResolution}`
+    );
+  }
 
   const deduped = dedupSortCandles(allCandles);
 

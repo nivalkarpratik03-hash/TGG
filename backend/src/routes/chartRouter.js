@@ -137,7 +137,7 @@ function createChartRouter(deps) {
     try {
       await generateToken(code);
       if (bustTokenCache) bustTokenCache();  // clear 60s cache so next validateToken is live
-      await deps.maybeStartTickStream();
+      await deps.maybeStartTickStream({ force: true });
 
       // UPDATED 2026-08-06 (items 2, 3, 4, 6): now that a fresh token is
       // confirmed saved, re-run the FULL Staleness→GapFill→Validator/
@@ -180,7 +180,7 @@ function createChartRouter(deps) {
     try {
       await generateToken(authCode);
       if (bustTokenCache) bustTokenCache();
-      await deps.maybeStartTickStream();
+      await deps.maybeStartTickStream({ force: true });
       if (runReauthCheckpoint) {
         runReauthCheckpoint().catch((err) => {
           console.warn("[GapFill] Re-auth checkpoint chain failed:", err.message);

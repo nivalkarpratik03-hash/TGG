@@ -109,6 +109,8 @@ function createWebSocket({ io, tickEngine, dataFetch }) {
       const now = Date.now();
       if (now - lastRefreshAt < REFRESH_MIN_INTERVAL_MS) return;
       lastRefreshAt = now;
+      // Nothing to refresh until the client has told us its symbol.
+      if (!currentSymbol) return;
       // No token check — fetchAndProcess() is DB-first, works without Fyers token.
       // If DB has data → instant. If DB empty + token dead → error emitted below.
       // FIX: error now carries the symbol/resolution it actually failed for, so
