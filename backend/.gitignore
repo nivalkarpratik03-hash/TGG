@@ -1,10 +1,11 @@
 node_modules/
 .env
 .fyers_token
-fyers_access_token.txt
+fyers_access_token*.txt
 fyers_refresh_token.txt
 *.log
 dataset/
 orderflow_data/
 orderflow/data/
 drive_staging/
+parrva_data/

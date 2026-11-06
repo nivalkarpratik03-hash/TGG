@@ -102,6 +102,23 @@ const NAV_ITEMS = [
     tagColor: "green",
     stats: ["Auto Entry per strategy", "Manual Entry", "EOD tradesheets"],
   },
+  // Added 2026-11-05 — PaRRVA live report (test phase: shows the PaRRVA API calls).
+  {
+    id: "parrva",
+    path: "/parrva",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <path d="M3 17l6-6 4 4 8-8" />
+        <polyline points="14 7 21 7 21 14" />
+        <line x1="3" y1="21" x2="21" y2="21" />
+      </svg>
+    ),
+    label: "PaRRVA",
+    description: "Live PaRRVA report — every call with live entry, target, SL, points and depth",
+    tagColor: "purple",
+    tag: "Live",
+    stats: ["Live status & points", "1-min chart + depth", "Daily / Monthly"],
+  },
 ];
 
 export default function HomePage() {

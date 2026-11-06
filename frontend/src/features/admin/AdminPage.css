@@ -191,3 +191,27 @@
   padding: 1px 4px;
   border-radius: 3px;
 }
+
+/* ── 2026-11-05: two Fyers accounts side by side ─────────────────────────── */
+.admin-page-multi { align-items: flex-start; }
+.admin-multi { width: 100%; max-width: 1100px; margin: 24px auto; }
+.admin-multi-header { margin-bottom: 16px; }
+.admin-multi-header h1 { font-family: var(--font-display); font-size: 24px; color: var(--text); margin: 0; }
+.admin-accounts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 20px; align-items: start; }
+.admin-account-card { max-width: none; }
+.admin-account-card .admin-header h1 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-role-chip { font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border2); color: var(--text2); white-space: nowrap; }
+.admin-role-charts { color: var(--green, #22c55e); border-color: currentColor; }
+.admin-role-recorder { color: var(--accent, #7c5cff); border-color: currentColor; }
+.admin-role-note { margin-top: 2px; }
+@media (max-width: 520px) { .admin-multi { margin: 0; } .admin-account-card { padding: 20px; } }
+
+/* ── 2026-11-05: recorder panel on the account-2 card ───────────────────── */
+.admin-rec { margin: 14px 0; padding: 14px; border: 1px solid var(--border2); border-radius: var(--radius); background: var(--bg3); font-size: 12px; color: var(--text2); }
+.admin-rec-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; color: var(--text); font-size: 14px; }
+.admin-rec-grid { display: grid; grid-template-columns: 90px 1fr; gap: 6px 10px; line-height: 1.5; }
+.admin-rec-grid > span:nth-child(odd) { color: var(--text3, var(--text2)); }
+.admin-rec-grid > span:nth-child(even) { color: var(--text); min-width: 0; }
+.admin-rec-syms { word-break: break-all; }
+.admin-rec-actions { display: flex; gap: 8px; margin-top: 12px; }
+.admin-rec-actions .admin-btn { margin-bottom: 0; }
