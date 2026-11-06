@@ -18,6 +18,9 @@
  *   GET  /api/auth/url
  *   POST /api/auth/token
  *   GET  /api/auth/callback   (added 2026-08-13 — auto-redirect flow)
+ *   GET  /api/auth/callback/2 (added 2026-11-05 — second Fyers account, the Recorder)
+ *   GET  /api/auth/accounts   (added 2026-11-05 — nicknames/roles of both Fyers accounts)
+ *        status / url / token take ?acc=2 (or body.acc=2) for the second account; no acc = account 1 as before
  *   POST /api/admin/verify-pin (added 2026-08-13 — /admin page gate)
  *   GET  /api/chart
  *   GET  /api/chart/health    (added 2026-10-02 — read-only candle-continuity check)
@@ -33,6 +36,7 @@ const express = require("express");
 const security = require("../middleware/security");
 const { isValidSymbol, parseResolution } = require("../utils/inputValidation");
 const { getTokenInfo } = require("../fyers/client");
+const fyersAccounts = require("../fyers/accounts");
 
 /**
  * @param {object} deps - injected server-level dependencies
@@ -102,11 +106,49 @@ function createChartRouter(deps) {
   });
 
   // ── Auth ────────────────────────────────────────────────────────────────────
+  // UPDATED 2026-11-05: two Fyers accounts. ?acc=2 (or body.acc=2) selects the second
+  // (Recorder) account from fyers/accounts.js. No acc / acc=1 = the original chart account,
+  // handled with exactly the same functions as before (getAuthURL/generateToken/validateToken
+  // from deps), so the chart side behaves identically.
+  const accFrom = (req) => (req.query && req.query.acc) || (req.body && req.body.acc);
+  const pickAccount = (req, res) => {
+    const acc = fyersAccounts.getAccount(accFrom(req));
+    if (!acc) { res.status(400).json({ error: "Unknown Fyers account" }); return null; }
+    return acc;
+  };
+  const accOps = (acc) => acc.isPrimary
+    ? { validate: validateToken, authUrl: getAuthURL, info: getTokenInfo }
+    : { validate: acc.validateToken, authUrl: acc.getAuthURL, info: acc.getTokenInfo };
+
+  // After a token is saved: account 1 restarts the chart tick stream + re-auth chain (as before);
+  // account 2 only clears its own validation cache - it never touches the chart side.
+  async function afterTokenSaved(acc) {
+    if (!acc.isPrimary) { acc.bustCache(); return; }
+    if (bustTokenCache) bustTokenCache();  // clear 60s cache so next validateToken is live
+    await deps.maybeStartTickStream({ force: true });
+    // UPDATED 2026-08-06 (items 2, 3, 4, 6): re-run the FULL Staleness→GapFill→Validator/
+    // Recovery chain. Fire-and-forget so the HTTP response doesn't block; each step has its
+    // own in-flight guard, so this can never overlap with a scheduled checkpoint.
+    if (runReauthCheckpoint) {
+      runReauthCheckpoint().catch((err) => {
+        console.warn("[GapFill] Re-auth checkpoint chain failed:", err.message);
+      });
+    }
+  }
+
+  router.get("/api/auth/accounts", (req, res) => {
+    res.json({ accounts: fyersAccounts.listAccounts() });
+  });
+
   router.get("/api/auth/status", async (req, res) => {
+    const acc = pickAccount(req, res); if (!acc) return;
     try {
-      const valid = await validateToken();
+      const ops = accOps(acc);
+      const base = { account: { id: acc.id, role: acc.role, nickname: acc.nickname(), configured: acc.configured() } };
+      if (!acc.configured()) return res.json({ ...base, authenticated: false, authUrl: null, tokenInfo: { exists: false } });
+      const valid = await ops.validate();
       // tokenInfo = issued/expiry times only; the token itself is never returned.
-      res.json({ authenticated: valid, authUrl: valid ? null : getAuthURL(), tokenInfo: getTokenInfo() });
+      res.json({ ...base, authenticated: valid, authUrl: valid ? null : ops.authUrl(), tokenInfo: ops.info() });
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
@@ -116,10 +158,12 @@ function createChartRouter(deps) {
   // security boundary: the real protection is that only the Fyers account owner can
   // complete the Fyers login.)
   router.get("/api/auth/url", async (req, res) => {
+    const acc = pickAccount(req, res); if (!acc) return;
     try {
+      const ops = accOps(acc);
       if (req.query.force !== "true") {
-        const info = getTokenInfo();
-        if (info.exists && !info.expired && await validateToken()) {
+        const info = ops.info();
+        if (info.exists && !info.expired && await ops.validate()) {
           return res.status(409).json({
             alreadyAuthenticated: true,
             tokenInfo: info,
@@ -127,31 +171,17 @@ function createChartRouter(deps) {
           });
         }
       }
-      res.json({ url: getAuthURL() });
+      res.json({ url: ops.authUrl() });
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
   router.post("/api/auth/token", async (req, res) => {
+    const acc = pickAccount(req, res); if (!acc) return;
     const { code } = req.body;
     if (!code) return res.status(400).json({ error: "auth_code required" });
     try {
-      await generateToken(code);
-      if (bustTokenCache) bustTokenCache();  // clear 60s cache so next validateToken is live
-      await deps.maybeStartTickStream({ force: true });
-
-      // UPDATED 2026-08-06 (items 2, 3, 4, 6): now that a fresh token is
-      // confirmed saved, re-run the FULL Staleness→GapFill→Validator/
-      // Recovery chain (not just the old spot-only catch-up). Fire-and-
-      // forget (not awaited) so this HTTP response doesn't block for
-      // however long the full chain takes — each of the three steps has
-      // its own in-flight guard, so this can never overlap with a
-      // scheduled checkpoint or another re-auth already in progress.
-      if (runReauthCheckpoint) {
-        runReauthCheckpoint().catch((err) => {
-          console.warn("[GapFill] Re-auth checkpoint chain failed:", err.message);
-        });
-      }
-
+      await (acc.isPrimary ? generateToken(code) : acc.generateToken(code));
+      await afterTokenSaved(acc);
       res.json({ success: true, message: "Token saved successfully" });
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
@@ -162,9 +192,12 @@ function createChartRouter(deps) {
   // with ?auth_code=... after login instead of the generic Fyers page, so
   // the admin never has to copy-paste anything — just does the exchange
   // itself and bounces the browser straight back to the frontend admin page.
-  router.get("/api/auth/callback", async (req, res) => {
+  // 2026-11-05: /api/auth/callback/2 is account 2's Redirect URL. The plain
+  // callback also honours state=acc2, in case both Fyers apps register the same URL.
+  async function handleCallback(req, res, forcedAcc) {
     const feUrl = (FRONTEND_URL || "").replace(/\/$/, "");
     const authCode = req.query.auth_code || req.query.code;
+    const acc = fyersAccounts.getAccount(forcedAcc || (req.query.state === "acc2" ? 2 : 1));
 
     if (!feUrl) {
       // Misconfigured — nowhere sensible to redirect to, so fail loudly
@@ -174,23 +207,19 @@ function createChartRouter(deps) {
       );
     }
     if (!authCode) {
-      return res.redirect(`${feUrl}/admin?auth=error&msg=${encodeURIComponent("No auth_code received from Fyers")}`);
+      return res.redirect(`${feUrl}/admin?auth=error&acc=${acc.id}&msg=${encodeURIComponent("No auth_code received from Fyers")}`);
     }
 
     try {
-      await generateToken(authCode);
-      if (bustTokenCache) bustTokenCache();
-      await deps.maybeStartTickStream({ force: true });
-      if (runReauthCheckpoint) {
-        runReauthCheckpoint().catch((err) => {
-          console.warn("[GapFill] Re-auth checkpoint chain failed:", err.message);
-        });
-      }
-      res.redirect(`${feUrl}/admin?auth=success`);
+      await (acc.isPrimary ? generateToken(authCode) : acc.generateToken(authCode));
+      await afterTokenSaved(acc);
+      res.redirect(`${feUrl}/admin?auth=success&acc=${acc.id}`);
     } catch (err) {
-      res.redirect(`${feUrl}/admin?auth=error&msg=${encodeURIComponent(err.message)}`);
+      res.redirect(`${feUrl}/admin?auth=error&acc=${acc.id}&msg=${encodeURIComponent(err.message)}`);
     }
-  });
+  }
+  router.get("/api/auth/callback", (req, res) => handleCallback(req, res, null));
+  router.get("/api/auth/callback/2", (req, res) => handleCallback(req, res, 2));
 
   // Added 2026-08-13 — lightweight gate for the /admin page. Checks the PIN
   // server-side against .env so the real value never ships in the frontend

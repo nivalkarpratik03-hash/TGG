@@ -1,0 +1,5 @@
+{
+  "watch": ["src"],
+  "ext": "js,json",
+  "ignore": ["parrva_data/**", "orderflow_data/**", "*.jsonl", "*.parquet", "src/**/*.test.js"]
+}

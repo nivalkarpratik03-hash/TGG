@@ -136,6 +136,7 @@ app.use("/api/scanner", scannerRouter);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/data-export", dataExportRouter({ io }));
 app.use("/api/papertrading", paperTradingRouter);
+app.use("/api/parrva", require("./routes/parrvaRouter")());   // 2026-11-05 PaRRVA test phase (read-only proxy)
 
 // ─── Readiness probe (liveness is /health; this one also proves the DB works) ─
 // Use /ready for load-balancer / orchestrator health checks that should pull the
@@ -251,6 +252,12 @@ server.listen(PORT, async () => {
   } catch (err) {
     console.error("[PaperTrading] Failed to initialize:", err.message);
   }
+
+  // 2026-11-05 — live PaRRVA report: PaRRVA poller + recorder (Fyers account 2, own child process).
+  // PARRVA_LIVE=false turns the whole thing off.
+  if (process.env.PARRVA_LIVE !== "false") {
+    try { require("./parrva").getParrvaLive().start(); } catch (err) { console.error("[PaRRVA] failed to start:", err.message); }
+  }
 });
 
 // ─── Process-level safety nets + graceful shutdown ───────────────────────────
@@ -273,6 +280,7 @@ function shutdown(signal, code = 0) {
   const force = setTimeout(() => { console.error("[Shutdown] forced exit after 15s"); process.exit(code || 1); }, 15_000);
   force.unref();
   try { io.close(); } catch { /* ignore */ }
+  try { require("./parrva").getParrvaLive().stop(); } catch { /* ignore */ }
   server.close(async () => {
     try { await require("../../database/src/pool").pool.end(); } catch { /* ignore */ }
     console.log("[Shutdown] clean exit");
