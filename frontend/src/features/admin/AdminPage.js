@@ -186,6 +186,7 @@ export default function AdminPage() {
               />
             ))}
         </div>
+        <SystemStatus />
       </div>
     </div>
   );
@@ -480,11 +481,6 @@ function RecorderPanel() {
 
   if (!info) return <div className="admin-rec">{err || "Loading recorder status…"}</div>;
   const ageS = info.lastTickAt ? Math.round((now - new Date(info.lastTickAt).getTime()) / 1000) : null;
-  const pill = info.recording && ageS !== null && ageS < 30
-    ? ["ok", "Recording"]
-    : info.running
-      ? ["pending", info.dataConnected ? "Connected, waiting for ticks" : "Starting…"]
-      : ["bad", "Not recording"];
   const c = info.counts || {};
   const fmtN = (x) => (Number(x) || 0).toLocaleString("en-IN");
   const modeText = info.mode === "auto" ? `Auto (${info.schedule})` : info.mode === "manual-on" ? "Started by hand (today)" : info.mode === "manual-off" ? "Stopped by hand (today)" : "Auto start is off";
@@ -493,7 +489,7 @@ function RecorderPanel() {
     <div className="admin-rec">
       <div className="admin-rec-head">
         <strong>Recorder</strong>
-        <span className={`admin-status-pill admin-status-${pill[0]}`}>{pill[1]}</span>
+        <span className="admin-sub" style={{ margin: 0 }}>Status: see System status below</span>
       </div>
       <div className="admin-rec-grid">
         <span>Mode</span><span>{modeText}</span>
@@ -505,7 +501,7 @@ function RecorderPanel() {
         <span>Folder</span><span className="admin-rec-syms">{info.outDir}</span>
         <span>Parquet</span><span>{info.exporting || info.stopping ? "writing index / futures / options.parquet…" : info.lastExport ? (info.lastExport.ok ? `written ${new Date(info.lastExport.at).toLocaleTimeString("en-IN")}${info.lastExport.files ? " · " + info.lastExport.files.map((f) => `${f.file} ${fmtN(f.rows)} rows`).join(" · ") : ""}` : `failed${info.lastExport.error ? ": " + info.lastExport.error : ""}`) : "written automatically when the recorder stops after 15:25"}</span>
         {!info.running && info.lastExit && <><span>Last stop</span><span>{info.lastExit.why}{info.lastExit.code !== null && info.lastExit.code !== undefined ? ` (exit code ${info.lastExit.code})` : ""}{info.lastExit.at ? ` at ${new Date(info.lastExit.at).toLocaleTimeString("en-IN")}` : ""}</span></>}
-        {!info.accountReady && <><span>Note</span><span style={{ color: "#f5a524" }}>Log in this account first — the recorder only runs with a valid token.</span></>}
+        {!info.accountReady && <><span>Note</span><span>Log in this account first — the recorder only runs with a valid token.</span></>}
       </div>
       {(info.log || []).length > 0 && (
         <details className="admin-rec-log" open={!info.recording}>
@@ -520,6 +516,137 @@ function RecorderPanel() {
         <button className="admin-btn" disabled={busy || info.mode === "auto"} onClick={() => setMode("auto")} title="Go back to the automatic schedule">Auto</button>
         <button className="admin-btn" disabled={busy || info.exporting || info.stopping} onClick={() => setMode("export")} title="Write today's 3 Parquet files now (stops the recorder first if it is running)">Export Parquet</button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * System status (2026-11-07). One calm list of everything that runs in the background:
+ * Fyers logins, recorder, PaRRVA webhook and checks, Telegram alerts.
+ * GET /api/parrva/system every 10 s (no Fyers or PaRRVA call behind it).
+ * "Check now" = POST /api/parrva/check (one PaRRVA API call, max once per 20 s).
+ */
+function SystemStatus() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch(`${BACKEND}/api/parrva/system`);
+      const d = await r.json();
+      if (!r.ok || d.ok === false) throw new Error(d.error || `HTTP ${r.status}`);
+      setData(d);
+      setErr("");
+    } catch (e) {
+      setErr(`Could not read system status: ${e.message}`);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 10000);
+    return () => clearInterval(id);
+  }, [load]);
+
+  async function post(path, body, label) {
+    setBusy(label);
+    setMsg("");
+    try {
+      const r = await fetch(`${BACKEND}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (label === "check") {
+        setMsg(!r.ok || d.ok === false ? (d.error || `Check failed (HTTP ${r.status})`)
+          : d.missing || d.stale ? `Checked: ${d.missing} new and ${d.stale} changed call(s) were missing and are now fixed.`
+            : "Checked: everything matches the PaRRVA list.");
+      } else if (label === "test") {
+        setMsg(r.ok && d.ok ? "Test message sent to Telegram." : `Test message failed: ${d.error || `HTTP ${r.status}`}`);
+      } else if (!r.ok || d.ok === false) setMsg(d.error || `Failed (HTTP ${r.status})`);
+    } catch (e) {
+      setMsg(e.message);
+    } finally {
+      setBusy("");
+      load();
+    }
+  }
+
+  if (!data) return <div className="admin-sys"><h2 className="admin-sys-title">System status</h2><p className="admin-sub">{err || "Loading…"}</p></div>;
+  const al = data.alerts || {};
+  return (
+    <div className="admin-sys">
+      <div className="admin-sys-top">
+        <h2 className="admin-sys-title">System status</h2>
+        <span className="admin-sys-note">
+          {data.mode === "webhook" ? "PaRRVA: webhook" : "PaRRVA: polling"} · checked {new Date(data.at).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false })} IST
+        </span>
+      </div>
+      {err && <div className="admin-error">{err}</div>}
+      <div className="admin-sys-summary">
+        <span className={`admin-dot admin-dot-${data.summary.state}`} />
+        <div className="admin-sys-text">
+          <strong>{data.summary.title}</strong>
+          <div className="admin-sys-detail">{data.summary.detail}</div>
+        </div>
+      </div>
+      {data.groups.map((g) => (
+        <div className="admin-sys-group" key={g.key}>
+          <div className="admin-sys-gh">{g.title}</div>
+          <div className="admin-sys-card">
+            {g.rows.map((r) => (
+              <div className="admin-sys-row" key={r.key}>
+                <span className={`admin-dot admin-dot-${r.state}`} title={r.state} />
+                <div className="admin-sys-text">
+                  <div className="admin-sys-name">{r.name}</div>
+                  <div className="admin-sys-detail">{r.detail}</div>
+                  {r.action === "check" && (
+                    <button className="admin-sys-btn" disabled={!!busy} onClick={() => post("/api/parrva/check", {}, "check")}>
+                      {busy === "check" ? "Checking…" : "Check now"}
+                    </button>
+                  )}
+                </div>
+                <div className={`admin-sys-val ${r.state === "bad" ? "is-bad" : ""}`}>{r.value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+      <div className="admin-sys-group">
+        <div className="admin-sys-gh">Alerts</div>
+        <div className="admin-sys-card">
+          <div className="admin-sys-row">
+            <span className={`admin-dot admin-dot-${al.configured ? (al.enabled ? "ok" : "off") : "off"}`} />
+            <div className="admin-sys-text">
+              <div className="admin-sys-name">Telegram alert when something turns red</div>
+              <div className="admin-sys-detail">
+                {al.configured
+                  ? "One message per problem, one when it is fixed. Login reminder at 08:45 if an account is not logged in."
+                  : "Not set up: add ALERT_TELEGRAM_BOT_TOKEN and ALERT_TELEGRAM_CHAT_ID to the backend .env."}
+                {al.lastError ? ` Last send failed: ${al.lastError}.` : ""}
+              </div>
+              <div className="admin-sys-actions">
+                <button className="admin-sys-btn" disabled={!!busy || !al.configured} onClick={() => post("/api/parrva/alerts", { enabled: !al.enabled }, "toggle")}>
+                  {al.enabled ? "Turn off" : "Turn on"}
+                </button>
+                <button className="admin-sys-btn" disabled={!!busy || !al.configured} onClick={() => post("/api/parrva/alerts/test", {}, "test")}>
+                  {busy === "test" ? "Sending…" : "Send test"}
+                </button>
+                {data.mode === "webhook" && (
+                  <button className="admin-sys-btn" disabled={!!busy} onClick={() => post("/api/parrva/check", {}, "check")}>
+                    {busy === "check" ? "Checking…" : "Check PaRRVA now"}
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="admin-sys-val">{!al.configured ? "not set up" : al.enabled ? "on" : "off"}</div>
+          </div>
+        </div>
+      </div>
+      {msg && <div className="admin-sys-msg">{msg}</div>}
     </div>
   );
 }

@@ -2,8 +2,8 @@
  * backend/src/parrva/marketData.js  (NEW 2026-11-05)
  * ─────────────────────────────────────────────────────────────────────────────
  * Fyers REST helpers for the live PaRRVA report, using the SECOND Fyers account
- * (Recorder). If account 2 has no token yet, REST falls back to account 1 so the
- * page still works (only a handful of calls: option-chain lookups and 1-minute history).
+ * (Recorder) only. Account 1 (charts) is never used here. If account 2 is not logged in,
+ * nothing is sent to Fyers (only a handful of calls anyway: option-chain lookups and 1-minute history).
  *
  *   resolveSymbol(rec)   PaRRVA call -> real Fyers symbol, e.g. NIFTY 24350 CE 2026-11-09 -> NSE:NIFTY2611924350CE
  *                        (read from Fyers' own option chain, never built by hand, so weekly/monthly formats are always right)
@@ -53,19 +53,17 @@ function queued(fn) {
   return p;
 }
 
-/** Which account REST uses right now: account 2 if it has a token, else account 1. */
+/**
+ * PaRRVA REST (symbol lookup, 1-minute history) uses ONLY account 2 (the recorder account).
+ * Account 1 is kept for charts, so its rate limit is never touched here (2026-11-09).
+ * No token or an expired token -> nothing is sent to Fyers; the caller shows "account 2 not logged in".
+ */
+const NOT_LOGGED_IN = "Account 2 (recorder) is not logged in or its token expired - log in on the Admin page";
 function restClient() {
   const a2 = accounts.account2;
-  if (a2.configured() && a2.loadToken()) return { client: a2.getClient(), account: 2 };
-  const { fyersModel } = require("fyers-api-v3");
-  const client = require("../fyers/client");
-  const token = client.loadToken();
-  if (!token || !process.env.APP_ID) throw new Error("No Fyers token (log in account 2 on the Admin page)");
-  const f = new fyersModel({ path: "", enableLogging: false });
-  f.setAppId(process.env.APP_ID);
-  f.setRedirectUrl(client.getRedirectUri());
-  f.setAccessToken(token);
-  return { client: f, account: 1 };
+  const info = a2.configured() ? a2.getTokenInfo() : null;
+  if (!info || !info.exists || info.expired) throw new Error(NOT_LOGGED_IN);
+  return { client: a2.getClient(), account: 2 };
 }
 
 // underlying|expiry -> { at, map: "strike|CE" -> symbol }
@@ -132,4 +130,4 @@ async function fetchMinuteCandles(symbol, fromMs, toMs) {
     .map((c) => ({ t: Number(c[0]), o: Number(c[1]), h: Number(c[2]), l: Number(c[3]), c: Number(c[4]), v: Number(c[5]) || 0 }));
 }
 
-module.exports = { resolveSymbol, fetchMinuteCandles, underlyingSymbol, restClient };
+module.exports = { resolveSymbol, fetchMinuteCandles, underlyingSymbol, restClient, NOT_LOGGED_IN };

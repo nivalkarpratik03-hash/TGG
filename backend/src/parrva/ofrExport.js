@@ -107,7 +107,7 @@ const kindOf = (role) => (role === "fut" ? "futures" : role === "index" ? "index
 async function exportParquet(outDir, destDir, log = console.log) {
   const parquet = require("parquetjs-lite");
   const pdir = path.join(outDir, "parquet"); fs.mkdirSync(pdir, { recursive: true });
-  for (const f of fs.readdirSync(pdir)) if (f.endsWith(".parquet")) fs.unlinkSync(path.join(pdir, f));   // never mix with an older export
+  for (const f of fs.readdirSync(pdir)) if (f.endsWith(".parquet") || f === "export.json") fs.unlinkSync(path.join(pdir, f));   // never mix with an older export
   const roles = new Map(); for await (const e of jsonlRows(path.join(outDir, "events.jsonl"))) if (e.event === "track") roles.set(e.sym, e.role);
   // ADDED: expiry per option symbol (the day's main expiry from the "start" event, other expiries from "expiry" events).
   const dayIso = /^\d{4}-\d{2}-\d{2}$/.test(path.basename(outDir)) ? path.basename(outDir) : istDate(Date.now());
@@ -166,6 +166,13 @@ async function exportParquet(outDir, destDir, log = console.log) {
     log(`  copied to ${dd} ${allOk ? "- sizes and row counts re-checked OK" : "- CHECK FAILED"}`);
   }
   log(allOk ? `PARQUET COMPLETE: ${report.length} files in ${pdir}` : "PARQUET: some checks failed - see FAIL lines");
+  // ADDED 2026-11-13: "export finished and checked" marker - driveUpload.js only uploads a folder that has it.
+  if (allOk) {
+    try {
+      const files = report.map((x) => ({ file: x.file, rows: x.rows, size: fs.statSync(path.join(pdir, x.file)).size }));
+      fs.writeFileSync(path.join(pdir, "export.json"), JSON.stringify({ ok: true, day: dayIso, at: new Date().toISOString(), files }));
+    } catch (e) { log("could not write export.json:", e.message); }
+  }
   return { ok: allOk, report, dir: pdir };
 }
 

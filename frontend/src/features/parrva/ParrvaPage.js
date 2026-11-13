@@ -82,10 +82,6 @@ export default function ParrvaPage() {
     loadLive();
   };
 
-  const rec = live && live.recorder;
-  const recAge = rec && rec.lastTickAt ? Date.now() - new Date(rec.lastTickAt).getTime() : null;
-  const recOn = rec && rec.recording && recAge !== null && recAge < 30000;
-
   return (
     <div className="pv-page">
       <header className="pv-header">
@@ -98,9 +94,6 @@ export default function ParrvaPage() {
           </div>
         </div>
         <div className="pv-header-right">
-          <span className={`pv-rec ${recOn ? "on" : ""}`} title={rec ? `${rec.mode} · ${rec.schedule}` : ""}>
-            <span className="pv-dot" />{recOn ? "Recording" : rec && rec.running ? "Recorder starting" : "Not recording"}
-          </span>
           <button className="pv-btn" onClick={refreshNow}>Refresh</button>
         </div>
       </header>
@@ -116,7 +109,7 @@ export default function ParrvaPage() {
               <span key={sym} className="pv-index">{sym.replace(/^NSE:|^BSE:|-INDEX$/g, "")} <strong>{f2(x.ltp)}</strong> <span className={pnlClass(x.chp)}>{signed(x.chp)}%</span></span>
             ))}
             <div className="pv-meta">
-              {live && live.feed && <>PaRRVA checked {time(live.feed.lastOkAt)} (every {live.feed.pollSec}s){live.feed.lastError ? ` · last error: ${live.feed.lastError}` : ""}</>}
+              {live && live.feed && <>PaRRVA checked {time(live.feed.lastOkAt)} ({live.feed.mode === "webhook" ? "webhook" : `every ${live.feed.pollSec}s`}){live.feed.lastError ? ` · last error: ${live.feed.lastError}` : ""}</>}
             </div>
           </section>
 

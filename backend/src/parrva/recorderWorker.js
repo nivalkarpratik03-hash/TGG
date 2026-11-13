@@ -76,7 +76,7 @@ async function withRateRetry(fn, { tries = 15, waitMs = 1200 } = {}) {
     try { const r = await fn(); if (r && typeof r === "object" && r.s === "error" && isRateLimit(r)) throw r; return r; }
     catch (e) {
       if (!isRateLimit(e) || i >= tries) throw e;
-      if (i === 1) log(`Fyers request limit hit - waiting (${(e && e.message) || e})`.slice(0, 200));
+      if (i === 1) log(`Fyers request limit hit on account 2 - waiting (${(e && e.message) || JSON.stringify(e)})`.slice(0, 220));
       await sleep((isMinuteLimit(e) ? 15000 : waitMs) + Math.floor(Math.random() * 400));   // per-minute limit: wait it out
     }
   }
@@ -206,7 +206,9 @@ async function main() {
   };
   await loadChain(20);
   const atm = new AtmTracker({ step: STEP, hyst: 5, dwellMs: 30000 });
-  const atm0 = atm.init(futLtp, Date.now());
+  // ATM follows the INDEX price, like the Telegram bot (checked on its 06 Nov files: its 50-level strike is within
+  // 35 points of the index 98% of the time, but only 41% of the time of the future).
+  const atm0 = atm.init(spot, Date.now());
   const p0 = chainMap.get(atm0);
   if (!p0 || !p0.CE || !p0.PE) throw new Error(`ATM strike ${atm0} CE/PE not found in the option chain`);
   const winSyms = new Set(), winList = [];
@@ -237,7 +239,7 @@ async function main() {
   };
 
   rec = new Recorder({
-    outDir, engineDepth: "dp", saveRebuilt: true, atmRole: "fut", atm, useTbt: useTbt && typeof fyersTbtSocket === "function", dataGraceSec: 20, windowSyms: winSyms, expiryMs,
+    outDir, engineDepth: "dp", saveRebuilt: true, atmRole: "index", atm, useTbt: useTbt && typeof fyersTbtSocket === "function", dataGraceSec: 20, windowSyms: winSyms, expiryMs,
     resolveStrike: async (strike) => {
       let p = chainMap.get(strike);
       if (!p || !p.CE || !p.PE) { await loadChain(40); p = chainMap.get(strike); }
@@ -248,7 +250,7 @@ async function main() {
   rec.track(INDEX, "index"); rec.track(fut, "fut"); rec.track(p0.CE, "ce", { strike: atm0 }); rec.track(p0.PE, "pe", { strike: atm0 });
   for (const [k, pp] of winList) { rec.track(pp.CE, "ce", { strike: k }); rec.track(pp.PE, "pe", { strike: k }); }
   rec.cur = { strike: atm0, ce: p0.CE, pe: p0.PE };
-  rec.ev("start", { fut, index: INDEX, atm: atm0, ce: p0.CE, pe: p0.PE, expiry: cyc.date, expiry_type: cycType, atm_ref: "fut", engine_depth: "dp", tbt: rec.cfg.useTbt, recorder: "dashboard (account 2)" });
+  rec.ev("start", { fut, index: INDEX, atm: atm0, ce: p0.CE, pe: p0.PE, expiry: cyc.date, expiry_type: cycType, atm_ref: "index", engine_depth: "dp", tbt: rec.cfg.useTbt, recorder: "dashboard (account 2)" });
 
   // Dashboard hooks: the Recorder writes the files, we only keep the latest values for the page.
   const oq = rec.onQuote.bind(rec), od = rec.onDepth5.bind(rec), ot = rec.onTbt.bind(rec);
@@ -269,7 +271,16 @@ async function main() {
     if (rem.length || add.length) rec.ev("parrva_tbt", { add, remove: rem, extra: [...extraTbt] });
   };
   const roll = rec.rollAtm.bind(rec);
-  rec.rollAtm = async (...a) => { const r = await roll(...a); applyExtraTbt(null); return r; };   // ATM switch may drop a PaRRVA symbol -> re-add
+  // Fyers allows 5 symbols on the 50-level socket. The ATM switch subscribes the new pair BEFORE it drops the old one
+  // (3 -> 5 -> 3), so the PaRRVA extras must be released first, otherwise it is 7 and Fyers answers
+  // "symbol count exceeds limit: 5". They are added back right after the switch.
+  rec.rollAtm = async (...a) => {
+    const keep = [...extraTbt];
+    if (keep.length && rec.cfg.useTbt) { tbtIo.unsub(keep); extraTbt.clear(); rec.ev("parrva_tbt_pause", { remove: keep, note: "ATM switch needs 2 free 50-level slots" }); }
+    let r = false;
+    try { r = await roll(...a); } finally { applyExtraTbt(keep); }
+    return r;
+  };
   const known = new Set();
   const onSubscribe = (msg) => {
     for (const s of msg.symbols || []) {
@@ -436,7 +447,8 @@ process.on("SIGTERM", () => finish("SIGTERM"));
 process.on("SIGINT", () => finish("SIGINT"));
 
 main().catch((e) => {
-  log("recorder could not start:", e && e.message ? e.message : e);
+  const why = e && e.message ? e.message : (() => { try { return JSON.stringify(e); } catch { return String(e); } })();
+  log("recorder could not start:", why, "- the manager tries again in 30 s");
   clearInterval(report); clearInterval(hb);
   setTimeout(() => process.exit(1), 200);
 });

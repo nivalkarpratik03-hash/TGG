@@ -69,6 +69,13 @@ const io = new Server(server, {
 // ─── Middleware ───────────────────────────────────────────────────────────────
 security.applySecurity(app);                 // helmet + compression + x-powered-by off
 app.use(corsMiddleware);
+// 2026-11-07 PaRRVA webhook: before express.json / rateLimiter / admin gate, because its HMAC
+// signature is checked on the raw bytes and PaRRVA has no admin token (see parrva/webhook.js).
+{
+  const parrvaWebhook = require("./parrva/webhook");
+  app.post("/api/parrva/webhook", parrvaWebhook.limiter, express.raw({ type: () => true, limit: "64kb" }),
+    parrvaWebhook.createWebhookHandler(() => require("./parrva").getParrvaLive().feed));
+}
 app.use(express.json({ limit: "100kb" })); // parse JSON body — needed for req.body.socketId in /refresh
 app.use(rateLimiter);
 app.use(security.requireAdminForWrites);   // every non-GET /api call needs an admin token (see middleware/security.js)

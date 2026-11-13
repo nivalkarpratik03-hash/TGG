@@ -3,7 +3,8 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * The live PaRRVA report service. One instance per backend process (createParrvaLive()).
  *
- *   feed      parrvaFeed.js       PaRRVA API, polled by the backend only (60 s in market hours)
+ *   feed      parrvaFeed.js       PaRRVA calls: webhook (webhook.js) + API checks, or API polling
+ *   alerts    alerts.js           Telegram alerts from the Admin page status (systemStatus.js)
  *   symbols   marketData.js       each of today's calls -> its real Fyers option symbol
  *   recorder  recorderManager.js  child process on Fyers account 2: ticks, 5- and 50-level depth, files
  *   candles   here                1-minute candles per symbol: Fyers history (REST) + live recorder candles
@@ -16,6 +17,7 @@
  *   candles/<date>.json           the day's 1-minute candles (saved every 5 min and at the end of the day)
  *   secbars/<date>.json           the day's 1-second bars per option + how far the tick file was read
  *   results/<date>.json           final status of every call of that day (written after 15:31 IST)
+ *                                 + the same rows in Postgres table parrva_results (resultsDb.js), used when the file is gone
  *   recordings/<date>/*.jsonl     raw recorder files (quotes, depth5, depth50, events)
  */
 "use strict";
@@ -28,6 +30,9 @@ const { RecorderManager } = require("./recorderManager");
 const market = require("./marketData");
 const { evaluate, summarize } = require("./tradeStatus");
 const { TickStore, pastStore } = require("./tickStore");
+const { Alerts } = require("./alerts");
+const { ResultsDb } = require("./resultsDb");
+const { DriveUpload } = require("./driveUpload");
 
 // Bump when the status rules change, so the day's results file is rewritten with the new rules.
 const RULES_VERSION = 4;   // 4 = tick-level checks + AVOIDED + points from the band (05 Nov 2026)
@@ -48,6 +53,9 @@ class ParrvaLive {
     this.started = false;
     this.loadCandles(this.candleDay);
     this.ticks = new TickStore(this.candleDay);
+    this.alerts = new Alerts(this);   // Telegram alerts from the Admin page status (2026-11-07)
+    this.db = new ResultsDb();        // final results in Postgres (2026-11-13)
+    this.drive = new DriveUpload(this);   // Parquet -> Google Drive, then old recordings deleted (2026-11-13)
   }
 
   start() {
@@ -57,19 +65,35 @@ class ParrvaLive {
     this.recorder.on("candles", (cs) => this.mergeLive(cs));
     this.feed.start();
     this.recorder.startLoop();
+    this.alerts.start();
+    this.openDb();
+    this.drive.start();
     const every = (ms, fn) => { const t = setInterval(() => { Promise.resolve().then(fn).catch((e) => console.warn("[PaRRVA]", e.message)); }, ms); if (t.unref) t.unref(); this.timers.push(t); };
     every(120000, () => this.restRefresh());      // heal gaps with Fyers history (only symbols that need it)
     every(300000, () => this.saveCandles());      // keep today's candles on disk
     every(60000, () => this.endOfDay());          // results file after the close
     every(60000, () => this.sync());              // new day / token now valid / unresolved symbols retry
+    every(600000, () => { if (this.db.enabled() && !this.db.ready) return this.openDb(); return null; });   // database came back
     console.log("[PaRRVA] live report service started");
   }
 
   stop() {
     this.timers.forEach(clearInterval);
+    this.alerts.stop();
+    this.drive.stop();
     this.feed.stop();
     this.recorder.stop("backend shutting down");
     this.saveCandles();
+  }
+
+  /** Open the results table and copy in any results files it does not have yet. */
+  openDb() {
+    if (this._dbOpening) return this._dbOpening;
+    this._dbOpening = this.db.init()
+      .then((ok) => (ok ? this.db.backfillFrom(path.join(U.dataRoot(), "results"), (d) => this.recorder.firstStartOf(d)) : 0))
+      .catch((e) => console.warn("[PaRRVA DB]", e.message))
+      .finally(() => { this._dbOpening = null; });
+    return this._dbOpening;
   }
 
   // ── symbols + subscriptions ───────────────────────────────────────────────
@@ -86,21 +110,31 @@ class ParrvaLive {
     this.resolving = (async () => {
       const calls = this.feed.today();
       for (const und of new Set(calls.map((r) => market.underlyingSymbol(r.underlying)).filter(Boolean))) {
-        if (this.needsBackfill(und)) await this.backfill(und).catch((e) => console.warn(`[PaRRVA] history ${und}: ${e.message}`));
+        if (this.needsBackfill(und)) await this.backfill(und).catch((e) => this.warnOnce(e.message, `history ${und}`));
       }
       for (const rec of calls) {
         const known = this.symbolOf.get(rec.id);
         const sameContract = known && known.key === `${rec.underlying}|${rec.expiry}|${rec.strike}|${rec.cp}`;
         if (sameContract && (known.symbol || Date.now() - known.at < 5 * 60 * 1000)) continue;
         const r = await market.resolveSymbol(rec);
-        this.symbolOf.set(rec.id, { ...r, key: `${rec.underlying}|${rec.expiry}|${rec.strike}|${rec.cp}`, at: Date.now() });
+        // Not logged in: nothing was sent to Fyers, so look again on the next sync (every 60 s) instead of in 5 min.
+        this.symbolOf.set(rec.id, { ...r, key: `${rec.underlying}|${rec.expiry}|${rec.strike}|${rec.cp}`, at: r.error === market.NOT_LOGGED_IN ? 0 : Date.now() });
         if (r.symbol && this.savedSymbols[rec.id] !== r.symbol) { this.savedSymbols[rec.id] = r.symbol; U.writeJson(this.symbolsFile, this.savedSymbols); }
-        if (r.symbol && this.needsBackfill(r.symbol)) await this.backfill(r.symbol).catch((e) => console.warn(`[PaRRVA] history ${r.symbol}: ${e.message}`));
-        if (r.error) console.warn(`[PaRRVA] ${rec.name} ${rec.label}: ${r.error}`);
+        if (r.symbol && this.needsBackfill(r.symbol)) await this.backfill(r.symbol).catch((e) => this.warnOnce(e.message, `history ${r.symbol}`));
+        if (r.error) this.warnOnce(r.error, `${rec.name} ${rec.label}`);
       }
       this.pushSubscriptions(calls);
     })().finally(() => { this.resolving = null; });
     return this.resolving;
+  }
+
+  /** Same error for many calls (e.g. no valid token) -> one line per 30 min, not one per call. */
+  warnOnce(error, what) {
+    if (!this.warned) this.warned = new Map();
+    const last = this.warned.get(error);
+    if (last && Date.now() - last < 30 * 60000) return;
+    this.warned.set(error, Date.now());
+    console.warn(`[PaRRVA] ${what}: ${error}${last === undefined ? "" : " (still failing)"} - same error for other calls is hidden for 30 min`);
   }
 
   pushSubscriptions(calls = this.feed.today()) {
@@ -180,7 +214,7 @@ class ParrvaLive {
       if (!["WAITING", "OPEN", "NO_DATA"].includes(st)) continue;
       const last = this.restAt.get(s.symbol) || 0;
       if (recording && Date.now() - last < 15 * 60 * 1000) continue;   // recorder covers it; heal gaps every 15 min
-      await this.backfill(s.symbol).catch((e) => console.warn(`[PaRRVA] history ${s.symbol}: ${e.message}`));
+      await this.backfill(s.symbol).catch((e) => this.warnOnce(e.message, `history ${s.symbol}`));
     }
   }
   candleFile(day) { return path.join(U.dataRoot(), "candles", `${day}.json`); }
@@ -287,7 +321,8 @@ class ParrvaLive {
     if (!this._resCache) this._resCache = new Map();
     const hit = this._resCache.get(day);
     if (hit && Date.now() - hit.at < 60000) return hit.data;
-    const data = U.readJson(this.resultsFile(day), null);
+    // the results file first; the database copy when the file is gone (recordings cleaned up / new server)
+    const data = U.readJson(this.resultsFile(day), null) || this.db.get(day);
     this._resCache.set(day, { at: Date.now(), data });
     return data;
   }
@@ -300,7 +335,10 @@ class ParrvaLive {
     let prev = null;
     try { prev = fs.existsSync(file) ? U.readJson(file, null) : null; } catch { prev = null; }
     // Rewrite until 16:00 (late PaRRVA exits), then leave it alone - unless it was written by older rules.
-    if (prev && prev._meta && prev._meta.rules === RULES_VERSION && U.istMinutes() > 960) return;
+    if (prev && prev._meta && prev._meta.rules === RULES_VERSION && U.istMinutes() > 960) {
+      if (this.db.ready && !this.db.hasDay(day)) this.db.saveDay(day, prev, this.recorder.firstStartOf(day));   // database was down at 16:00
+      return;
+    }
     this.ticks.refresh({ minGapMs: 0, all: true });                  // every tick of the day before judging
     const out = { _meta: { rules: RULES_VERSION, writtenAt: new Date().toISOString() } };
     for (const rec of calls) {
@@ -309,6 +347,7 @@ class ParrvaLive {
     }
     this.saveCandles();
     U.writeJson(file, out);
+    this.db.saveDay(day, out, this.recorder.firstStartOf(day));   // same rows into Postgres (skipped when unchanged)
     if (this._resCache) this._resCache.delete(day);
   }
 
@@ -317,7 +356,7 @@ class ParrvaLive {
    * the totals (their versions / trailed SL may be missing). Days with no recording at all are not marked.
    */
   flagsOf(rec) {
-    const start = this.recorder.firstStartOf(rec.date);
+    const start = this.recorder.firstStartOf(rec.date) || this.db.startOf(rec.date);
     const excluded = !!(start && rec.createdMs && rec.createdMs < start);
     const vers = this.feed.versionsOf(rec.id);
     const firstSeen = vers.length ? vers[0].version : rec.version;
