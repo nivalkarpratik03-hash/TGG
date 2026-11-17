@@ -133,7 +133,8 @@ class ResultsDb {
         const rec = x.rec || {};
         const st = x.status || {};
         const created = rec.createdMs || Date.parse(rec.createdAt);
-        const counted = !(startMs && Number.isFinite(created) && created < startMs);
+        // the service's own flag when it gave one (2026-11-16: calls before the recorder start are counted)
+        const counted = typeof x.excluded === "boolean" ? !x.excluded : !(startMs && Number.isFinite(created) && created < startMs);
         const lv = st.levelsUsed || {};
         await client.query(
           `INSERT INTO parrva_results (call_id, trade_date, advice_name, label, symbol, side, lot, published_at,

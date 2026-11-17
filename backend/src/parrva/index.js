@@ -19,6 +19,10 @@
  *   results/<date>.json           final status of every call of that day (written after 15:31 IST)
  *                                 + the same rows in Postgres table parrva_results (resultsDb.js), used when the file is gone
  *   recordings/<date>/*.jsonl     raw recorder files (quotes, depth5, depth50, events)
+ *   recordings/<date>/parrva-other/<SYMBOL>/quotes.jsonl   ticks of non-NIFTY calls (stock, MCX ...), report only
+ * After the day is final and on Drive (Parquet + results.json) and in Postgres, driveUpload.js deletes the day's
+ * recordings, candles, secbars and results file together; the page then reads that day from Postgres.
+ * MCX calls: tracked until the MCX close (evening watcher in recorderManager.js), final ~30 min after it.
  */
 "use strict";
 
@@ -42,6 +46,7 @@ class ParrvaLive {
     this.feed = new ParrvaFeed();
     this.recorder = new RecorderManager();
     this.symbolOf = new Map();       // rec.id -> { symbol, underlying, error, at }
+    this.closeOfSym = new Map();     // symbol -> market close (minutes IST) of the call it belongs to
     this.symbolsFile = path.join(U.dataRoot(), "symbols.json");
     this.savedSymbols = U.readJson(this.symbolsFile, {});   // rec.id -> symbol, kept across restarts and days
     this.candles = new Map();        // symbol -> Map(t -> candle)
@@ -100,27 +105,30 @@ class ParrvaLive {
   async sync() {
     const today = U.istDate();
     if (today !== this.candleDay) {          // new trading day
+      this.ticks.refresh({ minGapMs: 0, all: true });
       this.saveCandles();
-      this.ticks.refresh({ minGapMs: 0, all: true }); this.ticks.save();
-      this.candles = new Map(); this.restAt = new Map(); this.failAt = new Map(); this.candleDay = today;
+      this.candles = new Map(); this.closeOfSym = new Map(); this.restAt = new Map(); this.failAt = new Map(); this.candleDay = today;
       this.loadCandles(today);
       this.ticks = new TickStore(today);
     }
     if (this.resolving) return this.resolving;
     this.resolving = (async () => {
       const calls = this.feed.today();
+      const dayDone = this.dayDone(today);   // results final: no more Fyers history needed for today
       for (const und of new Set(calls.map((r) => market.underlyingSymbol(r.underlying)).filter(Boolean))) {
-        if (this.needsBackfill(und)) await this.backfill(und).catch((e) => this.warnOnce(e.message, `history ${und}`));
+        if (!dayDone && this.needsBackfill(und)) await this.backfill(und).catch((e) => this.warnOnce(e.message, `history ${und}`));
       }
       for (const rec of calls) {
         const known = this.symbolOf.get(rec.id);
-        const sameContract = known && known.key === `${rec.underlying}|${rec.expiry}|${rec.strike}|${rec.cp}`;
+        const key = `${rec.exchange}|${rec.instrument}|${rec.underlying}|${rec.expiry}|${rec.strike}|${rec.cp}`;
+        const sameContract = known && known.key === key;
         if (sameContract && (known.symbol || Date.now() - known.at < 5 * 60 * 1000)) continue;
         const r = await market.resolveSymbol(rec);
         // Not logged in: nothing was sent to Fyers, so look again on the next sync (every 60 s) instead of in 5 min.
-        this.symbolOf.set(rec.id, { ...r, key: `${rec.underlying}|${rec.expiry}|${rec.strike}|${rec.cp}`, at: r.error === market.NOT_LOGGED_IN ? 0 : Date.now() });
+        this.symbolOf.set(rec.id, { ...r, key, at: r.error === market.NOT_LOGGED_IN ? 0 : Date.now() });
         if (r.symbol && this.savedSymbols[rec.id] !== r.symbol) { this.savedSymbols[rec.id] = r.symbol; U.writeJson(this.symbolsFile, this.savedSymbols); }
-        if (r.symbol && this.needsBackfill(r.symbol)) await this.backfill(r.symbol).catch((e) => this.warnOnce(e.message, `history ${r.symbol}`));
+        if (r.symbol) this.closeOfSym.set(r.symbol, U.closeMinOf(rec));
+        if (r.symbol && !dayDone && this.needsBackfill(r.symbol)) await this.backfill(r.symbol).catch((e) => this.warnOnce(e.message, `history ${r.symbol}`));
         if (r.error) this.warnOnce(r.error, `${rec.name} ${rec.label}`);
       }
       this.pushSubscriptions(calls);
@@ -137,22 +145,36 @@ class ParrvaLive {
     console.warn(`[PaRRVA] ${what}: ${error}${last === undefined ? "" : " (still failing)"} - same error for other calls is hidden for 30 min`);
   }
 
+  /**
+   * Symbols for the recorder. Only NIFTY index options are recorded into the NIFTY dataset (meta.dataset = true);
+   * every other call (stock, MCX, SENSEX ...) is tracked for this report only, into recordings/<date>/parrva-other.
+   * 50-level depth only for NIFTY calls. Calls whose market closes after the NIFTY recorder stops (MCX) are handed
+   * to the evening watcher (recorderManager.setWatch) until their market closes.
+   */
   pushSubscriptions(calls = this.feed.today()) {
     const syms = new Set();
     const tbt = [];
     const meta = {};
+    const watch = new Set();
+    let watchUntil = 0;
+    const nowMin = U.istMinutes();
     for (const rec of calls) {
       const und = market.underlyingSymbol(rec.underlying);
       if (und) syms.add(und);
       const s = this.symbolOf.get(rec.id);
       if (!s || !s.symbol) continue;
+      const dataset = U.isDatasetCall(rec);
       syms.add(s.symbol);
-      meta[s.symbol] = { expiry: rec.expiry };
+      meta[s.symbol] = { expiry: rec.expiry, dataset: dataset || (meta[s.symbol] && meta[s.symbol].dataset) || false };
       const st = this.statusOf(rec);
-      if (["WAITING", "OPEN", "NO_DATA"].includes(st.state) && !tbt.includes(s.symbol)) tbt.push(s.symbol);   // newest first (feed is sorted)
+      const live = ["WAITING", "OPEN", "NO_DATA"].includes(st.state);
+      if (dataset && live && !tbt.includes(s.symbol)) tbt.push(s.symbol);   // newest first (feed is sorted)
+      const close = U.closeMinOf(rec);
+      if (!dataset && live && close > 935 && nowMin < close) { watch.add(s.symbol); watchUntil = Math.max(watchUntil, close); }
     }
     if (!syms.size) syms.add("NSE:NIFTY50-INDEX");
     this.recorder.setSymbols([...syms], tbt.slice(0, 5), meta);
+    this.recorder.setWatch([...watch], watchUntil || null);
   }
 
   // ── candles ───────────────────────────────────────────────────────────────
@@ -183,8 +205,9 @@ class ParrvaLive {
   }
   async backfill(sym) {
     const day = this.candleDay;
-    const from = U.istAt(day, 9, 15);
-    const to = Math.min(Date.now(), U.istAt(day, 15, 30));
+    const close = this.closeOfSym.get(sym) || 930;   // MCX symbols trade into the evening
+    const from = U.istAt(day, 9, close > 930 ? 0 : 15);
+    const to = Math.min(Date.now(), U.istAt(day, Math.floor(close / 60), close % 60));
     if (to <= from) return;
     this.restAt.set(sym, Date.now());
     let list;
@@ -205,11 +228,14 @@ class ParrvaLive {
   }
   /** REST top-up for symbols of unfinished calls, only when the recorder is not giving us ticks. */
   async restRefresh() {
-    if (!U.isTradingDayIST() || U.istMinutes() < 555 || U.istMinutes() > 935) return;
-    const recording = this.recorder.info().recording;
+    const m = U.istMinutes();
+    if (!U.isTradingDayIST() || m < 540) return;
+    const info = this.recorder.info();
+    const recording = info.recording || (info.watch && info.watch.recording);
     for (const rec of this.feed.today()) {
       const s = this.symbolOf.get(rec.id);
       if (!s || !s.symbol) continue;
+      if (m < (U.closeMinOf(rec) > 930 ? 540 : 555) || m > U.closeMinOf(rec) + 5) continue;   // this call's market hours
       const st = this.statusOf(rec).state;
       if (!["WAITING", "OPEN", "NO_DATA"].includes(st)) continue;
       const last = this.restAt.get(s.symbol) || 0;
@@ -219,6 +245,8 @@ class ParrvaLive {
   }
   candleFile(day) { return path.join(U.dataRoot(), "candles", `${day}.json`); }
   saveCandles() {
+    // The day is final and its files were cleaned up after the Drive upload: do not write them again.
+    if (this.dayDone(this.candleDay) && !fs.existsSync(path.join(U.dataRoot(), "recordings", this.candleDay))) return;
     try { this.ticks.save(); } catch (e) { console.warn("[PaRRVA] save ticks:", e.message); }
     if (!this.candles.size) return;
     const out = {};
@@ -278,6 +306,13 @@ class ParrvaLive {
   statusOf(rec) {
     const s = this.symbolOf.get(rec.id);
     if (rec.date !== this.candleDay) return this.pastStatus(rec);
+    if (this.callDone(rec)) {
+      // This call's result is final (30 min after its market closed): use the saved one (results file / Postgres),
+      // so the page and later rewrites stay right after the day's recordings, candles and second-bars were deleted.
+      const res = this.resultsOf(rec.date);
+      const saved = res && res[rec.id];
+      if (saved && saved.status && res._meta && res._meta.rules === RULES_VERSION) return { ...saved.status, source: "recorded" };
+    }
     const sym = (s && s.symbol) || this.symbolFor(rec);   // same symbol the page shows (also when this run has not resolved it yet)
     const snap = this.snapshotOf(sym);
     const fresh = snap && snap.recv && Date.now() - snap.recv < 120000;
@@ -326,6 +361,28 @@ class ParrvaLive {
     this._resCache.set(day, { at: Date.now(), data });
     return data;
   }
+  /**
+   * Minute (IST) after which the day's results are final: 30 min after the last market close of the day's calls
+   * (16:00 on a day with only NSE / BSE calls, like before; about 00:00 when an MCX call was given).
+   */
+  finalMinOf(day) {
+    let close = 930;
+    for (const rec of this.feed.list(day, day)) close = Math.max(close, U.closeMinOf(rec));
+    return Math.min(close + 30, 1439);
+  }
+  /** One call's result is final: 30 min after its own market closed (NSE 16:00, MCX ~00:00), or an earlier day. */
+  callDone(rec, now = Date.now()) {
+    if (!rec || !rec.date) return false;
+    if (rec.date < U.istDate(now)) return true;
+    const close = U.closeMsOf(rec);
+    return close !== null && now >= Math.min(close + 30 * 60000, U.istAt(rec.date, 23, 59));
+  }
+  /** The day's results are final (earlier day, or today after finalMinOf). */
+  dayDone(day) {
+    const today = U.istDate();
+    if (day < today) return true;
+    return day === today && U.istMinutes() >= this.finalMinOf(day);
+  }
   endOfDay() {
     const day = this.candleDay;
     if (!U.isTradingDayIST() || U.istMinutes() < 931) return;
@@ -334,16 +391,21 @@ class ParrvaLive {
     if (!calls.length) return;
     let prev = null;
     try { prev = fs.existsSync(file) ? U.readJson(file, null) : null; } catch { prev = null; }
-    // Rewrite until 16:00 (late PaRRVA exits), then leave it alone - unless it was written by older rules.
-    if (prev && prev._meta && prev._meta.rules === RULES_VERSION && U.istMinutes() > 960) {
-      if (this.db.ready && !this.db.hasDay(day)) this.db.saveDay(day, prev, this.recorder.firstStartOf(day));   // database was down at 16:00
+    const done = U.istMinutes() > this.finalMinOf(day);
+    // Rewrite until the results are final (late PaRRVA exits, MCX calls still open), then leave it alone -
+    // unless it was written by older rules.
+    if (prev && prev._meta && prev._meta.rules === RULES_VERSION && done) {
+      if (this.db.ready && !this.db.hasDay(day)) this.db.saveDay(day, prev, this.recorder.firstStartOf(day));   // database was down at the close
       return;
     }
+    // Final and already cleaned up after the Drive upload (results file gone, rows in Postgres): never recompute
+    // from the deleted files - that would overwrite the good rows.
+    if (!prev && done && this.db.ready && this.db.hasDay(day)) return;
     this.ticks.refresh({ minGapMs: 0, all: true });                  // every tick of the day before judging
     const out = { _meta: { rules: RULES_VERSION, writtenAt: new Date().toISOString() } };
     for (const rec of calls) {
       const s = this.symbolOf.get(rec.id) || {};
-      out[rec.id] = { name: rec.name, label: rec.label, symbol: s.symbol || null, rec: { ...rec, raw: undefined }, status: this.statusOf(rec) };
+      out[rec.id] = { name: rec.name, label: rec.label, symbol: s.symbol || null, rec: { ...rec, raw: undefined }, status: this.statusOf(rec), excluded: this.flagsOf(rec).excluded };
     }
     this.saveCandles();
     U.writeJson(file, out);
@@ -352,15 +414,18 @@ class ParrvaLive {
   }
 
   /**
-   * Was this call published before the recorder started that day? Those calls are shown but left out of
-   * the totals (their versions / trailed SL may be missing). Days with no recording at all are not marked.
+   * Was this call published before the recorder started that day? Shown as "Before recording" and NOT counted
+   * in the totals. Days with no recording at all are not marked.
    */
   flagsOf(rec) {
     const start = this.recorder.firstStartOf(rec.date) || this.db.startOf(rec.date);
-    const excluded = !!(start && rec.createdMs && rec.createdMs < start);
+    const before = !!(start && rec.createdMs && rec.createdMs < start);
     const vers = this.feed.versionsOf(rec.id);
     const firstSeen = vers.length ? vers[0].version : rec.version;
-    return { excluded, beforeRecording: excluded, recordingStartedAt: start ? new Date(start).toISOString() : null, versionsIncomplete: firstSeen > 1 };
+    const incomplete = firstSeen > 1;
+    // A call published before the recorder started is shown ("Before recording", result from Fyers 1-minute data)
+    // but never counted in the totals, so its points can be checked by hand.
+    return { excluded: before, beforeRecording: before, recordingStartedAt: start ? new Date(start).toISOString() : null, versionsIncomplete: incomplete };
   }
 
   // ── what the routes return ────────────────────────────────────────────────

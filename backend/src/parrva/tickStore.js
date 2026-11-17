@@ -2,7 +2,8 @@
  * backend/src/parrva/tickStore.js  (NEW 2026-11-05)
  * ─────────────────────────────────────────────────────────────────────────────
  * 1-second price bars per option symbol, built from the recorder's raw tick files
- * (recordings/<date>/symbols/<SYMBOL>/quotes.jsonl; older layout: recordings/<date>/quotes.jsonl). The status engine uses these to judge entry / target / SL to the
+ * (recordings/<date>/symbols/<SYMBOL>/quotes.jsonl; older layout: recordings/<date>/quotes.jsonl; and since 2026-11-16
+ * recordings/<date>/parrva-other/<SYMBOL>/quotes.jsonl for stock / MCX calls). The status engine uses these to judge entry / target / SL to the
  * tick, the same way the Telegram bot does. Minute candles are only the fallback.
  *
  * The tick files are read incrementally (only the new bytes, at most CHUNK per read), so a long file never
@@ -60,13 +61,16 @@ class TickStore {
     }
   }
 
-  /** Option tick files of the day (only options are needed for the trade status). */
+  /** Tick files of the day: NIFTY options + every non-NIFTY PaRRVA symbol (options, futures, equity). */
   files() {
     const out = [];
     const symDir = path.join(this.dir, "symbols");
     let names = [];
     try { names = fs.readdirSync(symDir); } catch { /* not recording yet */ }
     for (const d of names) if (/(CE|PE)$/.test(d)) out.push(path.join("symbols", d, "quotes.jsonl"));
+    let others = [];
+    try { others = fs.readdirSync(path.join(this.dir, "parrva-other")); } catch { /* none */ }
+    for (const d of others) out.push(path.join("parrva-other", d, "quotes.jsonl"));
     if (fs.existsSync(path.join(this.dir, "quotes.jsonl"))) out.push("quotes.jsonl");    // older layout (one file)
     return out;
   }
@@ -84,6 +88,7 @@ class TickStore {
 
   readFile(rel, maxBytes) {
     let fd, used = 0;
+    const anySymbol = rel.startsWith("parrva-other");   // those files hold only PaRRVA call symbols (any kind)
     try { fd = fs.openSync(path.join(this.dir, rel), "r"); } catch { return 0; }
     try {
       const size = fs.fstatSync(fd).size;
@@ -102,7 +107,7 @@ class TickStore {
           if (!line || line.indexOf('"ltp"') < 0) continue;
           let r; try { r = JSON.parse(line); } catch { continue; }
           const px = Number(r.ltp), ms = Number(r.recv_ms);
-          if (!isOption(r.symbol) || !(px > 0) || !Number.isFinite(ms)) continue;
+          if (!r.symbol || (!anySymbol && !isOption(r.symbol)) || !(px > 0) || !Number.isFinite(ms)) continue;
           this.add(r.symbol, Math.floor(ms / 1000), px);
         }
         this.dirty = true;

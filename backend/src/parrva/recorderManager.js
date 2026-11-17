@@ -11,6 +11,12 @@
  * A heartbeat comes every 5 s; no heartbeat for 60 s -> the child is killed and restarted.
  * A stop at / after 15:25 IST is the end of the day: the worker backfills candles and writes the 3 Parquet
  * files (can take a few minutes; heartbeats continue). exportDay() re-runs the export for any day folder.
+ *
+ * EVENING WATCHER (2026-11-16): calls whose market closes after the recorder stops (MCX, up to 23:30 / 23:55) are
+ * watched by a second, light run of the same worker (REC_MODE=watch): one data socket on account 2 with only
+ * those symbols, ticks into recordings/<date>/parrva-other/, no NIFTY, no 50-level depth, no export. It only runs
+ * while the recorder itself is not connected (never two data sockets at once) and stops at that market's close or
+ * as soon as no such call is open.
  */
 "use strict";
 
@@ -35,6 +41,13 @@ class RecorderManager extends EventEmitter {
     this.lastLog = [];           // last 30 worker log lines
     this.override = null;        // {day, mode:"on"|"off"} - manual Start/Stop for today
     this.wanted = { symbols: [], tbt: [] };
+    this.watch = { symbols: [], until: null };   // evening watcher: symbols + market close (minutes IST)
+    this.watchChild = null;
+    this.watchHb = 0;
+    this.watchStartedAt = null;
+    this.watchStatus = null;
+    this.lastWatchSpawnAt = 0;
+    this.watchStopping = false;
     this.lastSpawnAt = 0;
     this.stopReason = null;
     this.stopping = false;
@@ -107,11 +120,82 @@ class RecorderManager extends EventEmitter {
       return;
     }
     const want = this.shouldRun();
-    if (want && !this.child && Date.now() - this.lastSpawnAt > 30000) this.spawn();
+    if (want && !this.child && !this.watchChild && Date.now() - this.lastSpawnAt > 30000) this.spawn();
     else if (!want && this.child && !this.stopping) {
       const manualOff = this.override && this.override.day === U.istDate() && this.override.mode === "off";
       this.stop(manualOff ? "stopped from Admin" : !this.accountReady() ? "account 2 token not valid" : "outside recording hours");
     }
+    this.watchTick(want);
+  }
+
+  // ── evening watcher ─────────────────────────────────────────────────────────
+  /** Symbols to watch after the recorder stops, and the minute (IST) their market closes. */
+  setWatch(symbols, untilMin) {
+    this.watch = { symbols: [...new Set(symbols || [])], until: Number.isFinite(untilMin) ? untilMin : null };
+    if (this.watchChild && this.watchChild.connected && this.watch.symbols.length) {
+      try { this.watchChild.send({ cmd: "subscribe", symbols: this.watch.symbols, meta: {}, watch: true }); } catch { /* gone */ }
+    }
+  }
+  shouldWatch(recorderWanted) {
+    const w = this.watch;
+    if (!w.symbols.length || !w.until || !this.accountReady()) return false;
+    if (this.override && this.override.day === U.istDate() && this.override.mode === "off") return false;
+    const m = U.istMinutes();
+    // only when the recorder is not holding a data socket (not wanted, or already closing its sockets for the export)
+    const recorderBusy = this.child && !this.stopping;
+    return !recorderWanted && !recorderBusy && m < w.until;
+  }
+  watchTick(recorderWanted) {
+    if (this.watchChild && !this.watchStopping && Date.now() - this.watchHb > 60000) {
+      this.log("watcher: no heartbeat for 60 s - restarting");
+      try { this.watchChild.kill("SIGKILL"); } catch { /* ignore */ }
+      this.watchChild = null;
+      return;
+    }
+    const want = this.shouldWatch(recorderWanted);
+    if (want && !this.watchChild && Date.now() - this.lastWatchSpawnAt > 30000) this.spawnWatch();
+    else if (!want && this.watchChild && !this.watchStopping) this.stopWatch(recorderWanted ? "recorder starting" : "no open evening calls / market closed");
+  }
+  spawnWatch() {
+    this.lastWatchSpawnAt = Date.now();
+    const a = accounts.account2;
+    if (!a.loadToken()) return;
+    const outDir = path.join(U.dataRoot(), "recordings", U.istDate());
+    const env = { ...process.env, REC_MODE: "watch", REC_APP_ID: (process.env.APP_ID_2 || "").trim().replace(/^["']|["']$/g, ""), REC_TOKEN_FILE: a.tokenFile, REC_OUT_DIR: outDir };
+    let child;
+    try { child = fork(WORKER, [], { env, stdio: ["ignore", "inherit", "inherit", "ipc"] }); } catch (e) { this.log(`watcher: could not start: ${e.message}`); return; }
+    this.watchChild = child;
+    this.watchHb = Date.now();
+    this.watchStartedAt = Date.now();
+    this.watchStopping = false;
+    this.log(`watcher started (pid ${child.pid}) for ${this.watch.symbols.join(", ")} until ${String(Math.floor(this.watch.until / 60)).padStart(2, "0")}:${String(this.watch.until % 60).padStart(2, "0")}`);
+    child.on("message", (m) => {
+      if (!m || typeof m !== "object") return;
+      if (m.hb) this.watchHb = Date.now();
+      if (m.log) this.log(`[watcher] ${m.log}`);
+      if (m.ready) { this.watchHb = Date.now(); this.setWatch(this.watch.symbols, this.watch.until); }
+      if (m.snap) {
+        this.watchHb = Date.now();
+        this.watchStatus = m.snap.status || this.watchStatus;
+        // the recorder is not running now: the watcher's live prices are the page's
+        if (m.snap.symbols && (!this.child || this.stopping)) this.symbols = { ...this.symbols, ...m.snap.symbols };
+        if (m.snap.candles) this.emit("candles", m.snap.candles);
+      }
+    });
+    child.on("error", (e) => this.log(`watcher process error: ${e.message}`));
+    child.on("exit", (code) => {
+      if (this.watchChild === child) { this.watchChild = null; this.watchStopping = false; }
+      if (this.watchStatus) this.watchStatus.dataConnected = false;
+      this.log(`watcher stopped (code ${code})`);
+    });
+  }
+  stopWatch(why) {
+    if (!this.watchChild || this.watchStopping) return;
+    this.watchStopping = true;
+    const child = this.watchChild;
+    try { if (child.connected) child.send({ cmd: "stop", why, export: false }); } catch { /* ignore */ }
+    const t = setTimeout(() => { try { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); } catch { /* ignore */ } }, 15000);
+    if (t.unref) t.unref();
   }
 
   /** Manual Start / Stop from the Admin card (valid for the rest of today). */
@@ -191,6 +275,7 @@ class RecorderManager extends EventEmitter {
 
   /** exportNow: true / false, or null = the worker decides (end of day at / after 15:25 IST). */
   stop(why = "stop requested", exportNow = null) {
+    if (why === "backend shutting down") this.stopWatch(why);
     if (!this.child || this.stopping) return;
     this.stopping = true;
     this.stopReason = why;
@@ -261,6 +346,12 @@ class RecorderManager extends EventEmitter {
       lastExit: this.lastExit,
       stopping: this.stopping, exporting: !!(st.exporting || this.exportChild), lastExport: this.lastExport || st.lastExport || null,
       setup: st.setup || null, fut: st.fut || null, expiry: st.expiry || null, atm: st.atm || null, tracked: st.tracked || 0,
+      watch: {
+        running: !!this.watchChild, recording: !!(this.watchChild && this.watchStatus && this.watchStatus.dataConnected),
+        symbols: this.watch.symbols, until: this.watch.until,
+        startedAt: this.watchChild && this.watchStartedAt ? new Date(this.watchStartedAt).toISOString() : null,
+        lastTickAt: this.watchStatus && this.watchStatus.lastTickAt ? new Date(this.watchStatus.lastTickAt).toISOString() : null,
+      },
       log: this.lastLog.slice(-12),
     };
   }

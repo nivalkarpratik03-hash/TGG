@@ -24,7 +24,7 @@
  *     A stop loss at or above the fill (trailed) -> TRAIL_SL.
  *   - PaRRVA exit price -> EXITED at that price, unless target / SL came first.
  *     PaRRVA exit before the price ever reached the band -> AVOIDED (no trade, 0 points).
- *   - Still open after 15:30 IST -> CLOSED at the last price.
+ *   - Still open after the market close (NSE/BSE 15:30 IST, MCX 23:30 / 23:55 - util.closeMinOf) -> CLOSED at the last price.
  * States: NO_DATA, WAITING, NOT_TRIGGERED, AVOIDED, OPEN, TARGET, SL, TRAIL_SL, EXITED, CLOSED.
  * points     = per unit, measured from the band (BUY: entry low, SELL: entry high), like the Telegram bot.
  *              This is the official number. Positive = profit.
@@ -77,7 +77,7 @@ function evaluate(rec, candles, live = {}, nowMs = Date.now(), versions = null) 
   // A bar counts if it ends after the call was published (minute bars: the publishing minute is included).
   const bars = (candles || []).filter((c) => c && Number.isFinite(c.t) && endMs(c) > created && Number.isFinite(c.h) && Number.isFinite(c.l)).sort((a, b) => a.t - b.t);
   out.resolution = bars.length ? ((bars[0].d || 60) < 60 ? "tick" : "minute") : null;
-  const dayEndMs = rec.date ? U.istAt(rec.date, 15, 30) : null;
+  const dayEndMs = U.closeMsOf(rec);   // market close of this call (NSE 15:30, MCX later)
   const dayOver = dayEndMs !== null && nowMs >= dayEndMs;
   const nowLv = levelsAt(tl, nowMs);
   const exitMs = rec.exit !== null ? (rec.updatedMs || Infinity) : Infinity;   // when PaRRVA exited the call

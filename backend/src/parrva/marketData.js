@@ -6,6 +6,8 @@
  * nothing is sent to Fyers (only a handful of calls anyway: option-chain lookups and 1-minute history).
  *
  *   resolveSymbol(rec)   PaRRVA call -> real Fyers symbol, e.g. NIFTY 24350 CE 2026-11-09 -> NSE:NIFTY2611924350CE
+ *                        (2026-11-16: also stock options via NSE:<NAME>-EQ's option chain, MCX options via the MCX future's
+ *                        option chain, futures / equity checked with a quote - no symbol files)
  *                        (read from Fyers' own option chain, never built by hand, so weekly/monthly formats are always right)
  *   fetchMinuteCandles(symbol, fromMs, toMs)   1-minute candles [{t (sec), o, h, l, c, v}]
  *
@@ -88,31 +90,111 @@ async function expiriesOf(underlying) {
   return expiries;
 }
 
-/** PaRRVA call -> { symbol } or { error }. Cached; at most one option-chain call per expiry every 5 minutes. */
+const MON = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+const cleanName = (x) => String(x || "").toUpperCase().replace(/\s+/g, "");
+/** Fyers monthly future name for a YYYY-MM-DD expiry (+k months): MCX:CRUDEOIL26DECFUT, NSE:COFORGE26NOVFUT. */
+function futName(exch, und, isoDate, k = 0) {
+  const [y, m] = String(isoDate).split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + k, 1));
+  return `${exch}:${cleanName(und)}${String(d.getUTCFullYear()).slice(2)}${MON[d.getUTCMonth()]}FUT`;
+}
+const kindOf = (rec) => {
+  const ins = String((rec && rec.instrument) || "").toUpperCase();
+  if (["CE", "PE"].includes(rec && rec.cp) || /^OPT/.test(ins) || ins === "IDO") return "option";
+  if (/^FUT/.test(ins)) return "future";
+  return "equity";
+};
+const failCache = new Map();   // underlying -> { at, error }: Fyers had no option chain for it (retried after 30 min)
+
+/**
+ * Option of one underlying -> { symbol } or { error }. Same way as the charts (fyers/client.js fetchOptionChain):
+ * Fyers' option chain of the underlying gives the real expiry list and the exact symbol of every strike.
+ * Cached; at most one option-chain call per underlying + expiry every 5 minutes.
+ */
+async function optionFromChain(rec, und) {
+  const key = `${und}|${rec.expiry}`;
+  const want = `${Number(rec.strike)}|${rec.cp}`;
+  let c = chainCache.get(key);
+  if (c && c.map.has(want)) return { symbol: c.map.get(want), underlying: und };
+  if (c && Date.now() - c.at < 5 * 60 * 1000) return { error: `strike ${rec.strike} ${rec.cp} not in Fyers option chain for ${rec.expiry}` };
+  const exp = (await expiriesOf(und)).find((e) => e.date === rec.expiry);
+  if (!exp) return { error: `expiry ${rec.expiry} not listed by Fyers for ${und}`, noExpiry: true };
+  const data = await getChain(und, exp.ts);
+  const map = new Map();
+  for (const o of data.optionsChain || []) {
+    if (o && o.symbol && (o.option_type === "CE" || o.option_type === "PE")) map.set(`${Number(o.strike_price)}|${o.option_type}`, o.symbol);
+  }
+  c = { at: Date.now(), map };
+  chainCache.set(key, c);
+  return map.has(want) ? { symbol: map.get(want), underlying: und } : { error: `strike ${rec.strike} ${rec.cp} not in Fyers option chain for ${rec.expiry}` };
+}
+async function chainOrFail(rec, und) {
+  const f = failCache.get(und);
+  if (f && Date.now() - f.at < 30 * 60000) return { error: f.error, noExpiry: true };
+  try { return await optionFromChain(rec, und); }
+  catch (e) {
+    if (e.message === NOT_LOGGED_IN) throw e;
+    failCache.set(und, { at: Date.now(), error: e.message });
+    return { error: e.message, noExpiry: true };
+  }
+}
+/** A symbol we had to build (future / equity) is used only when Fyers quotes it. */
+const verified = new Map();   // symbol -> { at, ok, error }
+async function verifySymbol(sym) {
+  const v = verified.get(sym);
+  if (v && (v.ok || Date.now() - v.at < 30 * 60000)) return v.ok ? { symbol: sym } : { error: v.error };
+  const { client } = restClient();
+  const res = await queued(() => timeout(client.getQuotes([sym]), 12000, "getQuotes"));
+  const row = res && Array.isArray(res.d) ? res.d.find((x) => x && x.n === sym) : null;
+  const ok = !!(res && res.s === "ok" && row && row.s !== "error" && row.v && !row.v.errmsg && Number.isFinite(Number(row.v.lp)));
+  const error = ok ? null : `${sym} is not a valid Fyers symbol (${(row && row.v && row.v.errmsg) || (res && (res.message || res.errmsg)) || "no quote"})`;
+  verified.set(sym, { at: Date.now(), ok, error });
+  return ok ? { symbol: sym } : { error };
+}
+
+/**
+ * PaRRVA call -> { symbol } or { error }. Never guesses: every symbol comes from Fyers or is checked with Fyers.
+ *   index option (NIFTY, SENSEX ...)   option chain of the index (as before)
+ *   stock option (OPTSTK, COFORGE)     option chain of NSE:COFORGE-EQ, PaRRVA's expiry, exact strike + CE/PE
+ *   MCX option                         option chain of the MCX future (that month's, else next month's) whose
+ *                                      expiry list has PaRRVA's expiry - same as the chart's option chain
+ *   future (stock / index / MCX)       Fyers monthly name (e.g. MCX:CRUDEOIL26DECFUT), used only if Fyers quotes it
+ *   equity                             NSE:<NAME>-EQ, used only if Fyers quotes it
+ * All on account 2 (one or two calls per new contract, cached).
+ */
 async function resolveSymbol(rec) {
   try {
-    if (!rec || !rec.strike || !["CE", "PE"].includes(rec.cp) || !rec.expiry) return { error: "call has no strike / CE-PE / expiry" };
-    const und = underlyingSymbol(rec.underlying);
-    if (!und) return { error: `unknown underlying ${rec.underlying}` };
-    const key = `${und}|${rec.expiry}`;
-    const want = `${Number(rec.strike)}|${rec.cp}`;
-    let c = chainCache.get(key);
-    if (c && c.map.has(want)) return { symbol: c.map.get(want), underlying: und };
-    if (c && Date.now() - c.at < 5 * 60 * 1000) return { error: `strike ${rec.strike} ${rec.cp} not in Fyers option chain for ${rec.expiry}` };
-    const exp = (await expiriesOf(und)).find((e) => e.date === rec.expiry);
-    if (!exp) return { error: `expiry ${rec.expiry} not listed by Fyers for ${und}` };
-    const data = await getChain(und, exp.ts);
-    const map = new Map();
-    for (const o of data.optionsChain || []) {
-      if (o && o.symbol && (o.option_type === "CE" || o.option_type === "PE")) map.set(`${Number(o.strike_price)}|${o.option_type}`, o.symbol);
+    if (!rec || !rec.underlying) return { error: "call has no contract name" };
+    const exch = String(rec.exchange || "NSE").toUpperCase();
+    const und = cleanName(rec.underlying);
+    const kind = kindOf(rec);
+    if (kind === "option") {
+      if (!rec.strike || !["CE", "PE"].includes(rec.cp) || !rec.expiry) return { error: "call has no strike / CE-PE / expiry" };
+      const idx = underlyingSymbol(und);
+      if (idx) return await optionFromChain(rec, idx);
+      if (exch === "MCX") {
+        const errs = [];
+        for (const k of [0, 1]) {
+          const r = await chainOrFail(rec, futName("MCX", und, rec.expiry, k));
+          if (r.symbol || !r.noExpiry) return r;
+          errs.push(r.error);
+        }
+        return { error: `MCX option ${und} ${rec.strike} ${rec.cp} ${rec.expiry}: ${errs.join(" / ")}` };
+      }
+      if (exch !== "NSE") return { error: `${exch} stock options are not supported yet` };
+      return await chainOrFail(rec, `NSE:${und}-EQ`);
     }
-    c = { at: Date.now(), map };
-    chainCache.set(key, c);
-    return map.has(want) ? { symbol: map.get(want), underlying: und } : { error: `strike ${rec.strike} ${rec.cp} not in Fyers option chain for ${rec.expiry}` };
+    if (kind === "future") {
+      if (!rec.expiry) return { error: "call has no expiry" };
+      return await verifySymbol(futName(exch === "MCX" ? "MCX" : exch, und, rec.expiry));
+    }
+    if (exch !== "NSE") return { error: `${exch} equity is not supported yet` };
+    return await verifySymbol(`NSE:${und}-EQ`);
   } catch (err) {
     return { error: err.message };
   }
 }
+const isIndexOption = (rec) => kindOf(rec) === "option" && !!underlyingSymbol(rec && rec.underlying);
 
 /** 1-minute candles between two ms timestamps -> [{t, o, h, l, c, v}] (t in epoch seconds). */
 async function fetchMinuteCandles(symbol, fromMs, toMs) {
@@ -130,4 +212,4 @@ async function fetchMinuteCandles(symbol, fromMs, toMs) {
     .map((c) => ({ t: Number(c[0]), o: Number(c[1]), h: Number(c[2]), l: Number(c[3]), c: Number(c[4]), v: Number(c[5]) || 0 }));
 }
 
-module.exports = { resolveSymbol, fetchMinuteCandles, underlyingSymbol, restClient, NOT_LOGGED_IN };
+module.exports = { resolveSymbol, fetchMinuteCandles, underlyingSymbol, restClient, NOT_LOGGED_IN, isIndexOption, futName };

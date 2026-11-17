@@ -18,9 +18,15 @@
  *   <PARRVA_DATA_DIR>/recordings/<date>/parquet/index.parquet, futures.parquet, options.parquet
  * Folder layout = orderFlowRecorder's (symbols/<SYMBOL>/quotes.jsonl ..., events.jsonl, rest_*.jsonl).
  *
- * IPC in : {cmd:"subscribe", symbols:[...], tbt:[...], meta:{sym:{expiry}}}  {cmd:"stop", why, export?}
+ * 2026-11-16: only NIFTY calls (meta.dataset = true) go into the NIFTY recording / Parquet. Every other PaRRVA call
+ * (stock, MCX, SENSEX ...) is subscribed for live prices and its ticks go to recordings/<date>/parrva-other/<SYMBOL>/
+ * quotes.jsonl (report only, never exported, deleted with the day). No 50-level depth for those.
+ * REC_MODE=watch: the evening watcher - only a data socket with the given symbols, ticks into parrva-other,
+ * no NIFTY setup, no REST, no export (recorderManager starts it after the recorder stopped, for MCX calls).
+ *
+ * IPC in : {cmd:"subscribe", symbols:[...], tbt:[...], meta:{sym:{expiry, dataset}}}  {cmd:"stop", why, export?}
  * IPC out: {hb}  {ready}  {snap:{status, symbols:{sym:{...}}, candles:{sym:[...]}}}  {log}  {exported:{ok, report}}
- * Env    : REC_APP_ID, REC_TOKEN_FILE, REC_OUT_DIR, RECORDER_TBT (false = no 50-level depth)
+ * Env    : REC_APP_ID, REC_TOKEN_FILE, REC_OUT_DIR, RECORDER_TBT (false = no 50-level depth), REC_MODE (record | watch)
  */
 "use strict";
 
@@ -45,6 +51,7 @@ const appId = process.env.REC_APP_ID;
 const tokenFile = process.env.REC_TOKEN_FILE;
 const outDir = process.env.REC_OUT_DIR;
 const useTbt = process.env.RECORDER_TBT !== "false";
+const WATCH = process.env.REC_MODE === "watch";
 let token = "";
 try { token = fs.readFileSync(tokenFile, "utf8").trim(); } catch { /* checked below */ }
 if (!appId || !token || !outDir) {
@@ -56,8 +63,8 @@ if (!appId || !token || !outDir) {
 let fyers;
 try { fyers = require("fyers-api-v3"); } catch (e) { log("fyers-api-v3 not installed:", e.message); setTimeout(() => process.exit(2), 200); return; }   // eslint-disable-line no-useless-return
 const { fyersModel, fyersDataSocket, fyersTbtSocket } = fyers;
-const { Recorder, AtmTracker } = require("../scripts/orderFlowRecorder");   // the collector's own code, unchanged
-const { exportParquet } = require("./ofrExport");
+const { Recorder, AtmTracker } = WATCH ? {} : require("../scripts/orderFlowRecorder");   // the collector's own code, unchanged
+const { exportParquet } = WATCH ? {} : require("./ofrExport");
 
 // ── helpers (same behaviour as orderFlowRecorder.js) ─────────────────────────
 const IST_MS = 19800000;
@@ -170,6 +177,23 @@ function liveDepth50(sym, d, recv) {
   latest.set(sym, L);
 }
 
+// ── PaRRVA calls outside the NIFTY dataset: ticks into parrva-other/<SYMBOL>/quotes.jsonl ──
+const otherSyms = new Set();
+const otherW = new Map();      // sym -> write stream
+const safeName = (x) => String(x).replace(/[^A-Za-z0-9_-]/g, "_");   // same folder names as the Recorder
+function writeOther(t, recv) {
+  let w = otherW.get(t.symbol);
+  if (!w) {
+    const dir = path.join(outDir, "parrva-other", safeName(t.symbol));
+    try { fs.mkdirSync(dir, { recursive: true }); } catch { /* reported by the stream */ }
+    w = fs.createWriteStream(path.join(dir, "quotes.jsonl"), { flags: "a" });
+    w.on("error", (e) => log(`parrva-other ${t.symbol}: ${e.message}`));
+    otherW.set(t.symbol, w);
+  }
+  try { w.write(JSON.stringify({ ...t, recv_ms: recv, recv_ist: istStamp(recv) }) + "\n"); } catch { /* stream error is logged */ }
+}
+const closeOther = () => Promise.all([...otherW.values()].map((w) => new Promise((r) => { try { w.end(r); } catch { r(); } })));
+
 // ── main ─────────────────────────────────────────────────────────────────────
 let rec = null, sk = null, tbt = null, timer = null, report = null, finishing = false;
 const pendingSubs = { msg: null };
@@ -263,7 +287,7 @@ async function main() {
   const applyExtraTbt = (want) => {
     if (!rec.cfg.useTbt) return;
     const core = new Set([fut, rec.cur && rec.cur.ce, rec.cur && rec.cur.pe]);
-    const next = new Set((want || [...extraTbt]).filter((s) => optRole(s) && !core.has(s)).slice(0, 2));
+    const next = new Set((want || [...extraTbt]).filter((s) => optRole(s) && !core.has(s) && !otherSyms.has(s)).slice(0, 2));
     const rem = [...extraTbt].filter((s) => !next.has(s) && !core.has(s)), add = [...next].filter((s) => !tbtDesired.has(s));
     extraTbt.clear(); next.forEach((s) => extraTbt.add(s));
     if (rem.length) tbtIo.unsub(rem);
@@ -287,6 +311,14 @@ async function main() {
       if (typeof s !== "string" || !s.includes(":") || known.has(s)) continue;
       known.add(s);
       const role = optRole(s);
+      const m = msg.meta && msg.meta[s];
+      if (m && m.dataset === false && !rec.recs.has(s) && !/-INDEX$/.test(s)) {
+        // not NIFTY: live prices + parrva-other ticks only, never in the NIFTY recording
+        otherSyms.add(s);
+        dataIo.sub([s], true);
+        rec.ev("parrva_other_symbol", { sym: s });
+        continue;
+      }
       if (role && !rec.recs.has(s)) {
         rec.track(s, role);
         const exp = msg.meta && msg.meta[s] && msg.meta[s].expiry;
@@ -306,7 +338,10 @@ async function main() {
     for (const t of Array.isArray(m) ? m : [m]) {
       try {
         if (!t || typeof t !== "object" || !t.symbol) continue;
-        if (t.type === "sf" || t.type === "if") { if (rec.recs.has(t.symbol)) rec.onQuote(t, recv); else liveQuote(t, recv); }
+        if (t.type === "sf" || t.type === "if") {
+          if (rec.recs.has(t.symbol)) rec.onQuote(t, recv);
+          else { liveQuote(t, recv); if (otherSyms.has(t.symbol)) writeOther(t, recv); }
+        }
         else if (t.type === "dp") rec.onDepth5(t, recv);
       } catch (e) { rec.err("data_message", e); }
     }
@@ -423,6 +458,7 @@ async function finish(why, { exportNow = null, code = 0 } = {}) {
     if (finishCtx.restDone) await finishCtx.restDone();
     if (doExport && finishCtx.finalBackfill) { try { await withTimeout(finishCtx.finalBackfill(), 120000, "backfill"); } catch (e) { rec.err("backfill", e); } }
     await rec.closeAll();
+    await closeOther();
     if (doExport) {
       state.exporting = true;
       try {
@@ -432,7 +468,7 @@ async function finish(why, { exportNow = null, code = 0 } = {}) {
       } catch (e) { log("Parquet export failed (JSONL files are safe; run: node src/parrva/ofrExport.js <day folder>):", e.message); send({ exported: { ok: false, error: e.message } }); }
       state.exporting = false;
     }
-  }
+  } else await closeOther();   // evening watcher: only its parrva-other files
   clearInterval(report); clearInterval(hb);
   setTimeout(() => process.exit(code), 200);
 }
@@ -446,7 +482,45 @@ process.on("disconnect", () => finish("parent disconnected"));
 process.on("SIGTERM", () => finish("SIGTERM"));
 process.on("SIGINT", () => finish("SIGINT"));
 
-main().catch((e) => {
+// ── evening watcher (REC_MODE=watch) ───────────────────────────────────────────
+async function watchMain() {
+  fs.mkdirSync(outDir, { recursive: true });
+  state.setup = "watching";
+  try { fyersDataSocket.instance = null; } catch { /* ignore */ }
+  sk = fyersDataSocket.getInstance(`${appId}:${token}`, "", false);
+  if (typeof sk.autoReconnect === "function") sk.autoReconnect(10); else if (typeof sk.autoreconnect === "function") sk.autoreconnect(10);
+  const subs = new Set();
+  let open = false;
+  const sub = (syms) => {
+    const add = syms.filter((x) => typeof x === "string" && x.includes(":") && !subs.has(x));
+    add.forEach((x) => { subs.add(x); otherSyms.add(x); });
+    if (open && add.length) { try { sk.subscribe(add); sk.subscribe(add.filter((x) => !/-INDEX$/.test(x)), true); } catch (e) { log("watch subscribe:", e.message); } }
+  };
+  sk.on("connect", () => {
+    open = true; state.dataConnected = true; state.connects++;
+    try { if (subs.size) { sk.subscribe([...subs]); sk.subscribe([...subs].filter((x) => !/-INDEX$/.test(x)), true); } if (sk.FullMode !== undefined) sk.mode(sk.FullMode); } catch (e) { log("watch connect:", e.message); }
+  });
+  sk.on("error", (e) => log("watch socket error:", (e && e.message) || String(e)));
+  sk.on("close", () => { open = false; state.dataConnected = false; state.closes++; });
+  sk.on("message", (m) => {
+    const recv = Date.now();
+    for (const t of Array.isArray(m) ? m : [m]) {
+      if (!t || typeof t !== "object" || !t.symbol) continue;
+      try {
+        if (t.type === "sf" || t.type === "if") { liveQuote(t, recv); if (otherSyms.has(t.symbol)) writeOther(t, recv); }
+        else if (t.type === "dp") liveDepth5(t, recv);
+      } catch (e) { log("watch message:", e.message); }
+    }
+  });
+  sk.connect();
+  state.setup = "running";
+  pendingSubs.handler = (msg) => sub(msg.symbols || []);
+  if (pendingSubs.msg) sub(pendingSubs.msg.symbols || []);
+  log(`watching ${subs.size} symbol(s) -> ${path.join(outDir, "parrva-other")}`);
+  send({ ready: true });
+}
+
+(WATCH ? watchMain() : main()).catch((e) => {
   const why = e && e.message ? e.message : (() => { try { return JSON.stringify(e); } catch { return String(e); } })();
   log("recorder could not start:", why, "- the manager tries again in 30 s");
   clearInterval(report); clearInterval(hb);

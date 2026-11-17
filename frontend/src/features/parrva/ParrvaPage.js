@@ -173,7 +173,7 @@ function CallRow({ c, open, onToggle, live }) {
           <div className="pv-sym">
             <span className={`pv-side ${c.side === "SELL" ? "pv-sell" : "pv-buy"}`}>{c.side}</span>
             <strong>{c.label || c.instrument}</strong>
-            <span className="pv-exch">· exp {dayMonth(c.expiry)}{c.intraday ? " · Intraday" : ""}</span>
+            <span className="pv-exch">{c.expiry ? `· exp ${dayMonth(c.expiry)}` : ""}{c.intraday ? " · Intraday" : ""}</span>
           </div>
         </div>
         <div className="pv-col"><span className="pv-k">Entry</span><span className="pv-v">{f2(c.entryLo)} – {f2(c.entryHi)}</span></div>

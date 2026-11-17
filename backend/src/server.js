@@ -208,6 +208,13 @@ server.listen(PORT, async () => {
   console.log(`   Symbols    : http://localhost:${PORT}/api/symbols`);
   console.log(`   Scanner    : http://localhost:${PORT}/api/scanner/signals\n`);
 
+  // ── 1b. Live PaRRVA report: PaRRVA poller + recorder (Fyers account 2 only, own child process).
+  // Started before step 2 on purpose: step 2 waits for the account 1 token, which PaRRVA never uses,
+  // so an expired account 1 must not stop the recording. PARRVA_LIVE=false turns the whole thing off.
+  if (process.env.PARRVA_LIVE !== "false") {
+    try { require("./parrva").getParrvaLive().start(); } catch (err) { console.error("[PaRRVA] failed to start:", err.message); }
+  }
+
   // ── 2. Symbol-check — wait for a valid Fyers token first (fixes the ──────
   // permanent-exclusion bug: SymbolCheck must not run against an expired
   // token, see symbolCheck.js's waitForValidToken() for the full story).
@@ -260,11 +267,6 @@ server.listen(PORT, async () => {
     console.error("[PaperTrading] Failed to initialize:", err.message);
   }
 
-  // 2026-11-05 — live PaRRVA report: PaRRVA poller + recorder (Fyers account 2, own child process).
-  // PARRVA_LIVE=false turns the whole thing off.
-  if (process.env.PARRVA_LIVE !== "false") {
-    try { require("./parrva").getParrvaLive().start(); } catch (err) { console.error("[PaRRVA] failed to start:", err.message); }
-  }
 });
 
 // ─── Process-level safety nets + graceful shutdown ───────────────────────────

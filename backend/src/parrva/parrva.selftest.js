@@ -43,11 +43,11 @@ t("candles before the call are ignored -> WAITING", () => {
 });
 t("entry then target -> TARGET, fill = top of band (opened above it)", () => {
   const s = evaluate(rec, [bar("11:33", 190, 191, 186, 188), bar("11:40", 195, 206, 194, 205)], {}, before);
-  assert.strictEqual(s.state, "TARGET"); assert.strictEqual(s.entryPrice, 187); assert.strictEqual(s.fill, "band"); assert.strictEqual(s.points, 18);
+  assert.strictEqual(s.state, "TARGET"); assert.strictEqual(s.entryPrice, 187); assert.strictEqual(s.fill, "band"); assert.strictEqual(s.realPoints, 18); assert.strictEqual(s.points, 20);
 });
 t("entry then SL -> SL, negative points", () => {
   const s = evaluate(rec, [bar("11:33", 190, 191, 186, 188), bar("11:41", 180, 181, 173, 175)], {}, before);
-  assert.strictEqual(s.state, "SL"); assert.strictEqual(s.points, -13);
+  assert.strictEqual(s.state, "SL"); assert.strictEqual(s.realPoints, -13); assert.strictEqual(s.points, -11);
 });
 t("target and SL in the same minute -> SL, flagged", () => {
   const s = evaluate(rec, [bar("11:33", 190, 191, 186, 188), bar("11:42", 190, 210, 170, 190)], {}, before);
@@ -55,7 +55,7 @@ t("target and SL in the same minute -> SL, flagged", () => {
 });
 t("entered and still running -> OPEN with live points", () => {
   const s = evaluate(rec, [bar("11:33", 190, 191, 186, 188)], { ltp: 196 }, before);
-  assert.strictEqual(s.state, "OPEN"); assert.strictEqual(s.livePoints, 9);
+  assert.strictEqual(s.state, "OPEN"); assert.strictEqual(s.livePoints, 11);
 });
 t("live tick inside entry before the minute closes -> OPEN", () => {
   const s = evaluate(rec, [bar("11:33", 192, 193, 190, 191)], { ltp: 186.5 }, before);
@@ -64,11 +64,11 @@ t("live tick inside entry before the minute closes -> OPEN", () => {
 t("PaRRVA exit price -> EXITED", () => {
   const r2 = normalize({ ...row, exitPrice: 196.05, updatedAt: "2026-11-05T11:50:00+05:30" });
   const s = evaluate(r2, [bar("11:33", 190, 191, 186, 188), bar("11:50", 195, 197, 194, 196)], {}, before);
-  assert.strictEqual(s.state, "EXITED"); assert.strictEqual(s.points, 9.05);
+  assert.strictEqual(s.state, "EXITED"); assert.strictEqual(s.points, 11.05); assert.strictEqual(s.realPoints, 9.05);
 });
 t("day over, still open -> CLOSED at last price", () => {
   const s = evaluate(rec, [bar("11:33", 190, 191, 186, 188), bar("15:29", 195, 196, 194, 195)], {}, after);
-  assert.strictEqual(s.state, "CLOSED"); assert.strictEqual(s.points, 8);
+  assert.strictEqual(s.state, "CLOSED"); assert.strictEqual(s.points, 10);
 });
 t("day over, never entered -> NOT_TRIGGERED", () => {
   const s = evaluate(rec, [bar("11:33", 195, 199, 190, 196)], {}, after);
@@ -77,7 +77,7 @@ t("day over, never entered -> NOT_TRIGGERED", () => {
 t("SELL call is mirrored", () => {
   const sell = normalize({ ...row, buyOrSell: "SELL", entryPriceStart: 185, entryPriceEnd: 187, targetPrice: 170, stopLoss: 195 });
   const s = evaluate(sell, [bar("11:33", 184, 186, 183, 185), bar("11:40", 175, 176, 169, 170)], {}, before);
-  assert.strictEqual(s.state, "TARGET"); assert.strictEqual(s.entryPrice, 185); assert.strictEqual(s.points, 15);
+  assert.strictEqual(s.state, "TARGET"); assert.strictEqual(s.entryPrice, 185); assert.strictEqual(s.points, 17); assert.strictEqual(s.realPoints, 15);
 });
 t("summarize counts and points", () => {
   const s = summarize([
@@ -107,7 +107,7 @@ t("trailed SL only counts from the minute after it was published", () => {
   // 11:45 low 185 is above v1 SL 174; v2's SL 190 must NOT be applied to 11:45.
   const s = evaluate(rec, [bar("11:33", 190, 191, 186, 188), bar("11:45", 188, 189, 185, 188), bar("11:50", 195, 196, 194, 195), bar("11:52", 192, 193, 189, 190)], {}, before, vers);
   assert.strictEqual(s.state, "TRAIL_SL"); assert.strictEqual(s.trailed, true);
-  assert.strictEqual(s.exitPrice, 190); assert.strictEqual(s.points, 3);
+  assert.strictEqual(s.exitPrice, 190); assert.strictEqual(s.points, 5); assert.strictEqual(s.realPoints, 3);
   assert.strictEqual(s.exitAt, new Date(sec("11:52") * 1000).toISOString());
 });
 t("without version history the latest levels are used (old behaviour)", () => {
@@ -118,5 +118,54 @@ t("without version history the latest levels are used (old behaviour)", () => {
 t("summarize leaves out calls before recording", () => {
   const s = summarize([{ rec: { ...rec, excluded: true }, status: { state: "SL", points: -10 } }, { rec, status: { state: "TRAIL_SL", points: 3 } }]);
   assert.strictEqual(s.calls, 1); assert.strictEqual(s.excluded, 1); assert.strictEqual(s.points, 3); assert.strictEqual(s.trailSl, 1); assert.strictEqual(s.winRate, 100);
+});
+const ts = (hms) => Date.parse(`2026-11-05T${hms}+05:30`) / 1000;
+const tick = (hms, px) => ({ t: ts(hms), o: px, h: px, l: px, c: px, d: 1 });
+t("minute entry bar coming up from below: its earlier low is not an SL hit", () => {
+  const r = normalize({ ...row, stopLoss: 182 });
+  const s = evaluate(r, [bar("11:33", 179, 186, 178, 186)], {}, before);
+  assert.strictEqual(s.state, "OPEN"); assert.strictEqual(s.entryPrice, 185);
+});
+t("PaRRVA exit before the price reached the band -> AVOIDED, no points", () => {
+  const r = normalize({ ...row, exitPrice: 185.05, updatedAt: "2026-11-05T11:40:10+05:30" });
+  const s = evaluate(r, [tick("11:35:00", 181), tick("11:40:05", 183), tick("11:41:00", 186)], {}, before);
+  assert.strictEqual(s.state, "AVOIDED"); assert.strictEqual(s.points, null);
+  assert.strictEqual(summarize([{ rec: r, status: s }]).avoided, 1);
+});
+t("tick bars: ticks before the call was published are ignored", () => {
+  // Call published 11:32:32; a tick at 11:32:10 inside the band must not count.
+  const s = evaluate(rec, [tick("11:32:10", 186), tick("11:33:00", 190)], {}, before);
+  assert.strictEqual(s.state, "WAITING");
+});
+t("tick bars: real fill = first tick in band, points from entry low", () => {
+  const s = evaluate(rec, [tick("11:33:00", 183), tick("11:33:05", 185.6), tick("11:40:00", 205.2)], {}, before);
+  assert.strictEqual(s.state, "TARGET"); assert.strictEqual(s.entryPrice, 185.6);
+  assert.strictEqual(s.points, 20); assert.strictEqual(s.realPoints, 19.4); assert.strictEqual(s.resolution, "tick");
+});
+t("tick bars: a new version counts from the second it was published", () => {
+  const v = [vers[0], { ...vers[1], at: "2026-11-05T11:50:30+05:30" }];
+  const s = evaluate(rec, [tick("11:33:00", 186), tick("11:50:20", 189), tick("11:50:40", 189.5)], {}, before, v);
+  assert.strictEqual(s.state, "TRAIL_SL"); assert.strictEqual(s.exitAt, new Date(ts("11:50:40") * 1000).toISOString());
+});
+
+// ── 2026-11-16: stock / MCX calls ──
+const U = require("./util");
+t("market close: NSE 15:30, MCX 23:30 (23:55 in US daylight-saving time)", () => {
+  assert.strictEqual(U.closeMinOf({ exchange: "NSE", date: "2026-11-16" }), 930);
+  assert.strictEqual(U.closeMinOf({ exchange: "MCX", date: "2026-11-16" }), 1410);
+  assert.strictEqual(U.closeMinOf({ exchange: "MCX", date: "2026-07-01" }), 1435);
+});
+t("MCX call: still OPEN at 22:00, CLOSED after the MCX close", () => {
+  const m = { ...rec, exchange: "MCX", date: "2026-11-16", entryLo: 118, entryHi: 120, target: 140, sl: 108, exit: null, createdMs: Date.parse("2026-11-16T20:00:00+05:30") };
+  const b = [{ t: Date.parse("2026-11-16T20:01:00+05:30") / 1000, o: 119, h: 119, l: 119, c: 119, d: 1 }, { t: Date.parse("2026-11-16T21:00:00+05:30") / 1000, o: 126, h: 126, l: 126, c: 126, d: 1 }];
+  assert.strictEqual(evaluate(m, b, { ltp: 126 }, Date.parse("2026-11-16T22:00:00+05:30")).state, "OPEN");
+  const c = evaluate(m, b, {}, Date.parse("2026-11-16T23:31:00+05:30"));
+  assert.strictEqual(c.state, "CLOSED"); assert.strictEqual(c.points, 8);
+});
+t("only NSE NIFTY index options go into the NIFTY dataset", () => {
+  assert.ok(U.isDatasetCall(rec));
+  for (const o of [{ underlying: "COFORGE", instrument: "OPTSTK" }, { underlying: "NIFTYNXT50" }, { underlying: "SENSEX", exchange: "BSE", instrument: "IDO" }, { underlying: "CRUDEOIL", exchange: "MCX", instrument: "OPTFUT" }]) {
+    assert.ok(!U.isDatasetCall({ ...rec, ...o }), JSON.stringify(o));
+  }
 });
 console.log(`${passed} passed${process.exitCode ? ", some FAILED" : ""}`);

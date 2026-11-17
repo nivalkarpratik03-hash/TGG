@@ -91,6 +91,18 @@ function recorderRows(svc, now) {
     ? { key: "atm", state: "ok", name: "ATM", detail: `Strike ${Number(info.atm).toLocaleString("en-IN")} from the index · ${info.fut || ""}${info.expiry ? ` · expiry ${info.expiry}` : ""}`, value: `${info.tracked || 0} symbols` }
     : { key: "atm", state: "off", name: "ATM", detail: "Set from the index when the recorder starts", value: "—" });
 
+  // Evening watcher for MCX calls (recorderManager, 2026-11-16) - shown only when there is such a call
+  const wt = info.watch || {};
+  if ((wt.symbols && wt.symbols.length) || wt.running) {
+    const until = Number.isFinite(wt.until) ? fmtMin(wt.until) : "the close";
+    const wTick = wt.lastTickAt ? Date.parse(wt.lastTickAt) : null;
+    if (wt.recording) rows.push({ key: "watch", state: "ok", name: "Evening calls", detail: `Tracking ${wt.symbols.join(", ")} until ${until}`, value: wTick ? `last tick ${ago(wTick, now)}` : "connected" });
+    else if (wt.running) rows.push({ key: "watch", state: "warn", name: "Evening calls", detail: `Connecting for ${wt.symbols.join(", ")}…`, value: "connecting" });
+    else if (info.running && !info.stopping) rows.push({ key: "watch", state: "off", name: "Evening calls", detail: `${wt.symbols.join(", ")} tracked by the recorder now; after it stops, until ${until}`, value: "waiting" });
+    else if (!info.accountReady) rows.push({ key: "watch", state: "bad", name: "Evening calls", detail: `Account 2 is not logged in, so ${wt.symbols.join(", ")} cannot be tracked`, value: "not tracking" });
+    else rows.push({ key: "watch", state: "warn", name: "Evening calls", detail: `Starting for ${wt.symbols.join(", ")} (until ${until})`, value: "starting" });
+  }
+
   // Parquet
   const ex = info.lastExport;
   const today = U.istDate(now);
@@ -119,11 +131,15 @@ function recorderRows(svc, now) {
     } else if (d.lastError && !(d.last && d.last.day === d.lastError.day && d.last.at > d.lastError.at)) {
       rows.push({ key: "drive", state: d.lastError.tries >= 2 ? "bad" : "warn", name: "Google Drive", detail: `Upload of ${d.lastError.day} failed (try ${d.lastError.tries}, retrying): ${d.lastError.error}`, value: "failed" });
     } else if (d.today.uploaded) {
-      rows.push({ key: "drive", state: "ok", name: "Google Drive", detail: `3 files of today checked on Drive at ${clock(Date.parse(d.today.uploaded.at))} · ${d.today.uploaded.dest}${tail}`, value: "uploaded" });
+      const n = (d.today.uploaded.files || []).length || 3;
+      const res = d.today.results
+        ? ` · results.json (${d.today.results.calls} call${d.today.results.calls === 1 ? "" : "s"}) at ${clock(Date.parse(d.today.results.at))}`
+        : svc.feed.list(today, today).length ? ` · results.json after ${fmtMin(Math.min(svc.finalMinOf(today) + 5, 1439))}` : "";
+      rows.push({ key: "drive", state: "ok", name: "Google Drive", detail: `${n} Parquet files of today checked on Drive at ${clock(Date.parse(d.today.uploaded.at))}${res} · ${d.today.uploaded.dest}${tail}`, value: d.today.results ? `${n + 1} files on Drive` : "uploaded" });
     } else if (d.today.exported) {
       rows.push({ key: "drive", state: "warn", name: "Google Drive", detail: `Uploading today's files to ${d.dest}…`, value: "uploading" });
     } else {
-      const waiting = keptOld.filter(([, why]) => why === "not on Drive yet" || why === "results not in the database yet");
+      const waiting = keptOld.filter(([, why]) => ["not on Drive yet", "results not in the database yet", "results.json not on Drive yet"].includes(why));
       rows.push({
         key: "drive", state: "off", name: "Google Drive",
         detail: `Uploads after the Parquet export · ${d.keepDays ? `keeps the last ${d.keepDays} uploaded day(s) here` : "local recordings deleted after a checked upload"}${tail}${waiting.length ? ` · waiting: ${waiting.map(([k, v]) => `${k} (${v})`).join(", ")}` : ""}`,

@@ -63,6 +63,49 @@ function writeJson(file, data) {
   }
 }
 
+// ── market hours per call (2026-11-16: stock + MCX calls) ──────────────────────
+/** True when US daylight-saving time is on for that IST date (2nd Sunday of March .. 1st Sunday of November). */
+function usDst(dateStr) {
+  const [y, m, d] = String(dateStr).split("-").map(Number);
+  if (!y || !m || !d) return false;
+  const nthSunday = (month, nth) => { const first = new Date(Date.UTC(y, month - 1, 1)).getUTCDay(); return 1 + ((7 - first) % 7) + (nth - 1) * 7; };
+  const start = nthSunday(3, 2), end = nthSunday(11, 1);
+  if (m < 3 || m > 11) return false;
+  if (m > 3 && m < 11) return true;
+  return m === 3 ? d >= start : d < end;
+}
+/**
+ * Minutes after IST midnight when the call's market closes.
+ *   NSE / BSE (index, stock, equity): 15:30
+ *   MCX: 23:30, or 23:55 while US daylight-saving time is on (MCX timing for internationally linked commodities).
+ *        MCX_CLOSE=HH:MM in .env overrides it.
+ */
+function closeMinOf(rec) {
+  const ex = String((rec && rec.exchange) || "").toUpperCase();
+  if (ex === "MCX" || ex === "NCDEX") {
+    const o = hhmm(process.env.MCX_CLOSE);
+    if (Number.isFinite(o)) return o;
+    return usDst(rec && rec.date) ? 23 * 60 + 55 : 23 * 60 + 30;
+  }
+  return 15 * 60 + 30;
+}
+/** Epoch ms when the call's market closes on the call's date (null without a date). */
+function closeMsOf(rec) {
+  if (!rec || !rec.date) return null;
+  const m = closeMinOf(rec);
+  return istAt(rec.date, Math.floor(m / 60), m % 60);
+}
+/**
+ * Is this call part of the NIFTY order-flow dataset (recorded into recordings/<date>/symbols and the Parquet files)?
+ * Only NIFTY index options on NSE. Every other call (stocks, MCX, SENSEX ...) is tracked for the report only.
+ */
+function isDatasetCall(rec) {
+  if (!rec) return false;
+  const ex = String(rec.exchange || "NSE").toUpperCase();
+  const ins = String(rec.instrument || "OPTIDX").toUpperCase();
+  return String(rec.underlying || "").toUpperCase() === "NIFTY" && ex === "NSE" && ins === "OPTIDX";
+}
+
 /** Root folder for everything the live PaRRVA report stores (recordings, history, results). */
 function dataRoot() {
   return process.env.PARRVA_DATA_DIR
@@ -70,4 +113,4 @@ function dataRoot() {
     : path.resolve(__dirname, "../../parrva_data");
 }
 
-module.exports = { IST_OFFSET_MS, istDate, istMinutes, istClock, istAt, isTradingDayIST, hhmm, num, readJson, writeJson, dataRoot };
+module.exports = { IST_OFFSET_MS, istDate, istMinutes, istClock, istAt, isTradingDayIST, hhmm, num, readJson, writeJson, dataRoot, usDst, closeMinOf, closeMsOf, isDatasetCall };
