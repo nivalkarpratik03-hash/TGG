@@ -16,3 +16,5 @@ orderflow/service/__pycache__/
 **/.fyers_token
 backend/logs/
 frontend/build/
+kronos-service/
+orderflow/
